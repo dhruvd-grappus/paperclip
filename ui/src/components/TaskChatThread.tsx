@@ -2680,6 +2680,8 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     initialHistoryPending ||
     planLoading ||
     initialRuns.some((run) => {
+      // A scheduled retry has not started and has no log to hydrate yet.
+      if (run.status === "scheduled_retry") return false;
       if (
         run.runtimeMode === "native" &&
         (hydratedNativeRunIds
