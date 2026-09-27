@@ -20,8 +20,7 @@ BUILD=$(git rev-list --count "v$BASE..HEAD")
 BRANCH=${GRAPPUS_BRANCH:-$(git rev-parse --abbrev-ref HEAD)}
 echo "==> building $BASE-grappus.$BUILD ($SHA)"
 
-# The runner's full build needs cargo for runnerd; the server only needs its TypeScript output.
-(cd packages/paperclip-runner && ${PNPM:-pnpm} run --silent build:typescript >/dev/null)
+# Needs scripts/grappus/prepare.sh first (runner TypeScript + workspace deps).
 rm -rf server/dist
 (cd server && npx tsc -p .)
 # Sidebar build badge + changelog (server/dist/grappus-build.json).

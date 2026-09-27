@@ -37,6 +37,9 @@ jobs:
           corepack prepare pnpm@9.15.4 --activate
           pnpm install --frozen-lockfile
 
+      - name: Build workspace dependencies
+        run: scripts/grappus/prepare.sh
+
       - name: Test fork changes
         run: scripts/grappus/test.sh
 

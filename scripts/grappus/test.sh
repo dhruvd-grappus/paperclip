@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # Tests that gate a Grappus overlay release: every test file the fork touched
 # since the upstream base, plus the suites next to the code we changed. The full
-# upstream suite (15k tests, some macOS/cloud-only) is not a gate here.
+# upstream suite (15k tests, some macOS/cloud-only) is not a gate here. Needs
+# scripts/grappus/prepare.sh first.
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 BASE=$(cat "$ROOT/scripts/grappus/BASE")
 cd "$ROOT"
 
-(cd packages/paperclip-runner && ${PNPM:-pnpm} run --silent build:typescript >/dev/null)
 (cd server && npx tsc --noEmit -p .)
 (cd ui && npx tsc --noEmit -p .)
 
