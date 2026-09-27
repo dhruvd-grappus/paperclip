@@ -427,6 +427,77 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
       .resolves.toEqual([{ checkoutRunId: runningRunId, executionRunId: runningRunId }]);
   });
 
+  it.each([
+    ["retryable_failure", 1],
+    ["observed", 1],
+  ] as const)("keeps the issue lock of a failed native run while same-run resumption owns it (%s)", async (phase, attempt) => {
+    // Production (GRA-194): between same-run attempts the run row is already
+    // "failed" while its finalization waits for nextAttemptAt. Clearing the
+    // lock here made the resumed attempt fail attachment staging
+    // (executionRunId no longer the run) and blocked the issue for good.
+    const { companyId, agentId, failedRunId } = await seed();
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Native same-run retry after a failed attempt",
+      status: "in_review",
+      priority: "high",
+      assigneeAgentId: agentId,
+      executionRunId: failedRunId,
+      executionLockedAt: new Date(),
+    });
+    await db
+      .update(heartbeatRuns)
+      .set({ runtimeMode: "native", nativeIssueId: issueId, nativePhase: phase })
+      .where(eq(heartbeatRuns.id, failedRunId));
+    await db.insert(nativeRunFinalizations).values({
+      runId: failedRunId,
+      companyId,
+      issueId,
+      phase,
+      attempt,
+      nextAttemptAt: phase === "retryable_failure" ? new Date(Date.now() + 30_000) : null,
+    });
+
+    const result = await heartbeatService(db).sweepStaleIssueLocks();
+
+    expect(result).toEqual({ cleared: 0, issueIds: [], terminalizedRunIds: [] });
+    await expect(db.select({ executionRunId: issues.executionRunId })
+      .from(issues).where(eq(issues.id, issueId)))
+      .resolves.toEqual([{ executionRunId: failedRunId }]);
+  });
+
+  it("still clears the lock of a native run whose same-run recovery is exhausted", async () => {
+    const { companyId, agentId, failedRunId } = await seed();
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Native run out of retries",
+      status: "blocked",
+      priority: "high",
+      assigneeAgentId: agentId,
+      executionRunId: failedRunId,
+      executionLockedAt: new Date(),
+    });
+    await db
+      .update(heartbeatRuns)
+      .set({ runtimeMode: "native", nativeIssueId: issueId, nativePhase: "terminal_failure" })
+      .where(eq(heartbeatRuns.id, failedRunId));
+    await db.insert(nativeRunFinalizations).values({
+      runId: failedRunId,
+      companyId,
+      issueId,
+      phase: "terminal_failure",
+      attempt: 3,
+    });
+
+    const result = await heartbeatService(db).sweepStaleIssueLocks();
+
+    expect(result.issueIds).toEqual([issueId]);
+  });
+
   it("preserves a process-less run while its in-process execution is still finalizing", async () => {
     const { companyId, agentId, runningRunId } = await seed();
     const issueId = randomUUID();

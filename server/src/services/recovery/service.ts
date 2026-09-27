@@ -5824,10 +5824,41 @@ export function recoveryService(
       if (outcome.terminalized) result.terminalizedRunIds.push(row.id);
     }
 
+    // Between same-run attempts a native run row already reads "failed" while
+    // its finalization coordinator still owns the retry. The resumed attempt
+    // re-checks that the issue's executionRunId is still this run (attachment
+    // staging, wake binding), so clearing the lock here turns a recoverable
+    // blip into a permanently blocked issue. Same ownership rule as the
+    // process-death backstop in terminalizeOrphanedRunningRun.
+    const nativeTerminalRunIds = runRows
+      .filter((row) =>
+        row.runtimeMode === "native" &&
+        TERMINAL_HEARTBEAT_RUN_STATUSES.has(runStatusById.get(row.id) ?? row.status))
+      .map((row) => row.id);
+    const resumeOwnedRunIds = new Set(
+      nativeTerminalRunIds.length === 0
+        ? []
+        : (await db
+            .select({
+              runId: nativeRunFinalizations.runId,
+              phase: nativeRunFinalizations.phase,
+              resultId: nativeRunFinalizations.resultId,
+              attempt: nativeRunFinalizations.attempt,
+            })
+            .from(nativeRunFinalizations)
+            .where(inArray(nativeRunFinalizations.runId, nativeTerminalRunIds)))
+            .filter((row) =>
+              row.resultId === null &&
+              (row.phase === "retryable_failure" ||
+                (row.phase === "observed" && row.attempt > 0)))
+            .map((row) => row.runId),
+    );
+
     const isCleanable = (runId: string | null) => {
       if (!runId) return true;
       const status = runStatusById.get(runId);
       if (!status) return true; // missing run row → no real claim
+      if (resumeOwnedRunIds.has(runId)) return false;
       return TERMINAL_HEARTBEAT_RUN_STATUSES.has(status);
     };
 
