@@ -45,7 +45,8 @@ const info = {
   shortCommit: git("rev-parse", "--short=9", "HEAD"),
   base,
   build: buildArg ?? git("rev-list", "--count", range),
-  branch: git("rev-parse", "--abbrev-ref", "HEAD"),
+  // CI checks out a detached HEAD; it passes the branch in GRAPPUS_BRANCH.
+  branch: process.env.GRAPPUS_BRANCH || git("rev-parse", "--abbrev-ref", "HEAD"),
   builtAt: new Date().toISOString(),
   repositoryUrl: "https://github.com/dhruvd-grappus/paperclip",
   commits,

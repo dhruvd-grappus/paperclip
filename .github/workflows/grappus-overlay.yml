@@ -1,0 +1,67 @@
+# Grappus fork: build the host overlay for every push to grappus/stable and
+# publish it as a GitHub release (overlay-<sha12>). The host installs it with
+# `paperclip-overlay install-release` (dev-pipe repo, `make paperclip-deploy`).
+name: grappus overlay
+
+on:
+  push:
+    branches: [grappus/stable]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: grappus-overlay
+  cancel-in-progress: false
+
+jobs:
+  overlay:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      GRAPPUS_BRANCH: grappus/stable
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Install
+        run: |
+          corepack enable
+          corepack prepare pnpm@9.15.4 --activate
+          pnpm install --frozen-lockfile
+
+      - name: Test fork changes
+        run: scripts/grappus/test.sh
+
+      - name: Build overlay
+        run: scripts/grappus/build-overlay.sh out
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          sha=$(git rev-parse --short=12 HEAD)
+          build=$(jq -r .build server/dist/grappus-build.json)
+          base=$(cat scripts/grappus/BASE)
+          tag="overlay-$sha"
+          {
+            echo "Overlay build $build of \`grappus/stable\` on upstream v$base (\`$sha\`)."
+            echo
+            echo "Install on the host: \`paperclip-overlay install-release $tag\` (dev-pipe: \`make paperclip-deploy\`)."
+            echo
+            echo "## Changes since v$base"
+            jq -r '.commits[] | "- \(.subject) (\(.shortSha))"' server/dist/grappus-build.json
+          } > out/notes.md
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" out/paperclip-overlay.tgz out/paperclip-overlay.tgz.sha256 --clobber
+          else
+            gh release create "$tag" out/paperclip-overlay.tgz out/paperclip-overlay.tgz.sha256 \
+              --target "$GITHUB_SHA" --title "$base-grappus.$build ($sha)" --notes-file out/notes.md --latest
+          fi
