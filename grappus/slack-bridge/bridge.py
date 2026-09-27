@@ -34,6 +34,7 @@ STATE = os.path.join(HOME, "state.json")
 DRY = "--dry-run" in sys.argv
 INCLUDE = {sys.argv[i + 1] for i, a in enumerate(sys.argv) if a == "--include" and i + 1 < len(sys.argv)}
 PENDING = ("pending", "open", "awaiting_response")
+EARLY_PREVIEW = False  # see section 1
 NO_PUSH_URL = "no-push://push-refused-by-design-follow-push-failed-path-hand-off-to-review-and-qa-now"
 TOKEN = json.load(open(os.path.expanduser("~/.paperclip/auth.json")))["credentials"]["https://187.126.114.172.sslip.io"]["token"]
 ENV_FILE = os.path.join(HOME, ".env")  # SLACK_BOT_TOKEN=xoxb-... (mode 600); optional
@@ -209,8 +210,10 @@ for root_id, conv in roots.items():
 
     # 1. relay child questions to the root
     for child in tree(root_id):
-        # early preview (26 Sep, Dhruv on GRA-117): send the handoff's preview link while review and QA still run
-        if child["title"].startswith("Build:") and child.get("status") != "cancelled":
+        # early preview (26 Sep, Dhruv on GRA-117): send the handoff's preview link while review and QA still run.
+        # Off since pipeline v24 (27 Sep): the parent task itself posts "built, preview, now reviewing and testing"
+        # when its builds finish, so this would double-post.
+        if EARLY_PREVIEW and child["title"].startswith("Build:") and child.get("status") != "cancelled":
             ccs = req("GET", f"/api/issues/{child['id']}/comments")
             ccs = ccs if isinstance(ccs, list) else items(ccs)
             for cc in sorted(ccs, key=lambda x: x.get("createdAt", ""), reverse=True):
