@@ -32,6 +32,13 @@ install-heal:
 	  install -m 755 -o paperclip -g paperclip $$D/vps/native-token.sh /home/paperclip/native-token.sh; \
 	  rm -rf $$D; su - paperclip -c "crontab -l" | grep -E "heal|native-token"'
 
+# make install-preview: preview-url (production build + serve, dev fallback) and the preview router.
+install-preview:
+	@scp -q vps/preview-url vps/preview-router.js $(VPS):/tmp/
+	@ssh $(VPS) 'set -e; install -m 755 -o root -g root /tmp/preview-url /usr/local/bin/preview-url; \
+	  install -m 644 -o paperclip -g paperclip /tmp/preview-router.js /home/paperclip/preview-router/index.js; \
+	  systemctl restart preview-router; systemctl is-active preview-router; rm -f /tmp/preview-url /tmp/preview-router.js'
+
 # make backup: run all backups on the host, then pull them down here.
 backup:
 	@stamp=$$(date +%Y%m%d-%H%M%S); dest="$(BACKUP_DIR)/$$stamp"; mkdir -p "$$dest"; \
@@ -62,4 +69,4 @@ paperclip-rollback:
 paperclip-status:
 	@ssh $(VPS) 'paperclip-overlay status'
 
-.PHONY: deploy install-backup install-heal backup reasoning install-updater paperclip-rollback paperclip-status
+.PHONY: deploy install-backup install-heal install-preview backup reasoning install-updater paperclip-rollback paperclip-status

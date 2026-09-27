@@ -33,7 +33,16 @@ const server = http.createServer((req, res) => {
   if (!entry) { const [c, b] = page("No preview here", `Nothing registered for <code>${slug || req.headers.host}</code>. Start one in the task worktree with <code>preview-url start</code>.`, 404); res.writeHead(c, { "content-type": "text/html" }); return res.end(b); }
   entry.lastHit = new Date().toISOString(); reg[slug] = entry; writeReg(reg);
   const up = http.request({ host: "127.0.0.1", port: entry.port, method: req.method, path: req.url, headers: { ...req.headers, host: `localhost:${entry.port}`, "x-forwarded-host": req.headers.host, "x-forwarded-proto": "https" } }, (ures) => { res.writeHead(ures.statusCode, ures.headers); ures.pipe(res); });
-  up.on("error", () => { const [c, b] = page("Preview not responding", `Registered on port ${entry.port} but nothing is listening. It may still be starting, or it was stopped.`, 502); res.writeHead(c, { "content-type": "text/html" }); res.end(b); });
+  up.on("error", () => {
+    // preview-url builds in the background; say so (and refresh) instead of a bare 502.
+    const st = String(entry.state || "");
+    if (/^(building|starting)/.test(st)) {
+      const what = st.startsWith("building") ? "Building the app for this preview" : "Starting the preview server";
+      const [c, b] = page("Preview is getting ready", `${what}. This page refreshes by itself; a production build usually takes a few minutes.`, 503);
+      res.writeHead(c, { "content-type": "text/html", "retry-after": "10", refresh: "10" }); return res.end(b);
+    }
+    const [c, b] = page("Preview not responding", `Registered on port ${entry.port} but nothing is listening. It may still be starting, or it was stopped.`, 502); res.writeHead(c, { "content-type": "text/html" }); res.end(b);
+  });
   req.pipe(up);
 });
 // websocket upgrade (Next HMR etc.)

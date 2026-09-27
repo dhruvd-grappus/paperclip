@@ -1,26 +1,41 @@
 #!/usr/bin/env bash
-# preview-url: start/stop/show a public preview for the current task worktree.
-#   preview-url start [command]   start the dev server (default: auto-detect) and print the public URL
+# preview-url: start/stop/show a public preview for the current task worktree.  (→ /usr/local/bin/preview-url)
+#   preview-url start [command]   build the app and serve the production build (default), print the public URL
+#   preview-url start --dev       serve the dev server instead (hot reload, slow first loads)
+#   preview-url status [IDENT]    building | ready prod | ready dev (build failed) | failed | not running
+#   preview-url wait [IDENT] [s]  block until ready (default 900 s); exit 1 on failure or timeout
 #   preview-url stop              stop it and unregister
 #   preview-url url               print the URL if registered
 #   preview-url list              all registered previews
 # Slug = issue identifier from the branch name (GRA-28-foo -> gra-28), else directory name.
+#
+# Production mode: Next -> `next build` + `next start`; Vite -> `vite build` + `vite preview`;
+# CRA (react-scripts) -> `npm run build` + a static SPA server. `start` returns at once and the build runs
+# in the background (the router shows a "building" page meanwhile). If the build fails the preview falls
+# back to the dev server, and `status` says so. A `start` on a running production preview rebuilds it
+# when the worktree changed since that build (fix rounds); a dev preview hot-reloads and is left alone.
 set -euo pipefail
 REG=/home/paperclip/preview-registry.json
 BASE=187-126-114-172.sslip.io
 LOGDIR=/home/paperclip/preview-logs; mkdir -p "$LOGDIR"
 [ -f "$REG" ] || echo "{}" > "$REG"
+SELF=$(readlink -f "$0")
 
-branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)
-slug=$(printf '%s' "${branch:-$(basename "$PWD")}" | grep -oiE '^[a-z]+-[0-9]+' | tr 'A-Z' 'a-z' || true)
-[ -n "$slug" ] || slug=$(basename "$PWD" | tr 'A-Z' 'a-z' | tr -c 'a-z0-9\n' '-' | cut -c1-40)
-url="https://$slug.$BASE"
+slug_from_cwd() {
+  local branch s
+  branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)
+  s=$(printf '%s' "${branch:-$(basename "$PWD")}" | grep -oiE '^[a-z]+-[0-9]+' | tr 'A-Z' 'a-z' || true)
+  [ -n "$s" ] || s=$(basename "$PWD" | tr 'A-Z' 'a-z' | tr -c 'a-z0-9\n' '-' | cut -c1-40)
+  printf '%s' "$s"
+}
 
-jq_set() { python3 - "$REG" "$@" <<'PY'
+reg() { python3 - "$REG" "$@" <<'PY'
 import json,sys
 p=sys.argv[1]; op=sys.argv[2]; slug=sys.argv[3]
 r=json.load(open(p))
-if op=="set": r[slug]={"port":int(sys.argv[4]),"cwd":sys.argv[5],"pid":int(sys.argv[6]),"startedAt":sys.argv[7],"lastHit":None}
+if op=="set": r[slug]={"port":int(sys.argv[4]),"cwd":sys.argv[5],"pid":int(sys.argv[6]),"startedAt":sys.argv[7],"lastHit":None,"state":"building","mode":sys.argv[8]}
+elif op=="state":
+    if slug in r: r[slug]["state"]=sys.argv[4]
 elif op=="del": r.pop(slug,None)
 json.dump(r,open(p,"w"),indent=2)
 PY
@@ -33,32 +48,168 @@ for _ in range(50):
     except OSError: pass
 PY
 }
+# What the build was made from: HEAD plus uncommitted changes (ignoring build output).
+fingerprint() {
+  { git rev-parse HEAD 2>/dev/null; git status --porcelain --untracked-files=all 2>/dev/null | grep -vE ' (\.next|dist|build)/'; git diff 2>/dev/null; } | sha256sum | cut -c1-16
+}
+running() { [ -f "$LOGDIR/$1.pid" ] && kill -0 "$(cat "$LOGDIR/$1.pid")" 2>/dev/null; }
+stop_slug() {
+  [ -f "$LOGDIR/$1.pid" ] && { pkill -TERM -s "$(cat "$LOGDIR/$1.pid")" 2>/dev/null || kill "$(cat "$LOGDIR/$1.pid")" 2>/dev/null || true; rm -f "$LOGDIR/$1.pid"; }
+  rm -f "$LOGDIR/$1.state" "$LOGDIR/$1.fp"
+  reg del "$1"
+}
+
+# Pick build + serve commands for this project. Prints two lines: BUILD, SERVE ("" BUILD = dev only).
+detect() {
+  local port=$1
+  [ -f package.json ] || { [ -f manage.py ] && printf '\npython3 manage.py runserver 127.0.0.1:%s\n' "$port" && return; return 1; }
+  if grep -q '"next"' package.json; then
+    # Next >= 14.1: compile-only production build. Same minified bundle served by `next start`, but no
+    # static export at build time (pages render on request), so it is faster and one page that breaks
+    # prerendering (Unberry ATS dashboard /create-new) does not fail the whole preview.
+    local v; v=$(node -p "require('./node_modules/next/package.json').version" 2>/dev/null || echo 0)
+    if printf '%s\n14.1.0\n' "$v" | sort -V | head -1 | grep -qx 14.1.0; then
+      printf 'npx next build --experimental-build-mode=compile\nnpx next start -p %s -H 127.0.0.1\n' "$port"
+    else
+      printf 'npx next build\nnpx next start -p %s -H 127.0.0.1\n' "$port"
+    fi
+  elif grep -q '"vite"' package.json; then
+    printf 'npx vite build\nnpx vite preview --port %s --host 127.0.0.1 --strictPort\n' "$port"
+  elif grep -q '"react-scripts"' package.json; then
+    printf 'npm run build\nnode %s/preview-static.js build %s\n' "$LOGDIR" "$port"
+  elif grep -q '"build"' package.json && grep -q '"start"' package.json; then
+    printf 'npm run build\nPORT=%s npm start\n' "$port"
+  else
+    return 1
+  fi
+}
+detect_dev() {
+  local port=$1
+  if grep -q '"next"' package.json 2>/dev/null; then echo "npx next dev -p $port -H 127.0.0.1"
+  elif grep -q '"vite"' package.json 2>/dev/null; then echo "npx vite --port $port --host 127.0.0.1 --strictPort"
+  elif grep -q '"dev"' package.json 2>/dev/null; then echo "PORT=$port npm run dev"
+  elif grep -q '"start"' package.json 2>/dev/null; then echo "PORT=$port BROWSER=none npm start"
+  elif [ -f manage.py ]; then echo "python3 manage.py runserver 127.0.0.1:$port"
+  else return 1; fi
+}
+
+# Tiny static server with SPA fallback for CRA builds (no network install needed).
+write_static_server() {
+  cat > "$LOGDIR/preview-static.js" <<'JS'
+const http = require("http"), fs = require("fs"), path = require("path");
+const root = path.resolve(process.argv[2]), port = Number(process.argv[3]);
+const types = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".json": "application/json",
+  ".svg": "image/svg+xml", ".png": "image/png", ".jpg": "image/jpeg", ".ico": "image/x-icon", ".woff2": "font/woff2",
+  ".woff": "font/woff", ".map": "application/json", ".txt": "text/plain", ".webp": "image/webp", ".gif": "image/gif" };
+http.createServer((req, res) => {
+  let p = path.join(root, decodeURIComponent(req.url.split("?")[0]));
+  if (!p.startsWith(root)) { res.writeHead(403); return res.end(); }
+  fs.stat(p, (err, st) => {
+    if (err || st.isDirectory()) p = st && st.isDirectory() && fs.existsSync(path.join(p, "index.html")) ? path.join(p, "index.html") : path.join(root, "index.html");
+    res.writeHead(200, { "content-type": types[path.extname(p)] || "application/octet-stream" });
+    fs.createReadStream(p).pipe(res);
+  });
+}).listen(port, "127.0.0.1");
+JS
+}
+
+# Background worker: build, then serve; dev fallback when the build fails. Runs under setsid.
+run_worker() {
+  local slug=$1 port=$2 mode=$3 build=$4 serve=$5 dev=$6 st="$LOGDIR/$1.state"
+  if [ "$mode" = prod ]; then
+    echo building > "$st"; reg state "$slug" building
+    # Production builds do not read .env.development.local; mirror it when there is no production file.
+    [ -f .env.development.local ] && [ ! -f .env.production.local ] && cp .env.development.local .env.production.local
+    # A committed .env.production would point the preview at production for any key no local file
+    # overrides. Refuse the production build then (dev mode never reads .env.production).
+    local unsafe=""
+    if [ -f .env.production ]; then
+      for k in $(grep -oE '^[A-Za-z_][A-Za-z0-9_]*' .env.production | sort -u); do
+        grep -qsE "^$k=" .env.local .env.production.local || unsafe="$unsafe $k"
+      done
+    fi
+    if [ -n "$unsafe" ]; then
+      echo "== .env.production keys not overridden by .env.local:$unsafe -> dev mode (never serve a preview against production)"
+      build="false"
+    fi
+    # CRA 4 / webpack 4 on Node >= 17 needs the legacy OpenSSL provider.
+    grep -qE '"react-scripts": *"[\^~]?[1-4]\.' package.json 2>/dev/null && export NODE_OPTIONS="${NODE_OPTIONS:-} --openssl-legacy-provider"
+    echo "== $(date -u +%FT%TZ) build: $build"
+    if bash -c "$build"; then
+      echo "== $(date -u +%FT%TZ) serve: $serve"
+      echo "starting prod" > "$st"; reg state "$slug" "starting prod"
+      (for _ in $(seq 1 120); do sleep 1; curl -s -o /dev/null "http://127.0.0.1:$port/" && { echo "ready prod" > "$st"; reg state "$slug" "ready prod"; break; }; done) &
+      exec bash -c "exec $serve"
+    fi
+    echo "== $(date -u +%FT%TZ) build FAILED, falling back to dev: $dev"
+    mode=dev-fallback
+  fi
+  [ -n "$dev" ] || { echo failed > "$st"; reg state "$slug" failed; exit 1; }
+  local ready="ready dev"; [ "$mode" = dev-fallback ] && ready="ready dev (build failed)"
+  echo "starting dev" > "$st"; reg state "$slug" "starting dev"
+  (for _ in $(seq 1 180); do sleep 1; curl -s -o /dev/null "http://127.0.0.1:$port/" && { echo "$ready" > "$st"; reg state "$slug" "$ready"; break; }; done) &
+  exec bash -c "exec $dev"
+}
+
+status_of() {
+  local s=$1
+  if ! running "$s"; then
+    [ -f "$LOGDIR/$s.state" ] && [ "$(cat "$LOGDIR/$s.state")" = failed ] && { echo "failed (log: $LOGDIR/$s.log)"; return; }
+    echo "not running"; return
+  fi
+  local st; st=$(cat "$LOGDIR/$s.state" 2>/dev/null || echo "ready dev")
+  case "$st" in *"build failed"*) echo "$st (log: $LOGDIR/$s.log)";; *) echo "$st";; esac
+}
 
 case "${1:-url}" in
+  _run) shift; run_worker "$@" ;;
   start)
-    if [ -f "$LOGDIR/$slug.pid" ] && kill -0 "$(cat "$LOGDIR/$slug.pid")" 2>/dev/null; then echo "$url"; exit 0; fi
-    port=$(free_port)
-    cmd="${2:-}"
-    if [ -z "$cmd" ]; then
-      if [ -f package.json ] && grep -q '"dev"' package.json; then
-        if grep -q '"next' package.json; then cmd="npx next dev -p $port -H 127.0.0.1";
-        elif grep -q '"vite' package.json; then cmd="npx vite --port $port --host 127.0.0.1 --strictPort";
-        else cmd="PORT=$port npm run dev"; fi
-      elif [ -f manage.py ]; then cmd="python3 manage.py runserver 127.0.0.1:$port";
-      else echo "cannot auto-detect a dev command; pass one: preview-url start '<command>'" >&2; exit 2; fi
+    slug=$(slug_from_cwd); url="https://$slug.$BASE"
+    mode=prod; cmd="${2:-}"
+    [ "$cmd" = --dev ] && { mode=dev; cmd=""; }
+    fp=$(fingerprint)
+    if running "$slug"; then
+      cur=$(cat "$LOGDIR/$slug.state" 2>/dev/null || echo "ready dev")
+      # A dev server hot-reloads; a production build is only current if nothing changed since it was made.
+      if [ "$mode" = dev ] || [[ "$cur" == *dev* ]] || [ "$(cat "$LOGDIR/$slug.fp" 2>/dev/null)" = "$fp" ]; then
+        echo "$url"; echo "status: $(status_of "$slug")" >&2; exit 0
+      fi
+      echo "worktree changed since the last build: rebuilding" >&2
+      stop_slug "$slug"
     fi
-    PORT=$port setsid bash -c "exec $cmd" >"$LOGDIR/$slug.log" 2>&1 < /dev/null &
-    pid=$!; echo $pid > "$LOGDIR/$slug.pid"
-    jq_set set "$slug" "$port" "$PWD" "$pid" "$(date -u +%FT%TZ)"
-    for _ in $(seq 1 90); do sleep 1; curl -s -o /dev/null "http://127.0.0.1:$port/" && break; done
-    curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:$port/" | grep -qE '^[2345]' || echo "warning: server not answering yet, log: $LOGDIR/$slug.log" >&2
+    port=$(free_port)
+    write_static_server
+    dev=$(detect_dev "$port" || true)
+    if [ -n "$cmd" ]; then build=""; serve="$cmd"; mode=custom
+    elif [ "$mode" = prod ] && out=$(detect "$port"); then build=$(sed -n 1p <<<"$out"); serve=$(sed -n 2p <<<"$out")
+      [ -n "$build" ] || { mode=dev; dev="$serve"; }
+    else mode=dev; fi
+    [ "$mode" = dev ] && [ -z "$dev" ] && { echo "cannot auto-detect how to run this app; pass one: preview-url start '<command>'" >&2; exit 2; }
+    if [ "$mode" = custom ]; then
+      echo "starting custom" > "$LOGDIR/$slug.state"
+      PORT=$port setsid bash -c "exec $serve" >"$LOGDIR/$slug.log" 2>&1 < /dev/null &
+    else
+      PORT=$port setsid "$SELF" _run "$slug" "$port" "$mode" "$build" "$serve" "$dev" >"$LOGDIR/$slug.log" 2>&1 < /dev/null &
+    fi
+    pid=$!; echo $pid > "$LOGDIR/$slug.pid"; echo "$fp" > "$LOGDIR/$slug.fp"
+    reg set "$slug" "$port" "$PWD" "$pid" "$(date -u +%FT%TZ)" "$mode"
+    [ "$mode" = custom ] && reg state "$slug" "ready custom"
     echo "$url"
+    echo "status: $(status_of "$slug") (poll: preview-url status; block: preview-url wait)" >&2
     ;;
-  stop)
-    [ -f "$LOGDIR/$slug.pid" ] && { pkill -TERM -s "$(cat "$LOGDIR/$slug.pid")" 2>/dev/null || kill "$(cat "$LOGDIR/$slug.pid")" 2>/dev/null || true; rm -f "$LOGDIR/$slug.pid"; }
-    jq_set del "$slug"; echo "stopped $slug"
-    ;;
-  url) python3 -c "import json;r=json.load(open('$REG'));print('$url' if '$slug' in r else 'not running')" ;;
+  status)
+    s=$( [ -n "${2:-}" ] && printf '%s' "$2" | tr 'A-Z' 'a-z' || slug_from_cwd ); status_of "$s" ;;
+  wait)
+    s=$( [ -n "${2:-}" ] && [[ ! "$2" =~ ^[0-9]+$ ]] && printf '%s' "$2" | tr 'A-Z' 'a-z' || slug_from_cwd )
+    limit=${3:-${2:-900}}; [[ "$limit" =~ ^[0-9]+$ ]] || limit=900
+    for _ in $(seq 1 "$limit"); do
+      st=$(status_of "$s")
+      case "$st" in ready*) echo "$st"; exit 0;; failed*|"not running") echo "$st"; exit 1;; esac
+      sleep 1
+    done
+    echo "timeout after ${limit}s: $(status_of "$s")"; exit 1 ;;
+  stop) slug=$(slug_from_cwd); stop_slug "$slug"; echo "stopped $slug" ;;
+  url) slug=$(slug_from_cwd); url="https://$slug.$BASE"; python3 -c "import json;r=json.load(open('$REG'));print('$url' if '$slug' in r else 'not running')" ;;
   list) cat "$REG" ;;
-  *) echo "usage: preview-url start [cmd] | stop | url | list" >&2; exit 1 ;;
+  *) echo "usage: preview-url start [--dev|cmd] | status [IDENT] | wait [IDENT] [secs] | stop | url | list" >&2; exit 1 ;;
 esac
