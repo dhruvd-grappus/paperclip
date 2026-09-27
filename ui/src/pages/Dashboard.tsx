@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo } from "react";
 import { useLocation } from "@/lib/router";
 import {
   onboardingStepForCompany,
@@ -8,7 +8,6 @@ import { claimOnboardingOffer } from "../lib/onboarding-auto-open";
 import { Link } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { dashboardApi } from "../api/dashboard";
-import { activityApi } from "../api/activity";
 import { accessApi } from "../api/access";
 import { issuesApi } from "../api/issues";
 import { agentsApi } from "../api/agents";
@@ -20,34 +19,23 @@ import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
 import { MetricCard } from "../components/MetricCard";
 import { EmptyState } from "../components/EmptyState";
-import { StatusIcon } from "../components/StatusIcon";
 import { usePublishSharedQueryData, useSharedPollingQuery } from "../hooks/useSharedPolling";
 
-import { ActivityRow } from "../components/ActivityRow";
-import { Identity } from "../components/Identity";
-import { timeAgo } from "../lib/timeAgo";
 import { cn } from "../lib/utils";
 import { SHOW_TASK_PRIORITY_UI } from "../lib/ui-flags";
 import { Bot, CircleCheck, CircleDot, OctagonAlert, ShieldCheck, LayoutDashboard, PauseCircle } from "lucide-react";
 import { ChartCard, TasksDoneChart, PriorityChart, IssueStatusChart, SuccessRateChart, getLast14Days } from "../components/ActivityCharts";
 import { RunningByProjectPanel } from "../components/RunningByProjectPanel";
 import { HumanInterventionPanel } from "../components/HumanInterventionPanel";
+import { ClaudeUsagePanel } from "../components/ClaudeUsagePanel";
 import { dashboardTaskMetrics, tasksDoneByDay } from "../lib/dashboard-task-metrics";
 import { heartbeatsApi } from "../api/heartbeats";
 import { PageSkeleton } from "../components/PageSkeleton";
-import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { InlineBanner } from "../components/InlineBanner";
-import type { Agent, Issue } from "@paperclipai/shared";
+import type { Agent } from "@paperclipai/shared";
 import { PluginSlotOutlet } from "@/plugins/slots";
 import { SmokeLabDashboardCard } from "../components/SmokeLabDashboardCard";
-
-const DASHBOARD_ACTIVITY_LIMIT = 10;
-
-function getRecentIssues(issues: Issue[]): Issue[] {
-  return [...issues]
-    .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
-}
 
 export type PausedAgentBanner =
   | { kind: "imported"; pausedImportedAgentIds: string[] }
@@ -78,10 +66,6 @@ export function Dashboard() {
   const { openOnboarding } = useDialogActions();
   const location = useLocation();
   const { setBreadcrumbs } = useBreadcrumbs();
-  const [animatedActivityIds, setAnimatedActivityIds] = useState<Set<string>>(new Set());
-  const seenActivityIdsRef = useRef<Set<string>>(new Set());
-  const hydratedActivityRef = useRef(false);
-  const activityAnimationTimersRef = useRef<number[]>([]);
 
   // `isFetching` is read alongside the data: a cached list is served while its
   // refetch runs, and an empty one from before the first hire must not pass
@@ -175,19 +159,6 @@ export function Dashboard() {
   });
   usePublishSharedQueryData(sharedDashboard, data, dashboardUpdatedAt);
 
-  const activityQueryKey = [...queryKeys.activity(selectedCompanyId!), { limit: DASHBOARD_ACTIVITY_LIMIT }] as const;
-  const sharedActivity = useSharedPollingQuery({
-    companyId: selectedCompanyId,
-    resourceKey: `activity:limit:${DASHBOARD_ACTIVITY_LIMIT}`,
-    queryKey: activityQueryKey,
-    enabled: !!selectedCompanyId,
-  });
-  const { data: activity, dataUpdatedAt: activityUpdatedAt } = useQuery({
-    queryKey: activityQueryKey,
-    queryFn: () => activityApi.list(selectedCompanyId!, { limit: DASHBOARD_ACTIVITY_LIMIT }),
-    enabled: !!selectedCompanyId,
-  });
-  usePublishSharedQueryData(sharedActivity, activity, activityUpdatedAt);
 
   const { data: issues } = useQuery({
     queryKey: queryKeys.issues.list(selectedCompanyId!),
@@ -212,7 +183,6 @@ export function Dashboard() {
     [companyMembers?.users],
   );
 
-  const recentIssues = issues ? getRecentIssues(issues) : [];
   // Same query key as the sidebar, so both share one live-runs cache entry.
   const { data: liveRuns } = useQuery({
     queryKey: queryKeys.liveRuns(selectedCompanyId!),
@@ -225,87 +195,6 @@ export function Dashboard() {
   );
   const taskMetrics = useMemo(() => dashboardTaskMetrics(issues ?? []), [issues]);
   const doneByDay = useMemo(() => tasksDoneByDay(issues ?? [], getLast14Days()), [issues]);
-  const recentActivity = useMemo(() => (activity ?? []).slice(0, 10), [activity]);
-
-  useEffect(() => {
-    for (const timer of activityAnimationTimersRef.current) {
-      window.clearTimeout(timer);
-    }
-    activityAnimationTimersRef.current = [];
-    seenActivityIdsRef.current = new Set();
-    hydratedActivityRef.current = false;
-    setAnimatedActivityIds(new Set());
-  }, [selectedCompanyId]);
-
-  useEffect(() => {
-    if (recentActivity.length === 0) return;
-
-    const seen = seenActivityIdsRef.current;
-    const currentIds = recentActivity.map((event) => event.id);
-
-    if (!hydratedActivityRef.current) {
-      for (const id of currentIds) seen.add(id);
-      hydratedActivityRef.current = true;
-      return;
-    }
-
-    const newIds = currentIds.filter((id) => !seen.has(id));
-    if (newIds.length === 0) {
-      for (const id of currentIds) seen.add(id);
-      return;
-    }
-
-    setAnimatedActivityIds((prev) => {
-      const next = new Set(prev);
-      for (const id of newIds) next.add(id);
-      return next;
-    });
-
-    for (const id of newIds) seen.add(id);
-
-    const timer = window.setTimeout(() => {
-      setAnimatedActivityIds((prev) => {
-        const next = new Set(prev);
-        for (const id of newIds) next.delete(id);
-        return next;
-      });
-      activityAnimationTimersRef.current = activityAnimationTimersRef.current.filter((t) => t !== timer);
-    }, 980);
-    activityAnimationTimersRef.current.push(timer);
-  }, [recentActivity]);
-
-  useEffect(() => {
-    return () => {
-      for (const timer of activityAnimationTimersRef.current) {
-        window.clearTimeout(timer);
-      }
-    };
-  }, []);
-
-  const agentMap = useMemo(() => {
-    const map = new Map<string, Agent>();
-    for (const a of agents ?? []) map.set(a.id, a);
-    return map;
-  }, [agents]);
-
-  const entityNameMap = useMemo(() => {
-    const map = new Map<string, string>();
-    for (const i of issues ?? []) map.set(`issue:${i.id}`, i.identifier ?? i.id.slice(0, 8));
-    for (const a of agents ?? []) map.set(`agent:${a.id}`, a.name);
-    for (const p of projects ?? []) map.set(`project:${p.id}`, p.name);
-    return map;
-  }, [issues, agents, projects]);
-
-  const entityTitleMap = useMemo(() => {
-    const map = new Map<string, string>();
-    for (const i of issues ?? []) map.set(`issue:${i.id}`, i.title);
-    return map;
-  }, [issues]);
-
-  const agentName = (id: string | null) => {
-    if (!id || !agents) return null;
-    return agents.find((a) => a.id === id)?.name ?? null;
-  };
 
   if (!selectedCompanyId) {
     if (companies.length === 0) {
@@ -488,80 +377,7 @@ export function Dashboard() {
             itemClassName="rounded-lg border bg-card p-4 shadow-sm"
           />
 
-          <div className="grid md:grid-cols-2 gap-4">
-            {/* Recent Activity */}
-            {recentActivity.length > 0 && (
-              <div className="min-w-0">
-                <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-3">
-                  Recent Activity
-                </h3>
-                <Card className="@container block py-0 divide-y divide-border overflow-hidden">
-                  {recentActivity.map((event) => (
-                    <ActivityRow
-                      key={event.id}
-                      event={event}
-                      agentMap={agentMap}
-                      userProfileMap={userProfileMap}
-                      entityNameMap={entityNameMap}
-                      entityTitleMap={entityTitleMap}
-                      className={animatedActivityIds.has(event.id) ? "activity-row-enter" : undefined}
-                    />
-                  ))}
-                </Card>
-              </div>
-            )}
-
-            {/* Recent Tasks */}
-            <div className="min-w-0">
-              <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-3">
-                Recent Tasks
-              </h3>
-              {recentIssues.length === 0 ? (
-                <Card className="block p-4">
-                  <p className="text-sm text-muted-foreground">No tasks yet.</p>
-                </Card>
-              ) : (
-                <Card className="@container block py-0 divide-y divide-border overflow-hidden">
-                  {recentIssues.slice(0, 10).map((issue) => (
-                    <Link
-                      key={issue.id}
-                      to={`/issues/${issue.identifier ?? issue.id}`}
-                      className="dashboard-list-row text-sm cursor-pointer hover:bg-accent/50 transition-colors no-underline text-inherit block"
-                    >
-                      <div className="flex items-start gap-2 @xl:grid @xl:grid-cols-(--dashboard-task-list-columns) @xl:items-baseline">
-                        <span className="flex size-6 shrink-0 items-center justify-end @xl:self-center">
-                          <StatusIcon status={issue.status} blockerAttention={issue.blockerAttention} />
-                        </span>
-                        <span className="flex min-w-0 flex-1 flex-col gap-1 @xl:contents">
-                          <span className="flex min-w-0 items-baseline gap-2 @xl:contents">
-                            <span className="min-w-0 flex-1 truncate text-sm leading-6" title={issue.title}>
-                              {issue.title}
-                            </span>
-                            <span className="ml-auto shrink-0 truncate text-right font-mono text-(length:--text-micro) text-muted-foreground @xl:col-start-4 @xl:row-start-1 @xl:w-(--dashboard-list-id-width)">
-                              {issue.identifier ?? issue.id.slice(0, 8)}
-                            </span>
-                          </span>
-                          <span className="flex min-h-6 min-w-0 items-center gap-2 @xl:contents">
-                            <span className="flex min-w-0 flex-1 items-center @xl:col-start-3 @xl:row-start-1 @xl:self-center">
-                              {issue.assigneeAgentId && (() => {
-                                const name = agentName(issue.assigneeAgentId);
-                                return name
-                                  ? <Identity name={name} size="sm" className="max-w-32" />
-                                  : null;
-                              })()}
-                            </span>
-                            <span className="ml-auto w-(--dashboard-list-time-width) shrink-0 whitespace-nowrap text-right text-xs text-muted-foreground">
-                              {timeAgo(issue.updatedAt)}
-                            </span>
-                          </span>
-                        </span>
-                      </div>
-                    </Link>
-                  ))}
-                </Card>
-              )}
-            </div>
-          </div>
+          <ClaudeUsagePanel companyId={selectedCompanyId!} />
 
         </>
       )}
