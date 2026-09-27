@@ -14201,9 +14201,44 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       );
       if (context.delivery.state !== "processed")
         throw new Error("chat_inbound_wakeup_acceptance_not_committed");
+      // Grappus: a person's chat message restarts a dependency-blocked task,
+      // same as a human comment in the app (routes/issues.ts).
+      let wakeIssue = context.issue;
+      if (
+        request.requestedByActorType === "user" &&
+        wakeIssue.status === "blocked"
+      ) {
+        const readiness = await issuesSvc.getDependencyReadiness(wakeIssue.id);
+        if ((readiness?.unresolvedBlockerCount ?? 0) > 0) {
+          const restarted = await issuesSvc.update(wakeIssue.id, {
+            status: "todo",
+            blockedByIssueIds: [],
+          });
+          if (restarted) {
+            await logActivity(db, {
+              companyId: wakeIssue.companyId,
+              actorType: "user",
+              actorId: request.requestedByActorId,
+              action: "issue.updated",
+              entityType: "issue",
+              entityId: wakeIssue.id,
+              details: {
+                status: "todo",
+                reopened: true,
+                reopenedFrom: "blocked",
+                source: "chat_message",
+                blockersClearedByHumanComment: true,
+                clearedBlockerIssueIds:
+                  readiness?.unresolvedBlockerIssueIds ?? [],
+              },
+            });
+            wakeIssue = { ...wakeIssue, ...restarted };
+          }
+        }
+      }
       await queueIssueAssignmentWakeup({
         heartbeat: options.heartbeat,
-        issue: context.issue,
+        issue: wakeIssue,
         reason: "External chat message received",
         mutation: "chat_message_received",
         contextSource: `chat:${context.endpoint.provider}`,

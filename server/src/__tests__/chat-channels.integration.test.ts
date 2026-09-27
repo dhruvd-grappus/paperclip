@@ -44258,6 +44258,86 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     });
   });
 
+  it("restarts a dependency-blocked task when a person follows up in chat (grappus)", async () => {
+    const fixture = await seedCompany();
+    const { callbacks, endpoint, wakeup } =
+      await configuredSlackEndpoint(fixture);
+    const channel = makeThread({
+      channelId: "C-BLOCKED",
+      id: "slack:C-BLOCKED:5100.1",
+      name: "blocked",
+    });
+    await deliverMessage({
+      callbacks,
+      endpointId: endpoint.id,
+      thread: channel.thread,
+      message: makeMessage({
+        id: "5100.1",
+        text: "@maya build the thing",
+        mentioned: true,
+      }),
+      trigger: "mention",
+    });
+    const [conversation] = await db
+      .select()
+      .from(chatConversations)
+      .where(eq(chatConversations.endpointId, endpoint.id));
+    // Linked Slack people wake as "user"; unlinked ones as "system".
+    await linkLifecycleFixtureActor({
+      companyId: fixture.companyId,
+      endpointId: endpoint.id,
+      externalId: "U-EXTERNAL",
+    });
+    const svc = issueService(db);
+    const blocker = await svc.create(fixture.companyId, {
+      title: "Unfinished blocker",
+      status: "todo",
+    });
+    await svc.update(conversation.issueId, {
+      status: "blocked",
+      blockedByIssueIds: [blocker.id],
+    });
+    wakeup.mockClear();
+
+    await deliverMessage({
+      callbacks,
+      endpointId: endpoint.id,
+      thread: channel.thread,
+      message: makeMessage({
+        id: "5100.2",
+        text: "the preview is down, please restart",
+      }),
+      trigger: "subscribed_message",
+    });
+
+    const [restarted] = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, conversation.issueId));
+    expect(restarted.status).toBe("todo");
+    await expect(
+      svc.getDependencyReadiness(conversation.issueId),
+    ).resolves.toMatchObject({ unresolvedBlockerCount: 0 });
+    expect(wakeup).toHaveBeenCalledTimes(1);
+    expect(wakeup.mock.calls[0]?.[1]).toMatchObject({
+      payload: { mutation: "chat_message_received" },
+    });
+    const restartActivity = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.entityId, conversation.issueId));
+    expect(
+      restartActivity.find(
+        (row) =>
+          (row.details as Record<string, unknown> | null)
+            ?.blockersClearedByHumanComment === true,
+      ),
+    ).toMatchObject({
+      actorType: "user",
+      details: { clearedBlockerIssueIds: [blocker.id], source: "chat_message" },
+    });
+  });
+
   describe("Discord native commands with durable service authority", () => {
     const guildId = "1457808928258658549";
     const channelId = "333333333333333333";
