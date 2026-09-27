@@ -1,6 +1,6 @@
 # Grappus fork: build the host overlay for every push to grappus/stable and
 # publish it as a GitHub release (overlay-<sha12>). The host installs it with
-# `paperclip-overlay install-release` (dev-pipe repo, `make paperclip-deploy`).
+# `paperclip-overlay apply-request` after an in-app "Update now".
 name: grappus overlay
 
 on:
@@ -57,7 +57,7 @@ jobs:
           {
             echo "Overlay build $build of \`grappus/stable\` on upstream v$base (\`$sha\`)."
             echo
-            echo "Install on the host: \`paperclip-overlay install-release $tag\` (dev-pipe: \`make paperclip-deploy\`)."
+            echo "Install from the app: sidebar build badge, Check for updates, Update now."
             echo
             echo "## Changes since v$base"
             jq -r '.commits[] | "- \(.subject) (\(.shortSha))"' server/dist/grappus-build.json

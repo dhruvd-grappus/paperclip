@@ -8,7 +8,8 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { SidebarBuildInfo } from "./SidebarBuildInfo";
 
 const mockInstanceBuildApi = vi.hoisted(() => ({ get: vi.fn() }));
-vi.mock("../api/instanceBuild", () => ({ instanceBuildApi: mockInstanceBuildApi }));
+const mockInstanceUpdateApi = vi.hoisted(() => ({ get: vi.fn(), request: vi.fn() }));
+vi.mock("../api/instanceBuild", () => ({ instanceBuildApi: mockInstanceBuildApi, instanceUpdateApi: mockInstanceUpdateApi }));
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -76,6 +77,7 @@ afterEach(() => {
 describe("SidebarBuildInfo", () => {
   it("shows the running commit and opens the changelog with commit links", async () => {
     mockInstanceBuildApi.get.mockResolvedValue(forkBuild);
+    mockInstanceUpdateApi.get.mockResolvedValue({ enabled: false });
     await render();
 
     const badge = document.querySelector<HTMLButtonElement>('[data-testid="sidebar-build-info"]');

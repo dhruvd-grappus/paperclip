@@ -6,7 +6,7 @@ import {
   patchInstanceGeneralSettingsSchema,
   startTaskDrainRequestSchema,
 } from "@paperclipai/shared";
-import { forbidden } from "../errors.js";
+import { badRequest, conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { isCloudManagedInstance } from "../services/cloud-instance.js";
 import { getHiddenSettings } from "../services/settings-visibility.js";
 import { validate } from "../middleware/validate.js";
@@ -20,6 +20,12 @@ import {
 } from "../services/index.js";
 import { environmentService } from "../services/environments.js";
 import { instanceBuildInfo } from "../services/instance-build.js";
+import {
+  githubRepoSlug,
+  instanceUpdateService,
+  InstanceUpdateError,
+  type InstanceUpdateService,
+} from "../services/instance-update.js";
 import { assertEnvironmentSelectionForCompany } from "./environment-selection.js";
 import { assertBoardOrgAccess, getActorInfo } from "./authz.js";
 
@@ -113,7 +119,11 @@ function withTaskDrainTransition<T>(run: () => Promise<T>): Promise<T> {
   return turn;
 }
 
-export function instanceSettingsRoutes(db: Db) {
+function canManageInstance(req: Request): boolean {
+  return req.actor.type === "board" && (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin === true);
+}
+
+export function instanceSettingsRoutes(db: Db, opts: { updates?: InstanceUpdateService | null } = {}) {
   const router = Router();
   const svc = instanceSettingsService(db);
   const environments = environmentService(db);
@@ -129,6 +139,55 @@ export function instanceSettingsRoutes(db: Db) {
   router.get("/instance/build", (req, res) => {
     assertBoardOrgAccess(req);
     res.json(instanceBuildInfo());
+  });
+
+  // Self-update (fork builds only): the latest CI release, and a request the
+  // host's root updater picks up (see services/instance-update.ts).
+  const updateRepo = githubRepoSlug(instanceBuildInfo().repositoryUrl);
+  const updates = opts.updates !== undefined
+    ? opts.updates
+    : updateRepo ? instanceUpdateService({ repo: updateRepo }) : null;
+
+  router.get("/instance/build/update", async (req, res) => {
+    assertBoardOrgAccess(req);
+    const build = instanceBuildInfo();
+    if (!updates) {
+      res.json({ enabled: false, canUpdate: false, latest: null, updateAvailable: false, status: null, error: null });
+      return;
+    }
+    let latest = null;
+    let error: string | null = null;
+    try {
+      latest = await updates.latestRelease(req.query.refresh === "1");
+    } catch (err) {
+      error = err instanceof Error ? err.message : "Could not reach GitHub";
+    }
+    res.json({
+      enabled: true,
+      canUpdate: canManageInstance(req),
+      current: { commit: build.commit, build: build.build },
+      latest,
+      updateAvailable: Boolean(latest && build.commit && !build.commit.startsWith(latest.sha)),
+      status: updates.status(),
+      error,
+    });
+  });
+
+  router.post("/instance/build/update", async (req, res) => {
+    assertCanManageInstanceSettings(req);
+    if (!updates) throw notFound("Self-update is only available on fork builds");
+    const tag = typeof req.body?.tag === "string" ? req.body.tag : "";
+    if (!tag) throw badRequest("tag is required");
+    try {
+      const actor = getActorInfo(req);
+      res.status(202).json(await updates.request(tag, actor.actorId ?? "board"));
+    } catch (err) {
+      if (err instanceof InstanceUpdateError) {
+        if (err.code === "update_in_progress") throw conflict(err.message, { code: err.code });
+        throw unprocessable(err.message, { code: err.code });
+      }
+      throw err;
+    }
   });
 
   router.patch(
