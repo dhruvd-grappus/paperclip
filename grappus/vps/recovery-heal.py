@@ -13,9 +13,16 @@ changed. For the failures below the cause is ours, not the work, so a resume is 
             → only once the current Claude token has >= 30 min left
   limit     ACP agent reported a terminal limit failure     subscription rate limit → only 60 min after the failure
 
-For each: resolve the recovery action (outcome "restored", issue back to todo; reconciliation actionOutcome
-"not_performed" when the dead run made no tool calls, else "mixed"), then post a board comment, which wakes the
-agent. Build issues are told to inspect their worktree first; Review/QA/Memory re-run from scratch.
+For each, in this order, so the issue gets exactly ONE new run:
+  1. post the instruction comment while the recovery action is still open: Paperclip skips wakes then
+     ("execution_reconciliation_required"), so the comment is only stored for the next run to read;
+  2. resolve the action (outcome "restored", issue back to todo; reconciliation actionOutcome "not_performed"
+     when the dead run made no tool calls, else "mixed"); Paperclip queues its own recovery wake;
+  3. if no run has picked the issue up 4 min later (that wake does not always come), post a short nudge comment,
+     which wakes the agent.
+Resolving AND commenting afterwards gave two runs (the comment's, plus the delayed recovery wake once the first
+ended); the second collided with the first's same-run resume (GRA-231, 2026-09-27: QA ran three times).
+Build issues are told to inspect their worktree first; Review/QA/Memory resume from their saved state.
 
 Never touches: Slack-origin issues (Paperclip forbids reviving a failed chat run: cancel and resend), actions the
 agent still owns, unknown failure classes (logged once), a run already recovered, or an issue recovered twice in
@@ -31,6 +38,7 @@ CRED = os.path.expanduser("~/.claude/.credentials.json")
 MAX_PER_DAY = 2
 LIMIT_COOLDOWN_S = 3600
 MIN_TOKEN_LEFT_S = 30 * 60
+NUDGE_AFTER_S = 240
 DRY = "--dry-run" in sys.argv
 
 CLASSES = [
@@ -81,7 +89,9 @@ def tool_calls(run_id):
 def wake_text(issue, klass, did_work):
     title = issue.get("title") or ""
     why = WHY[klass]
-    if title.startswith(("Review:", "QA:", "Memory:")):
+    if title.startswith("QA:"):
+        what = "Resume: reuse this issue's spec files, screenshots and saved sign-in in the QA sandbox; re-run only criteria not yet verified."
+    elif title.startswith(("Review:", "Memory:")):
         what = "Re-run it from the start; it is read-only."
     elif title.startswith("Build:"):
         what = ("Resume: first check `git status` and `git log` in this task's worktree under /home/paperclip/worktrees "
@@ -92,9 +102,33 @@ def wake_text(issue, klass, did_work):
     return f"Auto-recovery: the previous run stopped because of {why}, not because of the work. {what}"
 
 
+def nudge_pending(state, now):
+    """Wake resolved issues that no run picked up (Paperclip's recovery wake does not always fire)."""
+    for issue_id, at in list(state.setdefault("pending", {}).items()):
+        try:
+            it = req("GET", f"/issues/{issue_id}")
+        except Exception:
+            continue
+        started = it.get("status") != "todo" or it.get("executionRunId") or it.get("checkoutRunId")
+        if started:
+            del state["pending"][issue_id]
+        elif now - at >= NUDGE_AFTER_S:
+            ident = it.get("identifier") or issue_id
+            log(f"{ident}: no run {int(now - at)}s after resolve; nudging{' [dry-run]' if DRY else ''}")
+            if not DRY:
+                try:
+                    req("POST", f"/issues/{issue_id}/comments", {"body": "Auto-recovery: resume now (see the comment above)."})
+                except Exception as e:
+                    log(f"{ident}: nudge failed ({e})")
+                    continue
+            del state["pending"][issue_id]
+
+
 def main():
     state = json.load(open(STATE)) if os.path.exists(STATE) else {"runs": [], "issues": {}}
+    state.setdefault("pending", {})
     now = time.time()
+    nudge_pending(state, now)
     issues = req("GET", f"/companies/{C}/issues?" + urllib.parse.urlencode(
         {"status": "blocked", "assigneeAgentId": AGENT, "limit": 500}))
     for it in issues:
@@ -151,13 +185,15 @@ def main():
         if DRY:
             continue
         try:
-            req("POST", f"/issues/{it['id']}/recovery-actions/resolve", body)
+            # Comment first: the open recovery action makes Paperclip skip this comment's wake.
             req("POST", f"/issues/{it['id']}/comments", {"body": wake_text(it, klass, did_work)})
+            req("POST", f"/issues/{it['id']}/recovery-actions/resolve", body)
         except Exception as e:
-            log(f"{ident}: resolve/wake failed ({e})")
+            log(f"{ident}: comment/resolve failed ({e})")
             continue
         state["runs"].append(run_id)
         state["issues"][it["id"]] = recent + [now]
+        state["pending"][it["id"]] = now
     state["runs"] = state["runs"][-500:]
     if not DRY:
         tmp = STATE + ".tmp"
