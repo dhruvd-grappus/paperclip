@@ -21,14 +21,11 @@ import { MetricCard } from "../components/MetricCard";
 import { EmptyState } from "../components/EmptyState";
 import { usePublishSharedQueryData, useSharedPollingQuery } from "../hooks/useSharedPolling";
 
-import { cn } from "../lib/utils";
-import { SHOW_TASK_PRIORITY_UI } from "../lib/ui-flags";
 import { Bot, CircleCheck, CircleDot, OctagonAlert, ShieldCheck, LayoutDashboard, PauseCircle } from "lucide-react";
-import { ChartCard, TasksDoneChart, PriorityChart, IssueStatusChart, SuccessRateChart, getLast14Days } from "../components/ActivityCharts";
 import { RunningByProjectPanel } from "../components/RunningByProjectPanel";
 import { HumanInterventionPanel } from "../components/HumanInterventionPanel";
 import { ClaudeUsagePanel } from "../components/ClaudeUsagePanel";
-import { dashboardTaskMetrics, tasksDoneByDay } from "../lib/dashboard-task-metrics";
+import { dashboardTaskMetrics } from "../lib/dashboard-task-metrics";
 import { heartbeatsApi } from "../api/heartbeats";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { Button } from "@/components/ui/button";
@@ -194,7 +191,6 @@ export function Dashboard() {
     [liveRuns],
   );
   const taskMetrics = useMemo(() => dashboardTaskMetrics(issues ?? []), [issues]);
-  const doneByDay = useMemo(() => tasksDoneByDay(issues ?? [], getLast14Days()), [issues]);
 
   if (!selectedCompanyId) {
     if (companies.length === 0) {
@@ -350,24 +346,6 @@ export function Dashboard() {
           <RunningByProjectPanel issues={issues ?? []} projects={projects ?? []} liveIssueIds={liveIssueIds} />
 
           <SmokeLabDashboardCard companyId={selectedCompanyId!} />
-
-          <div className={cn("grid grid-cols-2 gap-4", SHOW_TASK_PRIORITY_UI ? "lg:grid-cols-4" : "lg:grid-cols-3")}>
-            <ChartCard title="Tasks Done" subtitle="Last 14 days">
-              <TasksDoneChart countsByDay={doneByDay} />
-            </ChartCard>
-            {/* PAP-411: "Tasks by Priority" chart hidden behind SHOW_TASK_PRIORITY_UI. */}
-            {SHOW_TASK_PRIORITY_UI && (
-              <ChartCard title="Tasks by Priority" subtitle="Last 14 days">
-                <PriorityChart issues={issues ?? []} />
-              </ChartCard>
-            )}
-            <ChartCard title="Tasks by Status" subtitle="Last 14 days">
-              <IssueStatusChart issues={issues ?? []} />
-            </ChartCard>
-            <ChartCard title="Success Rate" subtitle="Last 14 days">
-              <SuccessRateChart activity={data.runActivity} />
-            </ChartCard>
-          </div>
 
           <PluginSlotOutlet
             slotTypes={["dashboardWidget"]}

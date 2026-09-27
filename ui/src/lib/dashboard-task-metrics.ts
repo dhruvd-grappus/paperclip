@@ -43,18 +43,6 @@ export function dashboardTaskMetrics(issues: readonly IssueLike[], now = Date.no
   return metrics;
 }
 
-/** Done issues per day (YYYY-MM-DD) for the given days. */
-export function tasksDoneByDay(issues: readonly IssueLike[], days: readonly string[]): Map<string, number> {
-  const counts = new Map(days.map((day) => [day, 0]));
-  for (const issue of issues) {
-    const at = doneAt(issue);
-    if (at === null) continue;
-    const day = new Date(at).toISOString().slice(0, 10);
-    if (counts.has(day)) counts.set(day, counts.get(day)! + 1);
-  }
-  return counts;
-}
-
 /**
  * Project of an issue. Slack-bound issues carry no projectId (it would force a
  * managed worktree, see dev-pipe gotcha 30); scoping writes the project as a

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { dashboardTaskMetrics, issueProjectId, runningTasksByProject, tasksDoneByDay } from "./dashboard-task-metrics";
+import { dashboardTaskMetrics, issueProjectId, runningTasksByProject } from "./dashboard-task-metrics";
 
 const NOW = Date.parse("2026-09-27T12:00:00Z");
 const P1 = "c42fab6a-e603-4162-994e-82e21ad99950";
@@ -22,16 +22,6 @@ describe("dashboard task metrics", () => {
     expect(metrics).toEqual({
       doneLast7Days: 1, doneTotal: 2, inProgress: 1, open: 4, blocked: 2, blockedNeedingAttention: 1,
     });
-  });
-
-  it("buckets done tasks by completion day", () => {
-    const counts = tasksDoneByDay([
-      issue("a", "done", { completedAt: "2026-09-26T09:00:00Z" }),
-      issue("b", "done", { completedAt: "2026-09-26T23:00:00Z" }),
-      issue("c", "done", { completedAt: "2026-08-01T09:00:00Z" }),
-      issue("d", "in_progress"),
-    ], ["2026-09-26", "2026-09-27"]);
-    expect([...counts]).toEqual([["2026-09-26", 2], ["2026-09-27", 0]]);
   });
 
   it("reads the project from projectId or the Slack Project: line", () => {
