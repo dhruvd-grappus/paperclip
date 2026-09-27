@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# Nightly paperclip backup. Put this at /usr/local/bin/paperclip-backup (root).
+#
+# Three parts, all under /var/backups/paperclip (keep 14):
+#   db-<ts>.dump      pg_dump -Fc of the paperclip database  (authoritative)
+#   files-<ts>.tgz    instance secrets + data/storage + .env + config.json
+#   host-<ts>.tgz     units, cron, Caddyfile, helpers, scripts, skills, bridge (host-snapshot)
+# plus /home/paperclip/backups/export-<ts>.json, the Paperclip-native company
+# export (agents/instructions, skills, projects, issues, docs) written by
+# paperclip-export.sh as the paperclip user.
+#
+# None of this leaves the box. `make backup` on the Mac pulls it down
+# (see the repo Makefile); without that step there is no off-site copy.
+set -euo pipefail
+D=/var/backups/paperclip; mkdir -p "$D"; TS=$(date +%Y%m%d-%H%M%S)
+su - postgres -c "pg_dump -Fc paperclip" > "$D/db-$TS.dump"
+tar -czf "$D/files-$TS.tgz" -C /home/paperclip/.paperclip/instances/default secrets data/storage .env config.json 2>/dev/null || true
+ls -1t "$D"/db-*.dump | tail -n +15 | xargs -r rm -f; ls -1t "$D"/files-*.tgz | tail -n +15 | xargs -r rm -f
+
+[ -x /usr/local/bin/host-snapshot ] && /usr/local/bin/host-snapshot || true
+su - paperclip -c "/home/paperclip/paperclip-export.sh" || echo "WARN: company export failed" >&2

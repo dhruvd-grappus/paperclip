@@ -1,0 +1,10 @@
+# In-app self-update: Paperclip writes request.json here, this runs paperclip-overlay apply-request as root.
+[Unit]
+Description=Paperclip self-update request watcher
+
+[Path]
+PathExists=/home/paperclip/.paperclip/grappus-updates/request.json
+Unit=paperclip-update.service
+
+[Install]
+WantedBy=multi-user.target

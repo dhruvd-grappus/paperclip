@@ -1,0 +1,69 @@
+#!/bin/bash
+# build-start: one-shot worktree bootstrap for a Build: issue. Installed at /usr/local/bin/build-start.
+# Usage: build-start --ident GRA-121 --slug number-validation --project <projectId> [--workspace <name>] [--base <branch>] [--primary <path>]
+# Resolves the primary clone from Paperclip (board token) unless --primary is given, fetches, picks the base
+# (--base > workspace repoRef > origin/develop > origin/dev > remote default), creates the worktree from origin/<base>,
+# runs provision-worktree (node_modules + .next/cache hard links, .env.local copy), installs husky hooks when present,
+# and prints ONE json line. Idempotent: an existing worktree on the same branch is reused.
+set -euo pipefail
+export HOME=/home/paperclip
+IDENT=""; SLUG=""; PROJECT=""; WS=""; BASE=""; PRIMARY=""
+while [ $# -gt 0 ]; do case "$1" in
+  --ident) IDENT=$2; shift 2;; --slug) SLUG=$2; shift 2;; --project) PROJECT=$2; shift 2;;
+  --workspace) WS=$2; shift 2;; --base) BASE=$2; shift 2;; --primary) PRIMARY=$2; shift 2;;
+  *) echo "unknown arg $1" >&2; exit 2;; esac; done
+[ -n "$IDENT" ] && [ -n "$SLUG" ] || { echo '{"error":"--ident and --slug required"}'; exit 2; }
+SLUG=$(echo "$SLUG" | tr 'A-Z ' 'a-z-' | tr -cd 'a-z0-9-' | cut -c1-40)
+C=d255c3a4-2066-4d81-8c40-862ad8208963
+PC=/home/paperclip/pc
+REPOREF=""
+if [ -z "$PRIMARY" ]; then
+  [ -n "$PROJECT" ] || { echo '{"error":"--project or --primary required"}'; exit 2; }
+  PJ=$($PC GET "/projects/$PROJECT")
+  ROOT=/home/paperclip/.paperclip/instances/default/projects/$C/$PROJECT
+  if [ -n "$WS" ]; then
+    REPOREF=$(echo "$PJ" | jq -r --arg w "$WS" '.workspaces[]? | select(.name==$w) | .repoRef // empty' | head -1)
+    PRIMARY=$(echo "$PJ" | jq -r --arg w "$WS" '.workspaces[]? | select(.name==$w) | .localPath // .effectiveLocalFolder // empty' | head -1)
+    [ -n "$PRIMARY" ] || PRIMARY="$ROOT/$WS"
+  else
+    PRIMARY=$(echo "$PJ" | jq -r '.codebase.effectiveLocalFolder // .codebase.managedFolder // empty')
+    REPOREF=$(echo "$PJ" | jq -r '.codebase.repoRef // ((.workspaces[]? | select(.isPrimary==true) | .repoRef) // empty)' | head -1)
+  fi
+  if [ -z "$PRIMARY" ] || [ ! -d "$PRIMARY/.git" ]; then
+    PRIMARY=$(ls -d "$ROOT"/*/.git 2>/dev/null | grep -v _default | head -1 | xargs -r dirname)
+  fi
+fi
+[ -d "$PRIMARY/.git" ] || { echo "{\"error\":\"primary clone not found\",\"primary\":\"$PRIMARY\"}"; exit 1; }
+git -C "$PRIMARY" fetch origin --prune --quiet
+pick() { git -C "$PRIMARY" show-ref --verify --quiet "refs/remotes/origin/$1" && echo "$1"; }
+if [ -n "$BASE" ]; then BASE=$(pick "$BASE" || true); fi
+[ -n "$BASE" ] || { [ -n "$REPOREF" ] && BASE=$(pick "${REPOREF#refs/heads/}" || true); }
+[ -n "$BASE" ] || BASE=$(pick develop || true)
+[ -n "$BASE" ] || BASE=$(pick dev || true)
+[ -n "$BASE" ] || BASE=$(git -C "$PRIMARY" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's#^origin/##')
+[ -n "$BASE" ] || { echo '{"error":"no base branch resolvable"}'; exit 1; }
+BRANCH="$IDENT-$SLUG"
+DIR=/home/paperclip/worktrees/$BRANCH
+mkdir -p /home/paperclip/worktrees
+if [ -d "$DIR/.git" ] || [ -f "$DIR/.git" ]; then
+  CUR=$(git -C "$DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
+  [ "$CUR" = "$BRANCH" ] || { echo "{\"error\":\"worktree exists on other branch\",\"worktree\":\"$DIR\",\"branch\":\"$CUR\"}"; exit 1; }
+  REUSED=true
+else
+  git -C "$PRIMARY" worktree prune
+  if git -C "$PRIMARY" show-ref --verify --quiet "refs/heads/$BRANCH"; then
+    git -C "$PRIMARY" worktree add "$DIR" "$BRANCH" >/dev/null 2>&1
+  else
+    git -C "$PRIMARY" worktree add "$DIR" -b "$BRANCH" "origin/$BASE" >/dev/null 2>&1
+  fi
+  REUSED=false
+fi
+( cd "$DIR" && /usr/local/bin/provision-worktree >/tmp/provision-$IDENT.log 2>&1 ) || true
+ENVCOPIED=false
+if [ -f "$PRIMARY/.env.local" ] && [ ! -f "$DIR/.env.local" ]; then cp -n "$PRIMARY/.env.local" "$DIR/.env.local"; fi
+[ -f "$DIR/.env.local" ] && ENVCOPIED=true
+if [ -d "$DIR/.husky" ] && [ -f "$DIR/package.json" ]; then ( cd "$DIR" && git config core.hooksPath .husky ) || true; fi
+HOST=$(git -C "$PRIMARY" remote get-url origin 2>/dev/null | sed -E 's#^(ssh://)?(git@|https://)##; s#[:/].*##')
+BASECOMMIT=$(git -C "$PRIMARY" rev-parse --short "origin/$BASE")
+jq -cn --arg w "$DIR" --arg p "$PRIMARY" --arg b "$BASE" --arg bc "$BASECOMMIT" --arg br "$BRANCH" --argjson env $ENVCOPIED --argjson reused $REUSED --arg host "$HOST" \
+  '{worktree:$w, primary:$p, base:$b, baseCommit:$bc, branch:$br, envCopied:$env, reused:$reused, host:$host}'

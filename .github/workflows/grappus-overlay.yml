@@ -6,6 +6,9 @@ name: grappus overlay
 on:
   push:
     branches: [grappus/stable]
+    # grappus/ is VPS ops (scripts, units), not part of the Paperclip build.
+    paths-ignore:
+      - "grappus/**"
   workflow_dispatch:
 
 permissions:

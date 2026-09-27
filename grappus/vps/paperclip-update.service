@@ -1,0 +1,8 @@
+[Unit]
+Description=Paperclip self-update (install the requested CI build of grappus/stable)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/paperclip-overlay apply-request
+# Waits up to 60 min for agent runs to finish, then installs (download + restart + verify).
+TimeoutStartSec=90min

@@ -1,0 +1,225 @@
+#!/usr/bin/env bash
+# paperclip-overlay: run Paperclip from our fork (github.com/dhruvd-grappus/paperclip, branch
+# grappus/stable) without republishing it to npm.
+#
+# The fork's grappus/stable branch starts at the upstream tag the host runs (v2026.916.1). A
+# server build of that tag is byte-identical to the managed npm install's server/dist, so a build
+# of grappus/stable differs only where we changed code. GitHub Actions (workflow grappus-overlay)
+# builds every push to grappus/stable into a release `overlay-<sha12>`; this script downloads it,
+# checks its sha256, lays it over a COPY of the pristine upstream install and switches the managed
+# `current` link to the copy. The upstream install is never modified, so rollback is one link swap.
+# Updates are started from the app (sidebar build badge → Check for updates → Update now), which
+# queues a request for `apply-request`. Nothing is ever built or deployed from a workstation.
+#
+#   paperclip-overlay install-release [overlay-<sha12>|latest] [--force]   # CI release from GitHub
+#   paperclip-overlay apply-request                     # in-app update (run by paperclip-update.path)
+#   paperclip-overlay install <overlay.tgz> [--force]   # new install dir, switch, restart, verify
+#   paperclip-overlay rollback                          # back to the previous install
+#   paperclip-overlay status                            # what runs now
+#
+# The tarball carries dist/, optionally ui-dist/, and GRAPPUS_BUILD (json: base, build, sha, branch,
+# builtAt). A build of the bare tag is byte-identical to the npm dist and ui-dist (checked 2026-09-27).
+# Refuses while agent runs are live unless --force. Run as root.
+set -euo pipefail
+CLI=/home/paperclip/.paperclip/cli
+STORE=$CLI/installs/npm
+MANIFEST=$CLI/install.json
+COMPANY=d255c3a4-2066-4d81-8c40-862ad8208963
+AGENT=221ca6db-6cf1-49ff-bdf1-270a53c201f9  # Clarifier
+SERVER_DIST=node_modules/@paperclipai/server/dist
+SERVER_UI=node_modules/@paperclipai/server/ui-dist
+
+die() { echo "paperclip-overlay: $*" >&2; exit 1; }
+[ "$(id -u)" = 0 ] || die "run as root"
+
+pc() { su - paperclip -c "~/pc $*"; }
+
+wait_healthy() {
+  for _ in $(seq 1 60); do
+    [ "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3100/api/health)" = 200 ] && return 0
+    sleep 2
+  done
+  return 1
+}
+
+# Environment check with Clarifier's real adapter config. Without a body the endpoint rejects the
+# request; with an empty one it checks the Codex default. `env` is left out because GET redacts the
+# token and the check refuses to persist the placeholder.
+runner_ok() {
+  local out
+  su - paperclip -c "~/pc GET /agents/$AGENT | jq '{adapterConfig: (.adapterConfig | del(.env))}' > /tmp/overlay-te.json"
+  out=$(pc "POST /companies/$COMPANY/adapters/paperclip_runner/test-environment @/tmp/overlay-te.json" 2>/dev/null || true)
+  rm -f /tmp/overlay-te.json
+  echo "test-environment: $(echo "$out" | jq -c '{status}' 2>/dev/null || echo "$out" | head -c 200)"
+  [ "$(echo "$out" | jq -r .status 2>/dev/null)" = pass ]
+}
+
+# Point `current` and the manifest at <dir> (a directory name under $STORE).
+switch_to() {
+  local name=$1 version=$2
+  local prev_record
+  prev_record=$(jq -c '{source, version, channel, payloadPath, installedAt}' "$MANIFEST")
+  jq --arg v "$version" --arg p "$STORE/$name" --arg t "$(date -u +%FT%T.000Z)" --argjson prev "$prev_record" '
+    .version = $v | .payloadPath = $p | .installedAt = $t
+    | .previous = ([$prev] + (.previous // []) | map(select(.payloadPath != $p)) | .[0:5])' \
+    "$MANIFEST" > "$MANIFEST.tmp"
+  chown paperclip:paperclip "$MANIFEST.tmp"; chmod 600 "$MANIFEST.tmp"; mv "$MANIFEST.tmp" "$MANIFEST"
+  ln -sfn "installs/npm/$name" "$CLI/current.tmp" && mv -T "$CLI/current.tmp" "$CLI/current"
+  chown -h paperclip:paperclip "$CLI/current"
+}
+
+restart_and_verify() {
+  systemctl restart paperclip
+  wait_healthy || { echo "health check failed"; return 1; }
+  runner_ok || { echo "paperclip_runner environment check failed"; return 1; }
+}
+
+live_runs() {
+  pc "GET /companies/$COMPANY/live-runs" | jq 'length' 2>/dev/null || echo 0
+}
+
+status() {
+  echo "current -> $(readlink "$CLI/current")"
+  jq -c '{version, payloadPath, previous: [.previous[]?.version]}' "$MANIFEST"
+  local b; b="$(readlink -f "$CLI/current")/GRAPPUS_BUILD"
+  [ -f "$b" ] && { echo "fork build:"; jq -c . "$b"; } || echo "fork build: none (upstream npm install)"
+}
+
+install_overlay() {
+  local tgz=$1 force=${2:-}
+  [ -f "$tgz" ] || die "no such tarball: $tgz"
+  local tmp; tmp=$(mktemp -d)
+  # Expand now: the RETURN trap also fires after this function's locals are gone.
+  trap "rm -rf '$tmp'; trap - RETURN" RETURN
+  tar xzf "$tgz" -C "$tmp"
+  [ -f "$tmp/GRAPPUS_BUILD" ] && [ -d "$tmp/dist" ] || die "tarball lacks GRAPPUS_BUILD or dist/"
+  local base build sha version name
+  base=$(jq -r .base "$tmp/GRAPPUS_BUILD"); build=$(jq -r .build "$tmp/GRAPPUS_BUILD"); sha=$(jq -r .sha "$tmp/GRAPPUS_BUILD")
+  version="$base-grappus.$build"; name="$version"
+  [ -d "$STORE/$base" ] || die "pristine upstream install $STORE/$base missing"
+  [ -f "$STORE/$base/GRAPPUS_BUILD" ] && die "$STORE/$base carries a fork build; it must stay pristine"
+  if [ "$force" != --force ]; then
+    local n; n=$(live_runs); [ "$n" = 0 ] || die "$n live run(s); retry when idle or pass --force"
+  fi
+
+  echo "==> $version ($sha) over $base"
+  rm -rf "$STORE/$name.new"
+  cp -a "$STORE/$base" "$STORE/$name.new"
+  # runner-shim.sh left absolute symlinks into the base install; re-point them at the copy.
+  while IFS= read -r link; do
+    target=$(readlink "$link")
+    ln -sfn "$STORE/$name/${target#"$STORE/$base/"}" "$link"
+  done < <(find "$STORE/$name.new" -type l -lname "$STORE/$base/*")
+  echo "changed files:"
+  rsync -rc --out-format='  %n' --exclude 'vendor/' "$tmp/dist/" "$STORE/$name.new/$SERVER_DIST/" | grep -v '/$' || true
+  if [ -d "$tmp/ui-dist" ]; then
+    # Vite asset names are content hashes, so the UI is replaced whole.
+    echo "ui files changed: $(rsync -rc --delete --out-format='%n' "$tmp/ui-dist/" "$STORE/$name.new/$SERVER_UI/" | grep -vc '/$' || true)"
+  fi
+  cp "$tmp/GRAPPUS_BUILD" "$STORE/$name.new/GRAPPUS_BUILD"
+  chown -R paperclip:paperclip "$STORE/$name.new"
+  chmod -R go-w "$STORE/$name.new"
+  rm -rf "$STORE/$name"; mv "$STORE/$name.new" "$STORE/$name"
+  # Symlinks were written for the final path; confirm none still points at the base.
+  if find "$STORE/$name" -type l -lname "$STORE/$base/*" | grep -q .; then die "symlinks still point at $base"; fi
+
+  local prev_name; prev_name=$(basename "$(readlink -f "$CLI/current")")
+  local prev_version; prev_version=$(jq -r .version "$MANIFEST")
+  switch_to "$name" "$version"
+  if restart_and_verify; then
+    echo "==> running $version"
+    record_source "$sha"
+  else
+    echo "==> $version failed verification; rolling back to $prev_name"
+    switch_to "$prev_name" "$prev_version"
+    restart_and_verify || die "rollback to $prev_name also failed verification; investigate now"
+    die "rolled back to $prev_name"
+  fi
+}
+
+# Keep a checkout of exactly what runs, for reading code on the host.
+record_source() {
+  local sha=$1 src=/home/paperclip/paperclip-src
+  su - paperclip -c "set -e
+    [ -d $src/.git ] || git clone -q --filter=blob:none --no-checkout https://github.com/dhruvd-grappus/paperclip.git $src
+    cd $src && git fetch -q origin grappus/stable && git -c advice.detachedHead=false checkout -q $sha" \
+    && echo "source: $src @ $sha" || echo "WARN: could not update $src"
+}
+
+# Download a CI-built release (github.com/dhruvd-grappus/paperclip, workflow grappus-overlay) and
+# install it. <tag> = overlay-<sha12>, or "latest".
+install_release() {
+  local tag=${1:-latest} force=${2:-}
+  local url=https://github.com/dhruvd-grappus/paperclip/releases
+  local dl; dl=$([ "$tag" = latest ] && echo "$url/latest/download" || echo "$url/download/$tag")
+  local dir; dir=$(mktemp -d)
+  echo "==> downloading $tag"
+  curl -fsSL -o "$dir/paperclip-overlay.tgz" "$dl/paperclip-overlay.tgz" || die "download failed: $dl"
+  curl -fsSL -o "$dir/paperclip-overlay.tgz.sha256" "$dl/paperclip-overlay.tgz.sha256" || die "checksum download failed"
+  (cd "$dir" && sha256sum -c --quiet paperclip-overlay.tgz.sha256) || die "checksum mismatch for $tag"
+  install_overlay "$dir/paperclip-overlay.tgz" "$force"
+  rm -rf "$dir"
+}
+
+# In-app "Update now" (fork builds): Paperclip writes $UPDATES/request.json; the root path unit
+# paperclip-update.path runs this. Waits (max 60 min) until no agent run is live, installs the CI
+# release, and reports every step in $UPDATES/status.json for the UI. The server never gets root.
+UPDATES=/home/paperclip/.paperclip/grappus-updates
+
+write_status() {
+  local state=$1 tag=$2 message=$3
+  mkdir -p "$UPDATES"; chown paperclip:paperclip "$UPDATES"; chmod 700 "$UPDATES"
+  jq -n --arg s "$state" --arg t "$tag" --arg m "$message" --arg at "$(date -u +%FT%T.000Z)" \
+    '{state:$s, tag:$t, message:$m, updatedAt:$at}' > "$UPDATES/status.json.tmp"
+  chown paperclip:paperclip "$UPDATES/status.json.tmp"; chmod 600 "$UPDATES/status.json.tmp"
+  mv "$UPDATES/status.json.tmp" "$UPDATES/status.json"
+}
+
+apply_request() {
+  local req=$UPDATES/request.json
+  [ -f "$req" ] || { echo "no update request"; return 0; }
+  local tag; tag=$(jq -r '.tag // empty' "$req" 2>/dev/null || true)
+  rm -f "$req"   # consumed; the path unit must not loop on it
+  [[ "$tag" =~ ^overlay-[0-9a-f]{12}$ ]] || { write_status failed "$tag" "invalid build tag"; die "invalid tag '$tag'"; }
+  local running; running=$(jq -r '.sha // empty' "$(readlink -f "$CLI/current")/GRAPPUS_BUILD" 2>/dev/null || true)
+  if [ -n "$running" ] && [ "overlay-${running:0:12}" = "$tag" ]; then
+    write_status succeeded "$tag" "already running this build"; return 0
+  fi
+  local waited=0 n
+  while :; do
+    n=$(live_runs)
+    [ "$n" = 0 ] && break
+    [ "$waited" -ge 3600 ] && { write_status failed "$tag" "agent runs never went idle within 60 min; try again later"; die "timed out waiting for idle"; }
+    write_status waiting_idle "$tag" "$n agent run(s) live"
+    sleep 20; waited=$((waited + 20))
+  done
+  write_status installing "$tag" "downloading, installing, restarting"
+  local before; before=$(readlink -f "$CLI/current")
+  if ( install_release "$tag" --force ); then
+    write_status succeeded "$tag" "running $(jq -r '"build \(.build) (\(.sha))"' "$(readlink -f "$CLI/current")/GRAPPUS_BUILD")"
+  elif [ "$(readlink -f "$CLI/current")" = "$before" ]; then
+    write_status rolled_back "$tag" "verification failed; still on $(basename "$before")"; return 1
+  else
+    write_status failed "$tag" "install failed; see journalctl -u paperclip-update"; return 1
+  fi
+}
+
+rollback() {
+  local prev_path prev_version
+  prev_path=$(jq -r '.previous[0].payloadPath // empty' "$MANIFEST")
+  prev_version=$(jq -r '.previous[0].version // empty' "$MANIFEST")
+  [ -n "$prev_path" ] && [ -d "$prev_path" ] || die "no previous install recorded"
+  echo "==> rollback to $prev_version"
+  switch_to "$(basename "$prev_path")" "$prev_version"
+  restart_and_verify || die "rolled back but verification failed"
+  status
+}
+
+case "${1:-}" in
+  install) shift; install_overlay "$@" ;;
+  install-release) shift; install_release "$@" ;;
+  apply-request) apply_request ;;
+  rollback) rollback ;;
+  status) status ;;
+  *) sed -n '2,/^set -euo/p' "$0" | grep '^#' | cut -c3-; exit 2 ;;
+esac

@@ -1,0 +1,9 @@
+#!/bin/bash
+# helper: pc METHOD PATH [JSON]
+TOK=$(jq -r '.credentials["https://187.126.114.172.sslip.io"].token' ~/.paperclip/auth.json)
+B=https://187.126.114.172.sslip.io/api
+if [ -n "$3" ]; then
+  curl -s -X "$1" -H "Authorization: Bearer $TOK" -H "Content-Type: application/json" "$B$2" -d "$3"
+else
+  curl -s -X "$1" -H "Authorization: Bearer $TOK" "$B$2"
+fi
