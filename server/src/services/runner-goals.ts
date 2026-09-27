@@ -628,6 +628,36 @@ export async function isRunnerGoalActionCompleted(
   return action !== undefined;
 }
 
+const TRANSIENT_LOCK_CONFLICT_CODES = new Set(["40P01", "40001"]);
+
+function transientLockConflictCode(error: unknown): string | null {
+  for (let current: unknown = error, depth = 0; current && depth < 5; depth += 1) {
+    const code = (current as { code?: unknown }).code;
+    if (typeof code === "string" && TRANSIENT_LOCK_CONFLICT_CODES.has(code)) return code;
+    current = (current as { cause?: unknown }).cause;
+  }
+  return null;
+}
+
+/**
+ * Re-runs a whole transaction that Postgres aborted as a deadlock victim or
+ * serialization failure. The aborted attempt committed nothing, so replaying
+ * it is safe; anything else propagates unchanged.
+ */
+export async function retryOnTransientLockConflict<T>(
+  run: () => Promise<T>,
+  attempts = 3,
+): Promise<T> {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await run();
+    } catch (error) {
+      if (attempt >= attempts || transientLockConflictCode(error) === null) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 25 * attempt + Math.floor(Math.random() * 25)));
+    }
+  }
+}
+
 /** Commits a PRP goal projection with source-epoch and sequence resurrection fences. */
 export async function applyRunnerGoalPrpEvent(
   db: Db,
@@ -657,7 +687,13 @@ export async function applyRunnerGoalPrpEvent(
     "turn.cancelled",
   ].includes(event.eventType)) return null;
   const payload = asRecord(event.payload) ?? {};
-  const changed = await db.transaction(async (tx) => {
+  const changed = await retryOnTransientLockConflict(() => db.transaction(async (tx) => {
+    // Take the agent row's KEY SHARE lock before the issue lock. The session
+    // insert below needs it through the foreign key; wake enqueue locks the
+    // agent row FOR UPDATE and then the issue row, so acquiring it after the
+    // issue lock inverts that order and deadlocks (40P01) when a wake for the
+    // same agent lands during the first capability event.
+    await tx.select({ id: agents.id }).from(agents).where(eq(agents.id, binding.agentId)).for("key share");
     const [issue] = await tx.select().from(issues).where(and(eq(issues.id, binding.issueId), eq(issues.companyId, binding.companyId))).for("update");
     if (issue?.conversationAgentId) {
       const [run] = event.sourceRunId ? await tx.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, event.sourceRunId)) : [];
@@ -831,7 +867,7 @@ export async function applyRunnerGoalPrpEvent(
       }).where(eq(agentSessionGoalActions.id, completedPendingActionId));
     }
     return true;
-  });
+  }));
   if (!changed) return null;
   const current = await runnerGoalService(db).projection(
     binding.companyId,

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agentSessionGoalActions,
@@ -21,8 +21,31 @@ import {
   blockRunnerGoalRecovery,
   failRunnerGoalAction,
   RunnerGoalConflictError,
+  retryOnTransientLockConflict,
   runnerGoalService,
 } from "./runner-goals.js";
+
+describe("retryOnTransientLockConflict", () => {
+  it("replays a transaction aborted as a deadlock victim, including wrapped driver errors", async () => {
+    const deadlock = Object.assign(new Error("Failed query"), {
+      cause: Object.assign(new Error("deadlock detected"), { code: "40P01" }),
+    });
+    const run = vi.fn()
+      .mockRejectedValueOnce(deadlock)
+      .mockResolvedValueOnce("committed");
+    await expect(retryOnTransientLockConflict(run)).resolves.toBe("committed");
+    expect(run).toHaveBeenCalledTimes(2);
+  });
+
+  it("never replays other failures and gives up after the attempt budget", async () => {
+    const other = vi.fn().mockRejectedValue(Object.assign(new Error("fk"), { code: "23503" }));
+    await expect(retryOnTransientLockConflict(other)).rejects.toThrow("fk");
+    expect(other).toHaveBeenCalledTimes(1);
+    const always = vi.fn().mockRejectedValue(Object.assign(new Error("serialization"), { code: "40001" }));
+    await expect(retryOnTransientLockConflict(always, 3)).rejects.toThrow("serialization");
+    expect(always).toHaveBeenCalledTimes(3);
+  });
+});
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -448,6 +471,39 @@ describeEmbeddedPostgres("runner goal service", () => {
         lastReason: "provider_session_goal_missing_after_resume",
       },
     });
+  });
+
+  it("does not deadlock with a wake that locks the agent row before the issue row", async () => {
+    // Production deadlock (40P01): the wake enqueue transaction locks the
+    // agent row FOR UPDATE and later the issue row, while the first
+    // capability event locked the issue row and then waited on the agent row
+    // through the agent_task_sessions foreign key. Postgres killed the
+    // projection, the event callback threw, and the native session died.
+    const binding = await seed();
+    const eventBinding = { ...binding, adapterType: "paperclip_runner" };
+    let releaseWake!: () => void;
+    const wakeMayLockIssue = new Promise<void>((resolve) => { releaseWake = resolve; });
+    let agentLocked!: () => void;
+    const agentLockHeld = new Promise<void>((resolve) => { agentLocked = resolve; });
+    const wake = db.transaction(async (tx) => {
+      await tx.execute(sql`select id from agents where id = ${binding.agentId} for update`);
+      agentLocked();
+      await wakeMayLockIssue;
+      await tx.execute(sql`select id from issues where id = ${binding.issueId} for update`);
+    });
+    await agentLockHeld;
+    const projection = applyRunnerGoalPrpEvent(db, eventBinding, {
+      sourceInstanceId: "native-runner",
+      sourceRunId: "deadlock-heartbeat",
+      eventType: "session.capabilities.updated",
+      sourceSeq: 1,
+      payload: { sessionGoals: { availability: "available", actions: ["set", "clear"] } },
+    });
+    // Let the projection reach its first lock wait before the wake asks for the issue.
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    releaseWake();
+    await expect(Promise.all([wake, projection])).resolves.toBeDefined();
+    expect(await db.select().from(agentTaskSessions)).toHaveLength(1);
   });
 
   it("projects committed capability and goal events exactly once across duplicate delivery", async () => {
