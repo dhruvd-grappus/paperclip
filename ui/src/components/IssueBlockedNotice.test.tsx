@@ -428,7 +428,7 @@ describe("IssueBlockedNotice", () => {
     // Rule C: a `blocked` issue with an unresolved blocker suppresses
     // comment-driven reopening.
     expect(node.querySelector('[data-blocker-attention-state="covered"]')).not.toBeNull();
-    expect(node.textContent).toContain("A message won’t restart this task yet");
+    expect(node.textContent).toContain("it reopens automatically when");
   });
 
   it("sorts same-status live-work steps with numeric identifier ordering", () => {
@@ -527,8 +527,8 @@ describe("IssueBlockedNotice", () => {
       />,
     );
 
-    expect(node.textContent).toContain("A message won’t restart this task yet");
-    expect(node.textContent).toContain("Comments still notify CodexCoder for questions or triage");
+    expect(node.textContent).toContain("it reopens automatically when");
+    expect(node.textContent).toContain("A comment from you restarts it now: the blockers are cleared and CodexCoder picks it up.");
     const suppressed = node.querySelector('[data-testid="issue-blocked-notice-reopen-suppressed"]');
     expect(suppressed).not.toBeNull();
     expect(suppressed!.textContent).toContain("Still blocked by");

@@ -1589,7 +1589,7 @@ describe.sequential("issue comment reopen routes", () => {
     expect(mockIssueService.addComment).not.toHaveBeenCalled();
   });
 
-  it("does not move dependency-blocked issues to todo via POST comments", async () => {
+  it("restarts dependency-blocked issues via POST human comments and clears their blockers", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue("blocked"));
     mockIssueService.getDependencyReadiness.mockResolvedValue({
       issueId: "11111111-1111-4111-8111-111111111111",
@@ -1600,25 +1600,44 @@ describe.sequential("issue comment reopen routes", () => {
       isDependencyReady: false,
     });
 
+    mockIssueService.update.mockImplementation(
+      async (_id: string, patch: Record<string, unknown>) => ({
+        ...makeIssue("blocked"),
+        ...patch,
+      }),
+    );
+
     const res = await request(await installActor(createApp()))
       .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
       .send({ body: "what is happening?" });
 
     expect(res.status).toBe(201);
-    expect(mockIssueService.update).not.toHaveBeenCalled();
+    // Grappus: a human comment is a restart signal, not a note held behind the blockers.
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      { status: "todo", blockedByIssueIds: [] },
+    );
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "issue.updated",
+        details: expect.objectContaining({
+          status: "todo",
+          reopened: true,
+          reopenedFrom: "blocked",
+          clearedBlockerIssueIds: ["33333333-3333-4333-8333-333333333333"],
+        }),
+      }),
+    );
     await waitForWakeup(() =>
       expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
         "22222222-2222-4222-8222-222222222222",
         expect.objectContaining({
-          reason: "issue_commented",
+          reason: "issue_reopened_via_comment",
           payload: expect.objectContaining({
             commentId: "comment-1",
+            reopenedFrom: "blocked",
             mutation: "comment",
-          }),
-          contextSnapshot: expect.objectContaining({
-            issueId: "11111111-1111-4111-8111-111111111111",
-            wakeCommentId: "comment-1",
-            wakeReason: "issue_commented",
           }),
         }),
       ),
@@ -2007,7 +2026,7 @@ describe.sequential("issue comment reopen routes", () => {
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 
-  it("does not move dependency-blocked issues to todo via the PATCH comment path", async () => {
+  it("restarts dependency-blocked issues via the PATCH comment path and clears their blockers", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue("blocked"));
     mockIssueService.getDependencyReadiness.mockResolvedValue({
       issueId: "11111111-1111-4111-8111-111111111111",
@@ -2021,6 +2040,7 @@ describe.sequential("issue comment reopen routes", () => {
       async (_id: string, patch: Record<string, unknown>) => ({
         ...makeIssue("blocked"),
         ...patch,
+        changes: { status: { from: "blocked", to: "todo" } },
       }),
     );
 
@@ -2036,21 +2056,48 @@ describe.sequential("issue comment reopen routes", () => {
         actorUserId: "local-board",
       }),
     );
-    expect(mockIssueService.update).not.toHaveBeenCalledWith(
+    expect(mockIssueService.update).toHaveBeenCalledWith(
       "11111111-1111-4111-8111-111111111111",
-      expect.objectContaining({ status: "todo" }),
+      expect.objectContaining({ status: "todo", blockedByIssueIds: [] }),
     );
     await waitForWakeup(() =>
       expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
         "22222222-2222-4222-8222-222222222222",
         expect.objectContaining({
-          reason: "issue_commented",
+          reason: "issue_reopened_via_comment",
           payload: expect.objectContaining({
             commentId: "comment-1",
             mutation: "comment",
           }),
         }),
       ),
+    );
+  });
+
+  it("keeps agent comments on dependency-blocked issues as notes (no restart, blockers kept)", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue("blocked"));
+    mockIssueService.getDependencyReadiness.mockResolvedValue({
+      issueId: "11111111-1111-4111-8111-111111111111",
+      blockerIssueIds: ["33333333-3333-4333-8333-333333333333"],
+      unresolvedBlockerIssueIds: ["33333333-3333-4333-8333-333333333333"],
+      unresolvedBlockerCount: 1,
+      allBlockersDone: false,
+      isDependencyReady: false,
+    });
+
+    const res = await request(await installActor(createApp(), {
+      type: "agent",
+      agentId: "44444444-4444-4444-8444-444444444444",
+      companyId: "company-1",
+      runId: null,
+    }))
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "status note" });
+
+    expect(res.status).toBeLessThan(500);
+    expect(mockIssueService.update).not.toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      expect.objectContaining({ blockedByIssueIds: [] }),
     );
   });
 

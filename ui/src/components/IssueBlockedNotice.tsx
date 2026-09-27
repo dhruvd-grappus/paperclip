@@ -292,8 +292,8 @@ function WaitingOnLiveWorkNotice({
             <p className="font-medium leading-5">Waiting on live work</p>
             <p className="leading-5">
               Queued behind {total} {queuedNoun} being worked in order. This task
-              resumes automatically when the chain is done. Comments still notify the
-              assignee.
+              resumes automatically when the chain is done. A comment from you
+              restarts it now and clears the blockers.
             </p>
           </div>
 
@@ -660,9 +660,9 @@ export function IssueBlockedNotice({
                       ? <>Work on this task is blocked by {blockerLabel}, but the chain is stalled in review without a clear next step. Resolve the stalled reviews below or remove them as blockers.</>
                       : <>Work on this task is blocked by {blockerLabel}, but the chain is stalled in review without a clear next step. Resolve the stalled review below or remove it as a blocker.</>
                     : reopenSuppressed
-                      ? <>A message won&rsquo;t restart this task yet — it stays blocked by {blockerLabel} until {blockers.length === 1 ? "it is" : "they are"} done, then it reopens automatically. Comments still notify {responsibleName} for questions or triage in the meantime.</>
-                      : <>Work on this task is blocked by {blockerLabel} until {blockers.length === 1 ? "it is" : "they are"} complete. Comments still notify the assignee for questions or triage.</>
-                  : <>Work on this task is blocked until someone moves it back to To do. Comments still notify the assignee for questions or triage.</>}
+                      ? <>Waiting on {blockerLabel}; it reopens automatically when {blockers.length === 1 ? "it is" : "they are"} done. A comment from you restarts it now: the blockers are cleared and {responsibleName} picks it up.</>
+                      : <>Work on this task is blocked by {blockerLabel} until {blockers.length === 1 ? "it is" : "they are"} complete. A comment from you restarts it now: the blockers are cleared and the assignee picks it up.</>
+                  : <>Work on this task is blocked. A comment from you restarts it: the assignee picks it up.</>}
               </p>
               {reopenSuppressed && reopenSuppressedLeafId ? (
                 <p

@@ -12969,15 +12969,26 @@ export function issueRoutes(
       const updateReferenceSummaryBefore = titleOrDescriptionChanged
         ? await issueReferencesSvc.listIssueReferenceSummary(existing.id)
         : null;
-      const hasUnresolvedFirstClassBlockers =
+      const dependencyReadinessForComment =
         isBlocked && effectiveMoveToTodoRequested
-          ? (await svc.getDependencyReadiness(existing.id))
-              .unresolvedBlockerCount > 0
-          : false;
+          ? await svc.getDependencyReadiness(existing.id)
+          : null;
+      const hasUnresolvedFirstClassBlockers =
+        (dependencyReadinessForComment?.unresolvedBlockerCount ?? 0) > 0;
+      // Grappus: a human comment always restarts a blocked task. Its blocker links
+      // are cleared so the woken run can move to in_progress; the agent reads the
+      // comment and re-blocks with set_dependencies if it still has to wait.
+      const humanCommentClearsBlockers =
+        !!commentBody &&
+        isBlocked &&
+        hasUnresolvedFirstClassBlockers &&
+        actor.actorType === "user" &&
+        req.body.blockedByIssueIds === undefined;
       if (
         resumeRequested === true &&
         isBlocked &&
-        hasUnresolvedFirstClassBlockers
+        hasUnresolvedFirstClassBlockers &&
+        !humanCommentClearsBlockers
       ) {
         res
           .status(409)
@@ -13073,11 +13084,13 @@ export function issueRoutes(
         commentBody &&
         effectiveMoveToTodoRequested &&
         (isClosed ||
-          (isBlocked && !hasUnresolvedFirstClassBlockers) ||
+          (isBlocked &&
+            (!hasUnresolvedFirstClassBlockers || humanCommentClearsBlockers)) ||
           shouldResumeInProgressScheduledRetry) &&
         updateFields.status === undefined
       ) {
         updateFields.status = "todo";
+        if (humanCommentClearsBlockers) updateFields.blockedByIssueIds = [];
       }
       let cancelledScheduledRetryRunId: string | null = null;
       if (
@@ -13875,7 +13888,9 @@ export function issueRoutes(
       const reopened =
         commentBody &&
         effectiveMoveToTodoRequested &&
-        (isClosed || (isBlocked && !hasUnresolvedFirstClassBlockers)) &&
+        (isClosed ||
+          (isBlocked &&
+            (!hasUnresolvedFirstClassBlockers || humanCommentClearsBlockers))) &&
         previous.status !== undefined &&
         issue.status === "todo";
       const reopenFromStatus = reopened ? existing.status : null;
@@ -17341,15 +17356,23 @@ export function issueRoutes(
             executionRunId: issue.executionRunId,
           }) ||
           shouldResumeInProgressScheduledRetry);
-      const hasUnresolvedFirstClassBlockers =
+      const dependencyReadinessForComment =
         isBlocked && effectiveMoveToTodoRequested
-          ? (await svc.getDependencyReadiness(issue.id))
-              .unresolvedBlockerCount > 0
-          : false;
+          ? await svc.getDependencyReadiness(issue.id)
+          : null;
+      const hasUnresolvedFirstClassBlockers =
+        (dependencyReadinessForComment?.unresolvedBlockerCount ?? 0) > 0;
+      // Grappus: a human comment always restarts a blocked task (see the PATCH route).
+      const humanCommentClearsBlockers =
+        isBlocked && hasUnresolvedFirstClassBlockers && actor.actorType === "user";
+      const clearedBlockerIssueIds = humanCommentClearsBlockers
+        ? dependencyReadinessForComment?.unresolvedBlockerIssueIds ?? []
+        : [];
       if (
         resumeRequested === true &&
         isBlocked &&
-        hasUnresolvedFirstClassBlockers
+        hasUnresolvedFirstClassBlockers &&
+        !humanCommentClearsBlockers
       ) {
         res
           .status(409)
@@ -17420,7 +17443,8 @@ export function issueRoutes(
       if (
         effectiveMoveToTodoRequested &&
         (isClosed ||
-          (isBlocked && !hasUnresolvedFirstClassBlockers) ||
+          (isBlocked &&
+            (!hasUnresolvedFirstClassBlockers || humanCommentClearsBlockers)) ||
           shouldResumeInProgressScheduledRetry)
       ) {
         scheduledRetrySupersededByComment =
@@ -17433,12 +17457,20 @@ export function issueRoutes(
               actor,
             })
           : null;
-        const reopenedIssue = await svc.update(id, { status: "todo" });
+        const reopenedIssue = await svc.update(
+          id,
+          humanCommentClearsBlockers
+            ? { status: "todo", blockedByIssueIds: [] }
+            : { status: "todo" },
+        );
         if (!reopenedIssue) {
           res.status(404).json({ error: "Issue not found" });
           return;
         }
-        reopened = isClosed || (isBlocked && !hasUnresolvedFirstClassBlockers);
+        reopened =
+          isClosed ||
+          (isBlocked &&
+            (!hasUnresolvedFirstClassBlockers || humanCommentClearsBlockers));
         reopenFromStatus = reopened ? issue.status : null;
         currentIssue = reopenedIssue;
 
@@ -17468,6 +17500,9 @@ export function issueRoutes(
                 }
               : {}),
             source: "comment",
+            ...(clearedBlockerIssueIds.length > 0
+              ? { clearedBlockerIssueIds, blockersClearedByHumanComment: true }
+              : {}),
             ...(resumeRequested === true
               ? { resumeIntent: true, followUpRequested: true }
               : {}),
