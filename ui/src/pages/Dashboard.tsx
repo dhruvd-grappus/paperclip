@@ -29,7 +29,6 @@ import { timeAgo } from "../lib/timeAgo";
 import { cn } from "../lib/utils";
 import { SHOW_TASK_PRIORITY_UI } from "../lib/ui-flags";
 import { Bot, CircleCheck, CircleDot, OctagonAlert, ShieldCheck, LayoutDashboard, PauseCircle } from "lucide-react";
-import { ActiveAgentsPanel } from "../components/ActiveAgentsPanel";
 import { ChartCard, TasksDoneChart, PriorityChart, IssueStatusChart, SuccessRateChart, getLast14Days } from "../components/ActivityCharts";
 import { RunningByProjectPanel } from "../components/RunningByProjectPanel";
 import { HumanInterventionPanel } from "../components/HumanInterventionPanel";
@@ -389,8 +388,6 @@ export function Dashboard() {
           </button>
         </div>
       )}
-
-      <ActiveAgentsPanel companyId={selectedCompanyId!} />
 
       {data && (
         <>
