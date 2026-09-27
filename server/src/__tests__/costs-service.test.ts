@@ -66,6 +66,7 @@ const mockHeartbeatService = vi.hoisted(() => ({
 }));
 const mockLogActivity = vi.hoisted(() => vi.fn());
 const mockFetchAllQuotaWindows = vi.hoisted(() => vi.fn());
+const mockReadClaudeAccount = vi.hoisted(() => vi.fn());
 const mockCostService = vi.hoisted(() => ({
   createEvent: vi.fn(),
   summary: vi.fn().mockResolvedValue({ spendCents: 0 }),
@@ -125,6 +126,9 @@ function registerModuleMocks() {
 
   vi.doMock("../services/quota-windows.js", () => ({
     fetchAllQuotaWindows: mockFetchAllQuotaWindows,
+  }));
+  vi.doMock("../services/claude-account.js", () => ({
+    readClaudeAccount: mockReadClaudeAccount,
   }));
 }
 
@@ -229,6 +233,19 @@ describe("cost routes", () => {
   it("returns 400 for an invalid 'to' date string", async () => {
     const { parseCostDateRange } = loadCostParsers();
     expect(() => parseCostDateRange({ to: "banana" })).toThrow(/invalid 'to' date/i);
+  });
+
+  it("names the Claude account on the Anthropic quota windows only", async () => {
+    mockCompanyService.getById.mockResolvedValue({ id: "company-1" });
+    mockFetchAllQuotaWindows.mockResolvedValue([
+      { provider: "anthropic", ok: true, source: "anthropic-oauth", windows: [{ label: "Current session", usedPercent: 64 }] },
+      { provider: "openai", ok: false, error: "no login", windows: [] },
+    ]);
+    mockReadClaudeAccount.mockResolvedValue({ email: "ankitseniaray01@gmail.com", plan: "max", orgName: null });
+    const res = await request(createApp()).get("/api/companies/company-1/costs/quota-windows");
+    expect(res.status).toBe(200);
+    expect(res.body[0].account).toEqual({ email: "ankitseniaray01@gmail.com", plan: "max", orgName: null });
+    expect(res.body[1]).not.toHaveProperty("account");
   });
 
   it("returns finance summary rows for valid requests", async () => {

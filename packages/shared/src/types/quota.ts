@@ -25,4 +25,6 @@ export interface ProviderQuotaResult {
   /** error message when ok is false */
   error?: string;
   windows: QuotaWindow[];
+  /** Anthropic only: the Claude account the server is logged in as (fork addition). */
+  account?: { email: string | null; plan: string | null; orgName: string | null } | null;
 }

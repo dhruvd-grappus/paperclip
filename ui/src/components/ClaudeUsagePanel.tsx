@@ -6,7 +6,8 @@ import { ClaudeSubscriptionPanel } from "./ClaudeSubscriptionPanel";
 
 /**
  * Dashboard: Claude subscription usage (session, weekly, extra usage) of the
- * account the server's agents run on. Same data and cache as the Costs page.
+ * account the server's agents run on, and which account that is right now (the
+ * host rotates logins). Same data and cache as the Costs page.
  */
 export function ClaudeUsagePanel({ companyId }: { companyId: string }) {
   const { data, isLoading } = useQuery({
@@ -16,11 +17,21 @@ export function ClaudeUsagePanel({ companyId }: { companyId: string }) {
     staleTime: 60_000,
   });
   const anthropic = data?.find((result) => result.provider === "anthropic");
+  const account = anthropic?.account ?? null;
+  const plan = account?.plan ? account.plan.charAt(0).toUpperCase() + account.plan.slice(1) : null;
 
   return (
     <div className="min-w-0" data-testid="dashboard-claude-usage">
       <div className="mb-3 flex items-baseline justify-between gap-3">
-        <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">Claude usage</h3>
+        <div className="flex min-w-0 items-baseline gap-2">
+          <h3 className="shrink-0 text-sm font-semibold text-muted-foreground uppercase tracking-wide">Claude usage</h3>
+          {account?.email ? (
+            <span className="truncate text-sm text-foreground" data-testid="dashboard-claude-account" title={account.orgName ?? undefined}>
+              {account.email}
+              {plan ? <span className="text-muted-foreground"> · {plan}</span> : null}
+            </span>
+          ) : null}
+        </div>
         <Link to="/costs" className="text-xs text-muted-foreground hover:text-foreground hover:underline">
           Costs
         </Link>

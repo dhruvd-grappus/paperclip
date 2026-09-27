@@ -22,6 +22,7 @@ import {
 } from "../services/index.js";
 import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
 import { fetchAllQuotaWindows } from "../services/quota-windows.js";
+import { readClaudeAccount } from "../services/claude-account.js";
 import { badRequest } from "../errors.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 
@@ -281,8 +282,10 @@ export function costRoutes(
       res.status(404).json({ error: "Company not found" });
       return;
     }
-    const results = await fetchAllQuotaWindows();
-    res.json(results);
+    const [results, claudeAccount] = await Promise.all([fetchAllQuotaWindows(), readClaudeAccount()]);
+    // Name the Claude account these windows belong to (the login can rotate).
+    res.json(results.map((result) =>
+      result.provider === "anthropic" ? { ...result, account: claudeAccount } : result));
   });
 
   router.get("/companies/:companyId/budgets/overview", async (req, res) => {
