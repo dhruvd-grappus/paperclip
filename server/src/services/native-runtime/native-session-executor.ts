@@ -228,7 +228,13 @@ export async function detachNativeSessionsForRestart(
 const MAX_REMOTE_CHECKPOINT_ARCHIVE_BYTES = 64 * 1024 * 1024;
 const MAX_REMOTE_CHECKPOINT_EXPANDED_BYTES = 64 * 1024 * 1024;
 const MAX_REMOTE_CHECKPOINT_ENTRIES = 20_000;
-const NATIVE_DURABLE_IDENTITY_MAX_BYTES = 2 * 1024 * 1024;
+// control-plane-state.json carries the identity plus the runner's rolling
+// committedEvents window (up to 4,096 events, ~1.5 KB each, a few KB at most),
+// so ordinary runs pass 2 MiB. A read past this cap looks like "no identity":
+// the settled session is quarantined and its continuation fails with
+// runner_state_identity_mismatch. Never be stricter than the runner that
+// writes the file (durable-prp-control-plane.ts maxStateBytes).
+const NATIVE_DURABLE_IDENTITY_MAX_BYTES = 192 * 1024 * 1024;
 const NATIVE_RUNNER_STATE_MAX_BYTES = 16 * 1024 * 1024;
 const NATIVE_WARM_CHECKPOINT_MAX_BYTES = 8 * 1024 * 1024;
 const CODEX_HOME_NON_PERSISTENT_ENTRIES = [

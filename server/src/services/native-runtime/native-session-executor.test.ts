@@ -7105,7 +7105,14 @@ describe("runnerd provider runtime wiring", () => {
     await expect(active).resolves.toBeDefined();
   });
 
-  it("carries the verified runner and lease binding into a projectless continuation", async () => {
+  it.each([
+    ["a small durable state", 0],
+    // Production GRA-218: a normal build run left 2,315,632 bytes (the rolling
+    // committedEvents window). The identity reader capped the file at 2 MiB,
+    // read "no identity", quarantined the settled session and failed the
+    // continuation with runner_state_identity_mismatch.
+    ["a durable state past 2 MiB of committed events", 2_300_000],
+  ] as const)("carries the verified runner and lease binding into a projectless continuation with %s", async (_label, committedEventBytes) => {
     const stateBase = await mkdtemp(
       join(tmpdir(), "paperclip-runner-binding-"),
     );
@@ -7154,7 +7161,13 @@ describe("runnerd provider runtime wiring", () => {
       };
       await writeFile(
         join(scopedRoot, "control-plane", "control-plane-state.json"),
-        JSON.stringify(durableControlPlaneState(priorIdentity)),
+        JSON.stringify({
+          ...durableControlPlaneState(priorIdentity),
+          committedEvents: Array.from(
+            { length: Math.ceil(committedEventBytes / 1_500) },
+            (_, index) => ({ sourceSeq: index + 1, payload: "x".repeat(1_450) }),
+          ),
+        }),
       );
       await writeFile(
         join(scopedRoot, "runner", "runner-state.json"),
