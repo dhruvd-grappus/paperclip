@@ -326,3 +326,31 @@ export function SuccessRateChart(props: RunChartProps) {
     </div>
   );
 }
+
+/** Tasks finished per day (completion date), last 14 days. */
+export function TasksDoneChart({ countsByDay }: { countsByDay: Map<string, number> }) {
+  const days = getLast14Days();
+  const maxValue = Math.max(...days.map((day) => countsByDay.get(day) ?? 0), 1);
+  const hasData = days.some((day) => (countsByDay.get(day) ?? 0) > 0);
+  if (!hasData) return <p className="text-xs text-muted-foreground">No tasks finished yet</p>;
+
+  return (
+    <div>
+      <div className="flex items-end gap-(--sz-3px) h-20">
+        {days.map((day) => {
+          const count = countsByDay.get(day) ?? 0;
+          return (
+            <div key={day} className="flex-1 h-full flex flex-col justify-end" title={`${day}: ${count} done`}>
+              {count > 0 ? (
+                <div style={{ height: `${(count / maxValue) * 100}%`, minHeight: 2, backgroundColor: "var(--status-task-icon-done)" }} />
+              ) : (
+                <div className="bg-muted/30 rounded-sm" style={{ height: 2 }} />
+              )}
+            </div>
+          );
+        })}
+      </div>
+      <DateLabels days={days} />
+    </div>
+  );
+}

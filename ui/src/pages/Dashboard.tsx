@@ -26,11 +26,15 @@ import { usePublishSharedQueryData, useSharedPollingQuery } from "../hooks/useSh
 import { ActivityRow } from "../components/ActivityRow";
 import { Identity } from "../components/Identity";
 import { timeAgo } from "../lib/timeAgo";
-import { cn, formatCents } from "../lib/utils";
+import { cn } from "../lib/utils";
 import { SHOW_TASK_PRIORITY_UI } from "../lib/ui-flags";
-import { Bot, CircleDot, DollarSign, ShieldCheck, LayoutDashboard, PauseCircle } from "lucide-react";
+import { Bot, CircleCheck, CircleDot, OctagonAlert, ShieldCheck, LayoutDashboard, PauseCircle } from "lucide-react";
 import { ActiveAgentsPanel } from "../components/ActiveAgentsPanel";
-import { ChartCard, RunActivityChart, PriorityChart, IssueStatusChart, SuccessRateChart } from "../components/ActivityCharts";
+import { ChartCard, TasksDoneChart, PriorityChart, IssueStatusChart, SuccessRateChart, getLast14Days } from "../components/ActivityCharts";
+import { RunningByProjectPanel } from "../components/RunningByProjectPanel";
+import { HumanInterventionPanel } from "../components/HumanInterventionPanel";
+import { dashboardTaskMetrics, tasksDoneByDay } from "../lib/dashboard-task-metrics";
+import { heartbeatsApi } from "../api/heartbeats";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -210,6 +214,18 @@ export function Dashboard() {
   );
 
   const recentIssues = issues ? getRecentIssues(issues) : [];
+  // Same query key as the sidebar, so both share one live-runs cache entry.
+  const { data: liveRuns } = useQuery({
+    queryKey: queryKeys.liveRuns(selectedCompanyId!),
+    queryFn: () => heartbeatsApi.liveRunsForCompany(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
+  const liveIssueIds = useMemo(
+    () => new Set((liveRuns ?? []).flatMap((run) => (run.issueId ? [run.issueId] : []))),
+    [liveRuns],
+  );
+  const taskMetrics = useMemo(() => dashboardTaskMetrics(issues ?? []), [issues]);
+  const doneByDay = useMemo(() => tasksDoneByDay(issues ?? [], getLast14Days()), [issues]);
   const recentActivity = useMemo(() => (activity ?? []).slice(0, 10), [activity]);
 
   useEffect(() => {
@@ -399,40 +415,29 @@ export function Dashboard() {
 
           <div className="grid grid-cols-2 xl:grid-cols-4 gap-1 sm:gap-2">
             <MetricCard
-              icon={Bot}
-              value={data.agents.active + data.agents.running + data.agents.paused + data.agents.error}
-              label="Agents Enabled"
-              to="/agents"
-              description={
-                <span>
-                  {data.agents.running} running{", "}
-                  {data.agents.paused} paused{", "}
-                  {data.agents.error} errors
-                </span>
-              }
+              icon={CircleCheck}
+              value={taskMetrics.doneLast7Days}
+              label="Tasks Done"
+              to="/issues"
+              description={<span>last 7 days · {taskMetrics.doneTotal} all time</span>}
             />
             <MetricCard
               icon={CircleDot}
-              value={data.tasks.inProgress}
+              value={taskMetrics.inProgress}
               label="Tasks In Progress"
+              to="/issues"
+              description={<span>{taskMetrics.open} open · {liveIssueIds.size} with a live agent run</span>}
+            />
+            <MetricCard
+              icon={OctagonAlert}
+              value={taskMetrics.blocked}
+              label="Tasks Blocked"
               to="/issues"
               description={
                 <span>
-                  {data.tasks.open} open{", "}
-                  {data.tasks.blocked} blocked
-                </span>
-              }
-            />
-            <MetricCard
-              icon={DollarSign}
-              value={formatCents(data.costs.monthSpendCents)}
-              label="Month Spend"
-              to="/costs"
-              description={
-                <span>
-                  {data.costs.monthBudgetCents > 0
-                    ? `${data.costs.monthUtilizationPercent}% of ${formatCents(data.costs.monthBudgetCents)} budget`
-                    : "Unlimited budget"}
+                  {taskMetrics.blockedNeedingAttention > 0
+                    ? `${taskMetrics.blockedNeedingAttention} need attention`
+                    : "none need attention"}
                 </span>
               }
             />
@@ -451,11 +456,18 @@ export function Dashboard() {
             />
           </div>
 
+          <HumanInterventionPanel
+            issues={issues ?? []}
+            userName={(userId) => (userId ? userProfileMap.get(userId)?.label ?? null : null)}
+          />
+
+          <RunningByProjectPanel issues={issues ?? []} projects={projects ?? []} liveIssueIds={liveIssueIds} />
+
           <SmokeLabDashboardCard companyId={selectedCompanyId!} />
 
           <div className={cn("grid grid-cols-2 gap-4", SHOW_TASK_PRIORITY_UI ? "lg:grid-cols-4" : "lg:grid-cols-3")}>
-            <ChartCard title="Run Activity" subtitle="Last 14 days">
-              <RunActivityChart activity={data.runActivity} />
+            <ChartCard title="Tasks Done" subtitle="Last 14 days">
+              <TasksDoneChart countsByDay={doneByDay} />
             </ChartCard>
             {/* PAP-411: "Tasks by Priority" chart hidden behind SHOW_TASK_PRIORITY_UI. */}
             {SHOW_TASK_PRIORITY_UI && (
