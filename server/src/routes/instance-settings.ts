@@ -19,6 +19,7 @@ import {
   type ActivityPublication,
 } from "../services/index.js";
 import { environmentService } from "../services/environments.js";
+import { instanceBuildInfo } from "../services/instance-build.js";
 import { assertEnvironmentSelectionForCompany } from "./environment-selection.js";
 import { assertBoardOrgAccess, getActorInfo } from "./authz.js";
 
@@ -121,6 +122,13 @@ export function instanceSettingsRoutes(db: Db) {
   router.get("/instance/settings", async (req, res) => {
     assertBoardOrgAccess(req);
     res.json(await svc.get());
+  });
+
+  // Build badge in the sidebar: the running commit and, on fork builds, the
+  // commits since the upstream base (the changelog).
+  router.get("/instance/build", (req, res) => {
+    assertBoardOrgAccess(req);
+    res.json(instanceBuildInfo());
   });
 
   router.patch(

@@ -48,6 +48,7 @@ import { cn, SIDEBAR_RAIL_HIDDEN_LABEL } from "../lib/utils";
 import { PluginSlotOutlet } from "@/plugins/slots";
 import { PluginLauncherOutlet } from "@/plugins/launchers";
 import { SidebarCompanyMenu } from "./SidebarCompanyMenu";
+import { SidebarBuildInfo } from "./SidebarBuildInfo";
 import { primarySidebarStyles } from "./primary-sidebar-styles";
 
 export function Sidebar({ children }: { children?: ReactNode }) {
@@ -278,6 +279,8 @@ export function Sidebar({ children }: { children?: ReactNode }) {
           missingBehavior="placeholder"
         />
       </nav>
+
+      <SidebarBuildInfo rail={rail} />
     </aside>
   );
 }

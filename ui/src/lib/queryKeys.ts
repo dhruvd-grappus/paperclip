@@ -612,6 +612,7 @@ export const queryKeys = {
   },
   instance: {
     settings: ["instance", "settings"] as const,
+    build: ["instance", "build"] as const,
     generalSettings: ["instance", "general-settings"] as const,
     experimentalSettings: ["instance", "experimental-settings"] as const,
   },
