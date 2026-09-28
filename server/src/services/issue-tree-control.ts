@@ -10,6 +10,7 @@ import {
 } from "@paperclipai/db";
 import {
   ISSUE_STATUSES,
+  isTerminalIssueStatus,
   type IssueStatus,
   type IssueTreeControlMode,
   type IssueTreeControlPreview,
@@ -69,7 +70,6 @@ type RestoreTreeStatusResult = TreeStatusUpdateResult & {
   restoreHold: IssueTreeHold | null;
 };
 
-const TERMINAL_ISSUE_STATUSES = new Set<IssueStatus>(["done", "cancelled"]);
 const ACTIVE_RUN_STATUSES = ["queued", "running"] as const;
 const DEFAULT_RELEASE_POLICY: IssueTreeHoldReleasePolicy = { strategy: "manual" };
 const MAX_PAUSE_HOLD_ANCESTOR_DEPTH = 100;
@@ -235,7 +235,7 @@ function coerceIssueStatus(status: string): IssueStatus {
 }
 
 function isTerminalIssue(status: string): status is IssueStatus {
-  return TERMINAL_ISSUE_STATUSES.has(coerceIssueStatus(status));
+  return isTerminalIssueStatus(coerceIssueStatus(status));
 }
 
 function toPreviewRun(row: ActiveRunRow): IssueTreePreviewRun {

@@ -21,6 +21,7 @@ import {
   type SummarySlotScopeKind,
   type SummarySlotScopeSelector,
   summarySlotScopeSelectorSchema,
+  isTerminalIssueStatus,
   type WriteSummarySlotResponse,
 } from "@paperclipai/shared";
 import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
@@ -33,7 +34,6 @@ import { issueService } from "./issues.js";
 export const SUMMARIZER_BUILT_IN_KEY = "summarizer";
 
 /** Generation issues in these statuses are no longer active and can be superseded. */
-const TERMINAL_ISSUE_STATUSES = new Set<IssueStatus>(["done", "cancelled"]);
 
 const DEFAULT_SUMMARY_FORMAT = "markdown";
 const SUMMARY_SLOT_REVISION_LIMIT = 20;
@@ -238,7 +238,7 @@ export function summarySlotService(db: Db) {
   }
 
   function isIssueActive(row: typeof issues.$inferSelect | null): boolean {
-    return !!row && !TERMINAL_ISSUE_STATUSES.has(row.status as IssueStatus);
+    return !!row && !isTerminalIssueStatus(row.status as IssueStatus);
   }
 
   async function getSlot(input: SummarySlotSelectorInput): Promise<GetSummarySlotResponse> {

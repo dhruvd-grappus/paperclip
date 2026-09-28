@@ -1,6 +1,7 @@
 import { and, eq, gte, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { heartbeatRuns, issueRecoveryActions, issues } from "@paperclipai/db";
+import { isCompletedIssueStatus } from "@paperclipai/shared";
 
 // Default alert threshold: the recovery rate that a regression like the 07-06
 // week (3.26% of runs) blew past while nobody noticed by feel. See the plan on
@@ -101,7 +102,6 @@ type RecoveryActionFacts = {
 };
 
 const ACTIVE_STATUSES = new Set(["active", "escalated"]);
-const TERMINAL_ISSUE_STATUSES = new Set(["done"]);
 
 /**
  * Classify a recovery action by who ended up owning the deliverable work.
@@ -123,7 +123,7 @@ export function classifyRecoveryHandoff(facts: RecoveryActionFacts): HandoffClas
     facts.finalAssigneeAgentId != null && facts.finalAssigneeAgentId !== facts.ownerAgentId;
   if (landedElsewhere) return "handed_back";
   const ownerKept = facts.finalAssigneeAgentId === facts.ownerAgentId;
-  if (ownerKept && facts.finalIssueStatus && TERMINAL_ISSUE_STATUSES.has(facts.finalIssueStatus)) {
+  if (ownerKept && facts.finalIssueStatus && isCompletedIssueStatus(facts.finalIssueStatus)) {
     return "owner_completed";
   }
   return "other";

@@ -192,10 +192,48 @@ export const ISSUE_STATUSES = [
   "in_progress",
   "in_review",
   "done",
+  "human_approved",
   "blocked",
   "cancelled",
 ] as const;
 export type IssueStatus = (typeof ISSUE_STATUSES)[number];
+
+/**
+ * Statuses where the task is finished and nothing should still be driving it:
+ * no wake, no watchdog poke, no "still open" count.
+ *
+ * This list is the single source of truth. Before it existed, at least six
+ * services carried their own copy of `["done", "cancelled"]` and they had
+ * already drifted apart — recovery observability counted only `done` as
+ * finished, so a cancelled task read as perpetually open there. Anything that
+ * needs "is this task over?" must ask {@link isTerminalIssueStatus}: a terminal
+ * status added here has to reach every one of those call sites at once, and a
+ * missed inline literal still typechecks while simply behaving wrong.
+ */
+export const TERMINAL_ISSUE_STATUSES = ["done", "human_approved", "cancelled"] as const;
+export type TerminalIssueStatus = (typeof TERMINAL_ISSUE_STATUSES)[number];
+
+const TERMINAL_ISSUE_STATUS_SET: ReadonlySet<string> = new Set(TERMINAL_ISSUE_STATUSES);
+
+/** True when the task is over, whatever the outcome was. */
+export function isTerminalIssueStatus(status: string | null | undefined): boolean {
+  return status != null && TERMINAL_ISSUE_STATUS_SET.has(status);
+}
+
+/**
+ * Terminal statuses that mean the work actually landed, as opposed to being
+ * abandoned. `cancelled` is terminal but is not a completion, so throughput and
+ * "what did we ship" counts use this list rather than
+ * {@link TERMINAL_ISSUE_STATUSES}.
+ */
+export const COMPLETED_ISSUE_STATUSES = ["done", "human_approved"] as const;
+
+const COMPLETED_ISSUE_STATUS_SET: ReadonlySet<string> = new Set(COMPLETED_ISSUE_STATUSES);
+
+/** True when the task finished successfully (`done`, or signed off on top of it). */
+export function isCompletedIssueStatus(status: string | null | undefined): boolean {
+  return status != null && COMPLETED_ISSUE_STATUS_SET.has(status);
+}
 
 export const INBOX_MINE_ISSUE_STATUSES = [
   "backlog",
