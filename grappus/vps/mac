@@ -25,7 +25,8 @@ need_online() { online "$1" || die "$1 is offline in Tailscale: nothing to do on
 target() { echo "$(field "$1" user)@$(ip "$1")"; }
 workdir() { local w; w=$(field "$1" workdir); echo "${w:-paperclip-builds}"; }
 # remote: run a command string in a login zsh (brew, flutter, pod on PATH) from the Mac user's home.
-remote() { local n=$1; shift; ssh "${SSHO[@]}" "$(target "$n")" "zsh -lc $(printf %q "$*")"; }
+# nvm lives in .zshrc, which a non-interactive login shell skips: load it when the Mac has it (node, npx, pnpm, yarn).
+remote() { local n=$1; shift; ssh "${SSHO[@]}" "$(target "$n")" "zsh -lc $(printf %q "[ -s \$HOME/.nvm/nvm.sh ] && . \$HOME/.nvm/nvm.sh >/dev/null 2>&1; $*")"; }
 
 # One persistent build clone per repo on each Mac, named after the origin remote (ateam, not GRA-123-foo), shared by
 # every task and worktree of that repo, so Pods and DerivedData stay warm and each build only recompiles the diff.
@@ -35,11 +36,26 @@ lock() { [ -d "$2" ] || die "no dir $2"; mkdir -p "$HOME/.mac-locks"; exec 9>"$H
   flock -n 9 || { echo "mac: $1 is busy with another $(repo_key "$2") build, waiting (max 20 min)" >&2; flock -w 1200 9 || die "gave up waiting for $1"; }; }
 # Content-only compare (-c) and no -t: unchanged files keep their Mac mtimes even when the worktree is brand new,
 # otherwise Xcode would see every file as modified and rebuild from scratch.
-sync_to() { local n=$1 src=$2 dest; dest="$(workdir "$n")/$(repo_key "$src")"
+# The repo's .gitignore decides what travels: ignored paths are neither sent nor deleted on the Mac, so what the Mac
+# generates itself (Pods, Flutter build/ and .dart_tool, Expo's generated ios/, node_modules) survives every sync and
+# builds stay warm. Tracked files that match an ignore rule are still sent (git ls-files -ci), unless a whole ignored
+# directory holds them (Pods: the Mac runs pod install instead).
+# Expo (continuous native generation): `expo prebuild` writes ios/ and android/ on the Mac; when the repo neither
+# tracks nor ignores them they would be deleted by the next sync, so they are protected there.
+# WITH_ENV=1 (mac sync|build|sim run --with-env): also send the worktree's secret build config (.env*, Firebase plists)
+# that .gitignore keeps back. Only when the requester allowed it for that Mac: values leave this host.
+sync_to() { local n=$1 src=$2 dest inc d; dest="$(workdir "$n")/$(repo_key "$src")"
   remote "$n" "mkdir -p $(printf %q "$dest")" || die "ssh to $n failed (mac check $n)"
-  rsync -rlc --delete -e "ssh ${SSHO[*]}" --exclude .git --exclude node_modules --exclude DerivedData --exclude /build --exclude Pods/ \
-    "${src%/}/" "$(target "$n"):$dest/" >&2 || die "rsync failed"
-  echo "$dest"; }
+  inc=$(mktemp); git -C "$src" ls-files -ci --exclude-standard 2>/dev/null | sed 's#^#/#' > "$inc"
+  if [ "${WITH_ENV:-}" = 1 ]; then (cd "$src" && find . -path ./node_modules -prune -o -path ./.git -prune -o -type f \( -name '.env*' -o -name GoogleService-Info.plist -o -name google-services.json \) -print | sed 's#^\.##') >> "$inc"; fi
+  local prot=()
+  while read -r d; do d=${d%/package.json}; d=${d#.}; for x in ios android; do
+      [ -n "$(git -C "$src" ls-files "${d#/}${d:+/}$x" 2>/dev/null | head -1)" ] || prot+=(--filter="P $d/$x/"); done
+  done < <(cd "$src" && grep -l '"expo"' $(find . -maxdepth 3 -name package.json -not -path '*/node_modules/*') 2>/dev/null)
+  rsync -rlc --delete -e "ssh ${SSHO[*]}" "${prot[@]+"${prot[@]}"}" --include-from="$inc" --filter=':- .gitignore' \
+    --exclude .git --exclude node_modules --exclude DerivedData --exclude Pods/ \
+    "${src%/}/" "$(target "$n"):$dest/" >&2 || { rm -f "$inc"; die "rsync failed"; }
+  rm -f "$inc"; echo "$dest"; }
 
 set_fields() { # $1 name, rest: --host/--user/--workdir/--note pairs
   local n=$1; shift; local args=()
@@ -89,12 +105,12 @@ case "$cmd" in
     [ $# -gt 0 ] || die "no command"; w=$(printf %q "$(workdir "$n")"); remote "$n" "mkdir -p $w && cd $w && $*";;
   sync)
     n=${1:?mac sync <name> <local dir>}; src=${2:?mac sync <name> <local dir>}; need "$n"; need_online "$n"
-    lock "$n" "$src"; sync_to "$n" "$src";;
+    [ "${3:-}" = --with-env ] && WITH_ENV=1; lock "$n" "$src"; sync_to "$n" "$src";;
   build)
     n=${1:?mac build <name> <local dir> [--path P] [--scheme S] [--dest D] [-- extra xcodebuild args]}; src=${2:?local dir}; shift 2; need "$n"; need_online "$n"
     scheme=""; dest="generic/platform=iOS Simulator"; extra=(); sub=.
     while [ $# -gt 0 ]; do case "$1" in
-      --scheme) scheme=$2; shift 2;; --path) sub=$2; shift 2;; --dest) dest=$2; shift 2;; --) shift; extra=("$@"); break;;
+      --scheme) scheme=$2; shift 2;; --path) sub=$2; shift 2;; --dest) dest=$2; shift 2;; --with-env) WITH_ENV=1; shift;; --) shift; extra=("$@"); break;;
       *) die "unknown option $1";; esac; done
     lock "$n" "$src"; rdir=$(sync_to "$n" "$src") || exit 1
     log="$HOME/mac-logs/$(basename "$rdir")-$(date +%Y%m%d-%H%M%S).log"; mkdir -p "$HOME/mac-logs"
@@ -103,7 +119,8 @@ case "$cmd" in
     script="dd=\$(cd $(printf %q "$(dirname "$rdir")") && pwd)/DerivedData/$(basename "$rdir")
       cd $(printf %q "$rdir/$sub") || exit 1
       c=\$(ls -d *.xcworkspace 2>/dev/null | grep -v '^Pods' | head -1); k=-workspace
-      [ -n \"\$c\" ] || { c=\$(ls -d *.xcodeproj | head -1); k=-project; }
+      [ -n \"\$c\" ] || { c=\$(ls -d *.xcodeproj 2>/dev/null | head -1); k=-project; }
+      [ -n \"\$c\" ] || { echo \"no .xcworkspace or .xcodeproj in \$PWD: pass --path <dir holding it> (Flutter/Expo/RN: mac sim run)\"; exit 3; }
       # Pods never sync (repos commit them partially, without the big binary slices): the Mac installs its own,
       # again only when Podfile.lock moves. Uses the Mac's CocoaPods cache.
       if [ -f Podfile ] && ! cmp -s Podfile.lock Pods/Manifest.lock; then pod install || exit 1; fi
@@ -118,8 +135,8 @@ case "$cmd" in
     need "$n"; need_online "$n"; mkdir -p "$HOME/.mac-locks"; exec 8>"$HOME/.mac-locks/$n-sim.lock"
     flock -n 8 || { echo "mac: simulator on $n busy, waiting (max 20 min)" >&2; flock -w 1200 8 || die "gave up waiting for $n simulator"; }
     w=$(workdir "$n"); ts=$(date +%Y%m%d-%H%M%S); art="$w/sim-artifacts/$ts"; out="$HOME/mac-logs/sim/$ts"
-    # app of a repo = newest *.app its warm clone's DerivedData built for the simulator (optionally one build config)
-    app_of() { local r=$1; [ -d "$r" ] && r=$(repo_key "$r"); echo "app=\$(ls -td $(printf %q "$w")/DerivedData/$(printf %q "$r")/Build/Products/${cfg:-*}-iphonesimulator/*.app 2>/dev/null | head -1)
+    # app of a repo: newest simulator *.app from `mac build` (DerivedData) or from a Flutter/RN build inside the clone
+    app_of() { local r=$1; [ -d "$r" ] && r=$(repo_key "$r"); echo "app=\$(ls -td $(printf %q "$w")/DerivedData/$(printf %q "$r")/Build/Products/${cfg:-*}-iphonesimulator/*.app \$(find $(printf %q "$w/$r") -maxdepth 7 -type d -path '*iphonesimulator/*.app' -not -path '*/*.app/*' -not -path '*/node_modules/*' 2>/dev/null) 2>/dev/null | head -1)
       [ -n \"\$app\" ] || { echo 'no simulator build for $r: run mac build first' >&2; exit 3; }
       bid=\$(/usr/libexec/PlistBuddy -c 'Print CFBundleIdentifier' \"\$app/Info.plist\")"; }
     find_booted='dev=$(xcrun simctl list devices booted -j | python3 -c "import json,sys;d=[x for v in json.load(sys.stdin)[\"devices\"].values() for x in v];print(d[0][\"udid\"] if d else \"\")")'
@@ -127,7 +144,7 @@ case "$cmd" in
       [ -n "$dev" ] || { echo "no simulator booted: mac sim <mac> boot" >&2; exit 3; }'
     java='export PATH="$HOME/.maestro/bin:$PATH"; for j in /opt/homebrew/opt/openjdk@17 /opt/homebrew/opt/openjdk /usr/local/opt/openjdk@17; do [ -x $j/bin/java ] && export JAVA_HOME=$j && break; done'
     pull() { mkdir -p "$out"; rsync -r -e "ssh ${SSHO[*]}" "$(target "$n"):$art/" "$out/" && echo "artifacts: $out" && ls "$out" | head -20; }
-    cfg=""; except=""; args=(); while [ $# -gt 0 ]; do case "$1" in --config) cfg=$2; shift 2;; --except) except=$2; shift 2;; *) args+=("$1"); shift;; esac; done; set -- "${args[@]+"${args[@]}"}"
+    cfg=""; except=""; sub=.; args=(); while [ $# -gt 0 ]; do case "$1" in --config) cfg=$2; shift 2;; --except) except=$2; shift 2;; --path) sub=$2; shift 2;; --with-env) WITH_ENV=1; shift;; *) args+=("$1"); shift;; esac; done; set -- "${args[@]+"${args[@]}"}"
     case "$a" in
       devices) remote "$n" 'xcrun simctl list devices available | grep -E "^--|iPhone|iPad"';;
       boot) # [device name|udid] [--except cats]: always a slim simulator (simslim: ~170 background daemons off, ~4x less RAM).
@@ -169,6 +186,41 @@ print(x[\"name\"], x[\"osVersion\"], x[\"udid\"], x[\"state\"], \"slim %s/%s dae
         remote "$n" "mkdir -p $art/flow" && rsync -r -e "ssh ${SSHO[*]}" "$f" "$(target "$n"):$art/flow/" || die "flow upload failed"
         remote "$n" "$booted; $java; cd $art && maestro --device \$dev test flow/$(basename "$f") --format junit --output report.xml --debug-output debug --test-output-dir shots"; rc=$?
         pull; exit $rc;;
+      run) # <worktree> [--path <app dir>]: the framework's own dev run (flutter run / expo run:ios / react-native run-ios)
+        # on the booted simulator, left running in the background on the Mac (hot reload, Metro). Returns once the app is up.
+        src=${1:?mac sim <name> run <worktree> [--path <app dir>]}; lock "$n" "$src"; rdir=$(sync_to "$n" "$src") || exit 1
+        st="$w/.runs/$(repo_key "$src")"
+        remote "$n" "$booted
+          st=$(printf %q "$st"); case \$st in /*) ;; *) st=\$HOME/\$st;; esac; mkdir -p \$st; [ -f \$st/pgid ] && { kill -- -\$(cat \$st/pgid) 2>/dev/null; sleep 2; }
+          cd $(printf %q "$rdir/$sub") || exit 1
+          if [ -f pubspec.yaml ]; then kind=flutter; cmd=\"flutter run -d \$dev\"; ready='Flutter run key commands|Dart VM Service .* is available'
+          elif [ -f package.json ] && grep -q '\"expo\"' package.json; then kind=expo; cmd=\"npx expo run:ios --device \$dev\"; ready='Logs for your project will appear|Opening on'
+          elif [ -f package.json ] && grep -q '\"react-native\"' package.json; then kind=rn; cmd=\"npx react-native run-ios --udid \$dev\"; ready='Successfully launched the app'
+          else echo 'no Flutter, Expo or React Native app here: use mac build (native) or --path <app dir>'; exit 3; fi
+          if [ \$kind != flutter ]; then   # JS deps with the repo's own lockfile, only when package.json or the lockfile moved
+            lf=\$(ls pnpm-lock.yaml yarn.lock package-lock.json 2>/dev/null | head -1); h=\$(cat package.json \$lf | shasum | cut -c1-12)
+            if [ ! -d node_modules ] || [ \"\$(cat \$st/deps 2>/dev/null)\" != \"\$h\" ]; then echo \"installing JS deps (\${lf:-npm})\"
+              case \$lf in pnpm-lock.yaml) pnpm install --frozen-lockfile;; yarn.lock) yarn install --frozen-lockfile;; *) npm ci;; esac > \$st/install.log 2>&1 || { tail -20 \$st/install.log; exit 1; }
+              echo \$h > \$st/deps; fi
+          fi
+          rm -f \$st/in; mkfifo \$st/in; : > \$st/log; echo \$kind > \$st/kind
+          # new session (setsid): own process group that stop kills whole, detached from this ssh session
+          rm -f \$st/pgid; ( exec 3<>\$st/in; exec python3 -c 'import os,sys; os.setsid(); open(sys.argv[1],\"w\").write(str(os.getpid())); os.execvp(sys.argv[2], sys.argv[2:])' \$st/pgid \${=cmd} <&3 > \$st/log 2>&1 ) &!
+          for i in 1 2 3 4 5; do [ -s \$st/pgid ] && break; sleep 1; done
+          echo \"\$kind: \$cmd (log on the Mac: \$st/log)\"
+          for i in {1..300}; do
+            grep -q -E \"\$ready\" \$st/log && { echo 'app running'; grep -E 'Error|error:|Exception' \$st/log | tail -3; exit 0; }
+            kill -0 \$(cat \$st/pgid) 2>/dev/null || { echo 'run exited:'; grep -E 'rror|xception|FAILED' \$st/log | sort -u | head -12; tail -8 \$st/log; exit 1; }
+            sleep 3; done; echo 'still starting after 15 min: mac sim <mac> logs'; exit 2";;
+      reload) # <worktree>: sync the latest code into the running session; Flutter hot reload (r), Metro refreshes by itself
+        src=${1:?mac sim <name> reload <worktree>}; lock "$n" "$src"; sync_to "$n" "$src" >/dev/null || exit 1; st="$w/.runs/$(repo_key "$src")"
+        remote "$n" "st=$(printf %q "$st"); case \$st in /*) ;; *) st=\$HOME/\$st;; esac; kill -0 \$(cat \$st/pgid 2>/dev/null) 2>/dev/null || { echo 'no session running: mac sim <mac> run'; exit 3; }
+          [ \"\$(cat \$st/kind)\" = flutter ] && kill -USR1 \$(cat \$st/pgid); sleep 6; echo reloaded; grep -E 'Reloaded|Restarted|rror' \$st/log | tail -3";;
+      stop|logs) # <repo|worktree> [lines]
+        r=${1:?mac sim <name> $a <repo|worktree>}; [ -d "$r" ] && r=$(repo_key "$r"); st=$(printf %q "$w/.runs/$r")
+        pre="st=$st; case \$st in /*) ;; *) st=\$HOME/\$st;; esac"
+        if [ "$a" = stop ]; then remote "$n" "$pre; [ -f \$st/pgid ] && kill -- -\$(cat \$st/pgid) 2>/dev/null; rm -f \$st/pgid \$st/in; echo stopped"
+        else remote "$n" "$pre; tail -n ${2:-60} \$st/log"; fi;;
       *) die "unknown sim action $a (mac help)";;
     esac;;
   help|*)
@@ -181,7 +233,10 @@ mac: run Xcode/Swift/iOS/macOS work on a real Mac from this Linux host (it canno
   mac edit <name> [--host|--user|--workdir|--note <v>]
   mac remove <name>
   mac pubkey                                key + one-liner to authorise this host on a new Mac
-  mac sync <name> <dir>                     rsync a worktree into the Mac's one clone of that repo, <workdir>/<repo>
+  mac sync <name> <dir>                     rsync a worktree into the Mac's one clone of that repo, <workdir>/<repo>;
+                                            .gitignore'd paths are never sent nor deleted (Mac-generated build output stays);
+                                            --with-env (sync, build, sim run) also sends .env* and Firebase plists: only
+                                            when the requester allowed their values on that Mac
                                             (repo = origin remote name; reused by every task, so builds stay warm; no .git, node_modules,
                                             top-level build/, Pods/: build runs pod install on the Mac when Podfile.lock changes);
                                             prints the remote dir. React Native/Flutter: run
@@ -196,6 +251,12 @@ mac: run Xcode/Swift/iOS/macOS work on a real Mac from this Linux host (it canno
   mac sim <name> install|reinstall|launch|terminate <repo|worktree> [--config Debug-Dev]
                                             the app from that repo's last `mac build`; reinstall = uninstall + install +
                                             launch (fresh app data); launch relaunches when running
+  mac sim <name> run <worktree> [--path <app dir>] [--with-env]
+                                            Flutter / Expo / React Native: the framework's own run (flutter run, npx expo
+                                            run:ios, react-native run-ios) on the booted simulator, kept running on the Mac
+                                            (Metro, hot reload); returns when the app is up. Native Xcode apps: mac build + install
+  mac sim <name> reload <worktree>          push your latest code into that running session (Flutter hot reload via SIGUSR1, Metro refreshes itself)
+  mac sim <name> stop|logs <repo|worktree> [lines]
   mac sim <name> screenshot | openurl <url> | hierarchy [lines]
                                             screenshot lands on this host (path printed); hierarchy = labelled UI elements + bounds
   mac sim <name> flow <flow.yaml|dir>       Maestro flow (tapOn, inputText, swipe, assertVisible, takeScreenshot ...) on the

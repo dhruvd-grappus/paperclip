@@ -13,7 +13,7 @@ What it does, with board rights (outside any agent run):
 2. Question notice. For every new pending card on a Slack-bound root (the agent's own cards and relayed copies),
    one new thread message is posted, so Slack notifies the thread.
 4. QA screenshots. Image attachments named `qa-*` on a Slack-bound root (QA uploads one per criterion to its parent
-   task) are uploaded into the Slack thread, one message per QA run. Other attachments (e.g. the requester's own
+   task) are uploaded into the Slack thread in criterion order, 10 images per message. Other attachments (e.g. the requester's own
    Slack uploads) are never echoed.
 Cards opened before `--since` (first start) are ignored unless listed with `--include <interactionId>`.
 
@@ -241,17 +241,22 @@ def post_screenshots(root, root_id, conv):
              and now() - P(a["createdAt"]) > dt.timedelta(minutes=1)]   # let a QA run finish uploading its set
     if not (shots and SLACK_TOKEN and conv):
         return
-    shots = sorted(shots, key=lambda a: a["originalFilename"])[:10]
-    try:
-        if DRY:
-            log("DRY slack screenshots", root["identifier"], [a["originalFilename"] for a in shots])
+    # natural order: ac2 before ac10, step 2 before step 10
+    key = lambda a: [int(t) if t.isdigit() else t for t in re.split(r"(\d+)", a["originalFilename"])]
+    shots = sorted(shots, key=key)
+    if DRY:
+        log("DRY slack screenshots", root["identifier"], [a["originalFilename"] for a in shots])
+        return
+    for i in range(0, len(shots), 10):   # Slack takes at most 10 files per message
+        batch = shots[i:i + 10]
+        try:
+            slack_upload_images(conv, [(a["originalFilename"], attachment_bytes(a["contentPath"])) for a in batch],
+                                "Screenshots from testing:" if i == 0 else f"Screenshots from testing (continued, {i + 1}-{i + len(batch)}):")
+            state["slackFiles"].extend(a["id"] for a in batch)
+            log("slack screenshots posted", root["identifier"], len(batch))
+        except Exception as e:  # never let an upload failure stop the other steps; the rest retry next minute
+            log("slack screenshots failed", root["identifier"], e)
             return
-        slack_upload_images(conv, [(a["originalFilename"], attachment_bytes(a["contentPath"])) for a in shots],
-                            "Screenshots from testing:")
-        state["slackFiles"].extend(a["id"] for a in shots)
-        log("slack screenshots posted", root["identifier"], len(shots))
-    except Exception as e:  # never let an upload failure stop the other steps; retried next minute
-        log("slack screenshots failed", root["identifier"], e)
 
 
 def republish_unpublished(root, root_id, floor=dt.timedelta(minutes=2)):
