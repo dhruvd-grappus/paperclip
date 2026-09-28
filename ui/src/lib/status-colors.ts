@@ -23,6 +23,7 @@ export const issueStatusIcon: Record<string, string> = {
   in_progress: "text-blue-600 border-blue-600 dark:text-blue-400 dark:border-blue-400",
   in_review: "text-violet-600 border-violet-600 dark:text-violet-400 dark:border-violet-400",
   done: "text-green-600 border-green-600 dark:text-green-400 dark:border-green-400",
+  human_approved: "text-green-600 border-green-600 dark:text-green-400 dark:border-green-400",
   cancelled: "text-neutral-500 border-neutral-500",
   blocked: "text-red-600 border-red-600 dark:text-red-400 dark:border-red-400",
 };
@@ -36,6 +37,7 @@ export const issueStatusText: Record<string, string> = {
   in_progress: "text-blue-600 dark:text-blue-400",
   in_review: "text-violet-600 dark:text-violet-400",
   done: "text-green-600 dark:text-green-400",
+  human_approved: "text-green-600 dark:text-green-400",
   cancelled: "text-neutral-500",
   blocked: "text-red-600 dark:text-red-400",
 };
@@ -117,6 +119,7 @@ export const statusBadge: Record<string, string> = {
   in_review: "bg-violet-100 text-violet-700 dark:bg-violet-900/50 dark:text-violet-300",
   blocked: "bg-red-100 text-red-700 dark:bg-red-900/50 dark:text-red-300",
   done: "bg-green-100 text-green-700 dark:bg-green-900/50 dark:text-green-300",
+  human_approved: "bg-green-100 text-green-700 dark:bg-green-900/50 dark:text-green-300",
   cancelled: "bg-muted text-muted-foreground",
 
   // Tool access — policy decisions, catalog, and runtime health (Tools & Access, PAP-10389)
@@ -224,6 +227,7 @@ export const issueStatusColor: Record<string, BrandChipColor> = {
   in_progress: "blue",
   in_review: "violet",
   done: "green",
+  human_approved: "green",
   blocked: "red",
   cancelled: "gray",
 };
@@ -257,6 +261,7 @@ export const taskStatusVar: Record<string, string> = {
   in_progress: "--status-task-in_progress",
   in_review: "--status-task-in_review",
   done: "--status-task-done",
+  human_approved: "--status-task-done",
   blocked: "--status-task-blocked",
   cancelled: "--status-task-cancelled",
 };
@@ -275,6 +280,7 @@ export const taskStatusIconVar: Record<string, string> = {
   in_progress: "--status-task-icon-in_progress",
   in_review: "--status-task-icon-in_review",
   done: "--status-task-icon-done",
+  human_approved: "--status-task-icon-done",
   blocked: "--status-task-icon-blocked",
   cancelled: "--status-task-icon-cancelled",
   in_queue: "--status-task-icon-in_queue",

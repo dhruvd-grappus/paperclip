@@ -34,7 +34,11 @@ import type {
   GitWorktreeBranchAncestryVerdict,
   IssueRecoveryAction,
 } from "@paperclipai/shared";
-import { deriveProjectUrlKey, WORKSPACE_OVERVIEW_LINKED_ISSUE_LIMIT } from "@paperclipai/shared";
+import {
+  deriveProjectUrlKey,
+  isTerminalIssueStatus,
+  WORKSPACE_OVERVIEW_LINKED_ISSUE_LIMIT,
+} from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import {
@@ -68,7 +72,6 @@ type WorkspaceRuntimeServiceRow = typeof workspaceRuntimeServices.$inferSelect;
 type RuntimeServiceReadDb = Pick<Db, "select">;
 type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
 const execFileAsync = promisify(execFile);
-const TERMINAL_ISSUE_STATUSES = new Set(["done", "cancelled"]);
 
 // Return the timestamp when an issue became terminal. A `done` issue uses
 // `completedAt`. A `cancelled` issue uses `cancelledAt`. The reaper cooldown
@@ -1380,8 +1383,8 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
   ) {
     const issueTree = await listWorkspaceIssueTree(workspace);
     const sourceIssue = issueTree.find((issue) => issue.id === workspace.sourceIssueId) ?? null;
-    const sourceIssueTerminal = Boolean(sourceIssue && TERMINAL_ISSUE_STATUSES.has(sourceIssue.status));
-    const subtreeTerminal = Boolean(sourceIssue && issueTree.every((issue) => TERMINAL_ISSUE_STATUSES.has(issue.status)));
+    const sourceIssueTerminal = Boolean(sourceIssue && isTerminalIssueStatus(sourceIssue.status));
+    const subtreeTerminal = Boolean(sourceIssue && issueTree.every((issue) => isTerminalIssueStatus(issue.status)));
     // The cooldown anchor is the most recent terminal timestamp across the whole
     // issue tree. The reaper compares it against the cooldown window. A null
     // anchor means no issue in the tree is terminal yet, so the cooldown never
@@ -2353,7 +2356,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
 
       const linkedIssueSummaries = linkedIssues.map((issue) => ({
         ...issue,
-        isTerminal: TERMINAL_ISSUE_STATUSES.has(issue.status),
+        isTerminal: isTerminalIssueStatus(issue.status),
       }));
 
       const blockingIssues = linkedIssueSummaries.filter((issue) => !issue.isTerminal);

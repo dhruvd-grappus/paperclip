@@ -3,6 +3,7 @@ import {
   Ban,
   Circle,
   CircleCheck,
+  CircleCheckBig,
   CircleDashed,
   CircleDot,
   CircleMinus,
@@ -19,7 +20,8 @@ import { taskStatusIconVar, taskStatusIconVarDefault } from "../lib/status-color
  * set reads as one consistent icon family:
  *
  *   backlog → circle-dashed · todo → circle · in_progress → animated open circle ·
- *   in_review → circle-dot · done → circle-check · blocked → circle-minus ·
+ *   in_review → circle-dot · done → circle-check ·
+ *   human_approved → circle-check-big · blocked → circle-minus ·
  *   cancelled → ban · in_queue → circle-minus (blocked recoloured blue).
  *
  * The in-progress animation represents task workflow status, independently of
@@ -44,6 +46,7 @@ export type StatusGlyphStatus =
   | "in_progress"
   | "in_review"
   | "done"
+  | "human_approved"
   | "blocked"
   | "cancelled"
   | "in_queue";
@@ -61,6 +64,8 @@ const STATUS_ICON: Record<string, LucideIcon> = {
   in_progress: TaskProgressSpinner,
   in_review: CircleDot,
   done: CircleCheck,
+  // Done, then signed off by a person: the same check, weighted.
+  human_approved: CircleCheckBig,
   blocked: CircleMinus,
   cancelled: Ban,
   in_queue: CircleMinus,

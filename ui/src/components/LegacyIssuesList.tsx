@@ -128,6 +128,7 @@ const issueStatusLabels: Record<IssueStatus, string> = {
   in_progress: "In progress",
   in_review: "In review",
   done: "Done",
+  human_approved: "Human approved",
   blocked: "Blocked",
   cancelled: "Cancelled",
 };
@@ -137,6 +138,7 @@ const progressSegmentClasses: Record<IssueStatus, string> = {
   in_progress: "bg-yellow-500",
   in_review: "bg-violet-500",
   done: "bg-green-500",
+  human_approved: "bg-green-600",
   blocked: "bg-red-500",
   cancelled: "bg-neutral-400",
 };

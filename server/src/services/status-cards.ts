@@ -18,7 +18,11 @@ import type {
   WriteStatusCardQuery,
   WriteStatusCardSummary,
 } from "@paperclipai/shared";
-import { companySearchQuerySchema, STATUS_CARD_AGENT_MAX_CARDS } from "@paperclipai/shared";
+import {
+  companySearchQuerySchema,
+  isTerminalIssueStatus,
+  STATUS_CARD_AGENT_MAX_CARDS,
+} from "@paperclipai/shared";
 import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { readBuiltInAgentMarker } from "./built-in-agent-metadata.js";
@@ -45,7 +49,6 @@ type StatusCardActor = { agentId: string | null; userId: string | null };
 type StatusCardWriter = { agentId: string | null; runId: string | null };
 type StatusCardRow = typeof statusCards.$inferSelect;
 
-const TERMINAL_ISSUE_STATUSES = new Set(["done", "cancelled"]);
 
 function promptHash(prompt: string) {
   return createHash("sha256").update(prompt).digest("hex");
@@ -306,7 +309,7 @@ export function statusCardService(
     }).where(eq(statusCards.id, card.id)).returning().then((rows) => rows[0]!);
     if (archiveChanged && input.archived && card.generatingIssueId) {
       const generationIssue = await db.select().from(issues).where(eq(issues.id, card.generatingIssueId)).then((rows) => rows[0] ?? null);
-      if (generationIssue && !TERMINAL_ISSUE_STATUSES.has(generationIssue.status)) {
+      if (generationIssue && !isTerminalIssueStatus(generationIssue.status)) {
         await issuesSvc.update(generationIssue.id, { status: "cancelled" });
       }
     }
@@ -375,7 +378,7 @@ export function statusCardService(
       // genuinely in flight. A `blocked` task is stuck awaiting a human and will
       // never finish on its own, so a manual re-kick must supersede it (reopened
       // to `todo` below) rather than silently no-op.
-      if (active && !TERMINAL_ISSUE_STATUSES.has(active.status) && active.status !== "blocked" && payload?.promptHash === hash) {
+      if (active && !isTerminalIssueStatus(active.status) && active.status !== "blocked" && payload?.promptHash === hash) {
         return { card, generatingIssue: active, alreadyGenerating: true };
       }
     }
@@ -399,7 +402,7 @@ export function statusCardService(
     // Re-open a superseded setup task so the Summarizer picks it back up. This
     // covers idempotency-key hits that resolve to a terminal task (done/cancelled)
     // as well as a `blocked` one that a manual re-kick is reviving.
-    const reopened = deduplicated && (TERMINAL_ISSUE_STATUSES.has(created.status) || created.status === "blocked")
+    const reopened = deduplicated && (isTerminalIssueStatus(created.status) || created.status === "blocked")
       ? await issuesSvc.update(created.id, { status: "todo", assigneeAgentId: summarizerAgentId })
       : created;
     const generationIssue = await issuesSvc.update(reopened!.id, {
@@ -416,7 +419,7 @@ export function statusCardService(
       // Only "already generating" when we joined a genuinely in-flight task. A
       // deduplicated `blocked` task was just revived (reopened to todo) above, so
       // that is a fresh re-kick, not a no-op.
-      alreadyGenerating: deduplicated && !TERMINAL_ISSUE_STATUSES.has(created.status) && created.status !== "blocked",
+      alreadyGenerating: deduplicated && !isTerminalIssueStatus(created.status) && created.status !== "blocked",
     };
   }
 
@@ -437,7 +440,7 @@ export function statusCardService(
     if (!issue || issue.companyId !== card.companyId || issue.assigneeAgentId !== actor.agentId) {
       throw forbidden("Generation task is not assigned to this agent");
     }
-    if (TERMINAL_ISSUE_STATUSES.has(issue.status)) {
+    if (isTerminalIssueStatus(issue.status)) {
       throw forbidden("Generation task is no longer active");
     }
     const payload = parseGenerationPayload(issue.description);
@@ -461,7 +464,7 @@ export function statusCardService(
         throw conflict("Status-card compilation was superseded by a newer task");
       }
       const generationIssue = await tx.select().from(issues).where(eq(issues.id, input.generationIssueId)).then((rows) => rows[0] ?? null);
-      if (!generationIssue || TERMINAL_ISSUE_STATUSES.has(generationIssue.status)) {
+      if (!generationIssue || isTerminalIssueStatus(generationIssue.status)) {
         throw forbidden("Generation task is no longer active");
       }
       const queryVersion = current.queryVersion + 1;
@@ -616,7 +619,7 @@ export function statusCardService(
       const active = await db.select().from(issues).where(eq(issues.id, card.generatingIssueId)).then((rows) => rows[0] ?? null);
       // As in requestCompile: a `blocked` update task is stuck, not in flight, so
       // a manual refresh must be allowed to supersede it instead of no-opping.
-      if (active && !TERMINAL_ISSUE_STATUSES.has(active.status) && active.status !== "blocked") {
+      if (active && !isTerminalIssueStatus(active.status) && active.status !== "blocked") {
         return { card, generatingIssue: active, alreadyGenerating: true, enqueued: false };
       }
     }
@@ -699,7 +702,7 @@ export function statusCardService(
       idempotencyKey: `status-card-update:${card.id}:${fingerprintHash}`,
       onDeduplicated: (reason) => { deduplicated = reason === "idempotency_key"; },
     });
-    const reopened = deduplicated && TERMINAL_ISSUE_STATUSES.has(created.status)
+    const reopened = deduplicated && isTerminalIssueStatus(created.status)
       ? await issuesSvc.update(created.id, { status: "todo", assigneeAgentId: summarizerAgentId })
       : created;
     const generationIssue = await issuesSvc.update(reopened!.id, {
@@ -720,18 +723,18 @@ export function statusCardService(
     if (!next) {
       const winner = await getById(card.id);
       if (!winner?.generatingIssueId) {
-        if (!TERMINAL_ISSUE_STATUSES.has(generationIssue!.status)) {
+        if (!isTerminalIssueStatus(generationIssue!.status)) {
           await issuesSvc.update(generationIssue!.id, { status: "cancelled" });
         }
         throw conflict("Status-card refresh claim was lost");
       }
-      if (generationIssue!.id !== winner.generatingIssueId && !TERMINAL_ISSUE_STATUSES.has(generationIssue!.status)) {
+      if (generationIssue!.id !== winner.generatingIssueId && !isTerminalIssueStatus(generationIssue!.status)) {
         await issuesSvc.update(generationIssue!.id, { status: "cancelled" });
       }
       const winnerIssue = await db.select().from(issues).where(eq(issues.id, winner.generatingIssueId)).then((rows) => rows[0] ?? null);
       return { card: winner, generatingIssue: winnerIssue, alreadyGenerating: true, enqueued: false, kind, changes };
     }
-    if (!deduplicated || TERMINAL_ISSUE_STATUSES.has(created.status)) {
+    if (!deduplicated || isTerminalIssueStatus(created.status)) {
       await db.insert(statusCardUpdates).values({
         cardId: card.id,
         kind,
@@ -782,7 +785,7 @@ export function statusCardService(
         throw conflict("Status-card generation was superseded by a newer task");
       }
       const generationIssue = await tx.select().from(issues).where(eq(issues.id, input.generationIssueId)).then((rows) => rows[0] ?? null);
-      if (!generationIssue || TERMINAL_ISSUE_STATUSES.has(generationIssue.status)) {
+      if (!generationIssue || isTerminalIssueStatus(generationIssue.status)) {
         throw forbidden("Generation task is no longer active");
       }
       const payload = parseGenerationPayload(generationIssue.description);

@@ -390,6 +390,10 @@ export {
   AGENT_ICON_NAMES,
   PROJECT_ICON_NAMES,
   ISSUE_STATUSES,
+  TERMINAL_ISSUE_STATUSES,
+  isTerminalIssueStatus,
+  COMPLETED_ISSUE_STATUSES,
+  isCompletedIssueStatus,
   INBOX_MINE_ISSUE_STATUSES,
   INBOX_MINE_ISSUE_STATUS_FILTER,
   ISSUE_PRIORITIES,
@@ -1789,6 +1793,25 @@ export {
   getClosedIsolatedExecutionWorkspaceMessage,
   isClosedIsolatedExecutionWorkspace,
 } from "./execution-workspace-guards.js";
+
+export {
+  COMPLETION_EVIDENCE_WORK_PRODUCT_TYPES,
+  DEFAULT_COMPLETION_EVIDENCE_POLICY,
+  evaluateCompletionEvidence,
+  evaluateCompletionGate,
+  hasCompletionEvidence,
+  isCompletionEvidence,
+} from "./completion-evidence.js";
+export type {
+  CompletionEvidencePolicy,
+  CompletionEvidenceRequirement,
+  CompletionEvidenceResult,
+  CompletionEvidenceScope,
+  CompletionEvidenceWorkProductType,
+  CompletionGateFailureReason,
+  CompletionGateResult,
+  CompletionGateSubject,
+} from "./completion-evidence.js";
 
 export {
   MAX_TASK_DRAIN_TTL_MS,
