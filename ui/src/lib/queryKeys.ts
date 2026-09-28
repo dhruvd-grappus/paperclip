@@ -675,6 +675,12 @@ export const queryKeys = {
   activity: (companyId: string) => ["activity", companyId] as const,
   costs: (companyId: string, from?: string, to?: string) =>
     ["costs", companyId, from, to] as const,
+  stats: {
+    overview: (companyId: string, from?: string, to?: string) =>
+      ["stats", "overview", companyId, from, to] as const,
+    byProject: (companyId: string, from?: string, to?: string) =>
+      ["stats", "by-project", companyId, from, to] as const,
+  },
   usageByProvider: (companyId: string, from?: string, to?: string) =>
     ["usage-by-provider", companyId, from, to] as const,
   usageByBiller: (companyId: string, from?: string, to?: string) =>

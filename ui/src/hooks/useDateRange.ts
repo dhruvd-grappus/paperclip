@@ -64,8 +64,8 @@ export interface UseDateRangeResult {
   customReady: boolean;
 }
 
-export function useDateRange(): UseDateRangeResult {
-  const [preset, setPreset] = useState<DatePreset>("mtd");
+export function useDateRange(initialPreset: DatePreset = "mtd"): UseDateRangeResult {
+  const [preset, setPreset] = useState<DatePreset>(initialPreset);
   const [customFrom, setCustomFrom] = useState("");
   const [customTo, setCustomTo] = useState("");
 
