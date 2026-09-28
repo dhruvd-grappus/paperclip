@@ -4,6 +4,7 @@ import {
   ISSUES_ROW_PRESENTATION,
   ISSUES_TOOLBAR_PRESENTATION,
   buildIssuesSearchUrl,
+  parseIssueStatusParams,
   getNextIssuesPageOffset,
   mergeIssuePagesStable,
   resolveIssuesPresentation,
@@ -24,6 +25,25 @@ describe("buildIssuesSearchUrl", () => {
 
   it("returns null when the URL already matches the current search", () => {
     expect(buildIssuesSearchUrl("http://localhost:3100/issues?q=bug+", "bug ")).toBeNull();
+  });
+});
+
+describe("parseIssueStatusParams", () => {
+  it("reads a single status, the shape the dashboard cards link with", () => {
+    expect(parseIssueStatusParams(["human_approved"])).toEqual(["human_approved"]);
+  });
+
+  it("accepts a comma list and the param repeated, without duplicates", () => {
+    expect(parseIssueStatusParams(["done, human_approved", "done"])).toEqual(["done", "human_approved"]);
+  });
+
+  it("drops values that are not statuses instead of emptying the list", () => {
+    expect(parseIssueStatusParams(["human_approved", "not_a_status"])).toEqual(["human_approved"]);
+    expect(parseIssueStatusParams(["nonsense"])).toEqual([]);
+  });
+
+  it("returns nothing when the param is absent", () => {
+    expect(parseIssueStatusParams([])).toEqual([]);
   });
 });
 

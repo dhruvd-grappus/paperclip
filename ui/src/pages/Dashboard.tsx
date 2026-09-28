@@ -367,7 +367,10 @@ export function Dashboard() {
               icon={UserCheck}
               value={data.humanApproved?.tasks ?? 0}
               label="Human Approved"
-              to="/approvals"
+              // The number counts tasks, so the card opens the task list on
+              // that status. `/approvals` is the queue of approvals still
+              // pending, which is the neighbouring card's job.
+              to="/issues?status=human_approved"
               description={
                 <span>
                   tasks a person signed off · {(data.humanApproved?.confirmations ?? 0) + (data.humanApproved?.approvals ?? 0)} decisions

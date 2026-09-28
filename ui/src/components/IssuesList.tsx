@@ -252,14 +252,17 @@ function getInitialWorkspaceViewState(
   initialAssignees?: string[],
   initialWorkspaces?: string[],
   defaultSortField?: IssueSortField,
+  initialStatuses?: string[],
 ): IssueViewState {
   const initial = getInitialViewState(stored, initialAssignees, defaultSortField);
-  if (!initialWorkspaces) return initial;
-  return {
-    ...initial,
-    workspaces: initialWorkspaces,
-    statuses: [],
-  };
+  const withWorkspaces = initialWorkspaces
+    ? { ...initial, workspaces: initialWorkspaces, statuses: [] }
+    : initial;
+  // A caller that asks for statuses wins over the statuses the assignee and
+  // workspace paths clear: arriving from a link that names a status (a
+  // dashboard metric card, say) should land on exactly that status.
+  if (!initialStatuses) return withWorkspaces;
+  return { ...withWorkspaces, statuses: initialStatuses };
 }
 
 function getIssueColumnsStorageKey(key: string): string {
@@ -473,6 +476,8 @@ interface IssuesListProps {
   issueLinkState?: unknown;
   initialAssignees?: string[];
   initialWorkspaces?: string[];
+  /** Statuses to open with, e.g. a dashboard card linking to one status. */
+  initialStatuses?: string[];
   initialSearch?: string;
   searchFilters?: Omit<IssueListRequestFilters, "q" | "projectId" | "limit" | "includeRoutineExecutions">;
   searchWithinLoadedIssues?: boolean;
@@ -712,6 +717,7 @@ function StreamlinedIssuesList({
   issueLinkState,
   initialAssignees,
   initialWorkspaces,
+  initialStatuses,
   initialSearch,
   searchFilters,
   searchWithinLoadedIssues = false,
@@ -791,6 +797,7 @@ function StreamlinedIssuesList({
   };
   const initialAssigneesKey = initialAssignees?.join("|") ?? "";
   const initialWorkspacesKey = initialWorkspaces?.join("|") ?? "";
+  const initialStatusesKey = initialStatuses?.join("|") ?? "";
   const initialPreferencesRef = useRef<ReturnType<typeof loadIssueCollectionPreferences> | null>(null);
   if (initialPreferencesRef.current === null) {
     initialPreferencesRef.current = loadIssueCollectionPreferences(preferenceLocation);
@@ -798,7 +805,13 @@ function StreamlinedIssuesList({
   const initialPreferences = initialPreferencesRef.current;
 
   const [viewState, setViewState] = useState<IssueViewState>(() =>
-    getInitialWorkspaceViewState(initialPreferences, initialAssignees, initialWorkspaces, defaultSortField),
+    getInitialWorkspaceViewState(
+      initialPreferences,
+      initialAssignees,
+      initialWorkspaces,
+      defaultSortField,
+      initialStatuses,
+    ),
   );
   const [assigneePickerIssueId, setAssigneePickerIssueId] = useState<string | null>(null);
   const [assigneeSearch, setAssigneeSearch] = useState("");
@@ -815,13 +828,22 @@ function StreamlinedIssuesList({
   }, [initialSearch]);
 
   // Reload view state whenever the persisted context changes.
-  const prevViewStateContextKey = useRef(`${scopedKey}::${initialAssigneesKey}::${initialWorkspacesKey}`);
+  const prevViewStateContextKey = useRef(
+    `${scopedKey}::${initialAssigneesKey}::${initialWorkspacesKey}::${initialStatusesKey}`,
+  );
   useEffect(() => {
-    const nextContextKey = `${scopedKey}::${initialAssigneesKey}::${initialWorkspacesKey}`;
+    const nextContextKey =
+      `${scopedKey}::${initialAssigneesKey}::${initialWorkspacesKey}::${initialStatusesKey}`;
     if (prevViewStateContextKey.current !== nextContextKey) {
       prevViewStateContextKey.current = nextContextKey;
       const preferences = loadIssueCollectionPreferences(preferenceLocation);
-      setViewState(getInitialWorkspaceViewState(preferences, initialAssignees, initialWorkspaces, defaultSortField));
+      setViewState(getInitialWorkspaceViewState(
+        preferences,
+        initialAssignees,
+        initialWorkspaces,
+        defaultSortField,
+        initialStatuses,
+      ));
       setVisibleIssueColumns(preferences.columns);
     }
   }, [
@@ -830,6 +852,8 @@ function StreamlinedIssuesList({
     initialAssigneesKey,
     initialWorkspaces,
     initialWorkspacesKey,
+    initialStatuses,
+    initialStatusesKey,
     defaultSortField,
     preferenceLocation.companyId,
     preferenceLocation.collectionKey,
