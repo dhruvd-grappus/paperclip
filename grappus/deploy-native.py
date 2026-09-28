@@ -11,7 +11,8 @@ skills/, agents/clarifier.md, vps/ there. Refuses to run while any heartbeat run
      vps/native-token.sh -> ~/native-token.sh, vps/runner-shim.sh -> ~/runner-shim.sh, vps/pc -> ~/pc.
   3. Clarifier: PUT AGENTS.md; PATCH adapter to paperclip_runner / acpx / claude with the pipeline config;
      run native-token.sh so CLAUDE_CODE_OAUTH_TOKEN is present.
-  4. Prune stale runtime-skills hash dirs (legacy leftovers).
+  4. Prune stale runtime-skills hash dirs (legacy leftovers) and stale skill dirs (keeping skills-sync's
+     UI manifest), then run skills-sync.sh so UI-added skills appear immediately.
 """
 import json, os, re, shutil, subprocess, sys, urllib.request
 
@@ -22,7 +23,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 HOME = os.path.expanduser("~")
 K = json.load(open(f"{HOME}/.paperclip/auth.json"))["credentials"][B]["token"]
 FORCE = "--force" in sys.argv
-SLUGS = ["pc-lite", "scope", "build", "review", "qa", "memory", "env"]
+SLUGS = ["pc-lite", "scope", "build", "review", "qa", "memory", "env", "figma"]
 
 
 def req(m, p, body=None):
@@ -46,8 +47,12 @@ VER = m.group(1)
 print("pipeline", VER)
 
 # ---- 1. skills ----------------------------------------------------------------
+# Core skills are written to both places: the directory the agent reads by absolute path, and the
+# Paperclip company skills store, so the UI shows the live text and no stale copy survives there.
 dst_root = f"{HOME}/skills"
+store_root = f"{HOME}/.paperclip/instances/default/skills/{C}"
 os.makedirs(dst_root, exist_ok=True)
+os.makedirs(store_root, exist_ok=True)
 for slug in SLUGS:
     src = os.path.join(HERE, "skills", slug, "SKILL.md")
     txt = open(src).read()
@@ -56,12 +61,19 @@ for slug in SLUGS:
     body = parts[2].lstrip("\n")
     body = re.sub(r"^<!-- pipeline v\d+ -->\n+", "", body)
     stamped = f"---\n{parts[1]}---\n<!-- pipeline {VER} -->\n\n{body}"
-    os.makedirs(f"{dst_root}/{slug}", exist_ok=True)
-    open(f"{dst_root}/{slug}/SKILL.md", "w").write(stamped)
+    for root in (dst_root, store_root):
+        os.makedirs(f"{root}/{slug}", exist_ok=True)
+        open(f"{root}/{slug}/SKILL.md", "w").write(stamped)
     print("skill", slug, len(stamped), "bytes")
-# stale legacy dirs
-for d in [f"{dst_root}/{x}" for x in os.listdir(dst_root) if x not in SLUGS and x != "para-memory-files"]:
-    print("removing stale skill dir", d); shutil.rmtree(d, ignore_errors=True)
+# stale dirs: keep core slugs, the bundled para-memory-files, and anything skills-sync installed
+# from the UI (its manifest), so a deploy never deletes a skill added in the Paperclip UI.
+ui_synced = set()
+try:
+    ui_synced = set(open(f"{HOME}/.skills-synced.json").read().split())
+except FileNotFoundError:
+    pass
+for x in [x for x in os.listdir(dst_root) if x not in SLUGS and x != "para-memory-files" and x not in ui_synced]:
+    print("removing stale skill dir", x); shutil.rmtree(f"{dst_root}/{x}", ignore_errors=True)
 
 # ---- 2. host helpers ----------------------------------------------------------------
 vps = os.path.join(HERE, "vps")
@@ -106,4 +118,9 @@ if os.path.isdir(rs):
         if h.startswith("stale-"):
             shutil.rmtree(os.path.join(rs, h), ignore_errors=True)
     print("runtime-skills pruned")
+# ---- 5. UI skills ----------------------------------------------------------------
+sync = f"{HOME}/skills-sync.sh"
+if os.path.isfile(sync):
+    s = subprocess.run(["bash", sync], capture_output=True, text=True)
+    print("skills-sync:", (s.stdout + s.stderr).strip() or "no change")
 print("DONE", VER)
