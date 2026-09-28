@@ -9121,6 +9121,24 @@ export function issueService(db: Db) {
       };
     },
 
+    getWakeableParentForChildEvent: async (parentIssueId: string) => {
+      const parent = await db
+        .select({
+          id: issues.id,
+          conversationAgentId: issues.conversationAgentId,
+          assigneeAgentId: issues.assigneeAgentId,
+          status: issues.status,
+          companyId: issues.companyId,
+        })
+        .from(issues)
+        .where(eq(issues.id, parentIssueId))
+        .then((rows) => rows[0] ?? null);
+      if (!parent || parent.conversationAgentId || !parent.assigneeAgentId || ["backlog", "done", "cancelled"].includes(parent.status)) {
+        return null;
+      }
+      return { id: parent.id, assigneeAgentId: parent.assigneeAgentId };
+    },
+
     createChild: async (parentIssueId: string, data: IssueChildCreateInput) => {
       const parent = await db
         .select()

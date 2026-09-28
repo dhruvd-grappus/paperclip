@@ -14866,6 +14866,33 @@ export function issueRoutes(
             });
           }
         }
+        const becameBlocked =
+          existing.status !== "blocked" && issue.status === "blocked";
+        if (becameBlocked && issue.parentId) {
+          const parent = await svc.getWakeableParentForChildEvent(
+            issue.parentId,
+          );
+          if (parent) {
+            addWakeup(parent.assigneeAgentId, {
+              source: "automation",
+              triggerDetail: "system",
+              reason: "issue_child_blocked",
+              payload: {
+                issueId: parent.id,
+                blockedChildIssueId: issue.id,
+              },
+              requestedByActorType: actor.actorType,
+              requestedByActorId: actor.actorId,
+              contextSnapshot: {
+                issueId: parent.id,
+                taskId: parent.id,
+                wakeReason: "issue_child_blocked",
+                source: "issue.child_blocked",
+                blockedChildIssueId: issue.id,
+              },
+            });
+          }
+        }
 
         for (const { agentId, wakeup } of wakeups.values()) {
           heartbeat
@@ -18215,6 +18242,34 @@ export function issueRoutes(
                 childIssueIds: parent.childIssueIds,
                 childIssueSummaries: parent.childIssueSummaries,
                 childIssueSummaryTruncated: parent.childIssueSummaryTruncated,
+              },
+            });
+          }
+        }
+        const becameBlockedViaComment =
+          issueBeforeCommentDecision.status !== "blocked" &&
+          currentIssue.status === "blocked";
+        if (becameBlockedViaComment && currentIssue.parentId) {
+          const parent = await svc.getWakeableParentForChildEvent(
+            currentIssue.parentId,
+          );
+          if (parent) {
+            addWakeup(parent.assigneeAgentId, {
+              source: "automation",
+              triggerDetail: "system",
+              reason: "issue_child_blocked",
+              payload: {
+                issueId: parent.id,
+                blockedChildIssueId: currentIssue.id,
+              },
+              requestedByActorType: actor.actorType,
+              requestedByActorId: actor.actorId,
+              contextSnapshot: {
+                issueId: parent.id,
+                taskId: parent.id,
+                wakeReason: "issue_child_blocked",
+                source: "issue.child_blocked",
+                blockedChildIssueId: currentIssue.id,
               },
             });
           }

@@ -1,0 +1,7 @@
+[Unit]
+Description=Paperclip providers action (effort level, Claude Code CLI update)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/paperclip-providers apply-request
+TimeoutStartSec=15min

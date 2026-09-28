@@ -30,6 +30,7 @@ const mockIssueService = vi.hoisted(() => ({
   getDependencyReadiness: vi.fn(),
   listWakeableBlockedDependents: vi.fn(),
   getWakeableParentAfterChildCompletion: vi.fn(),
+  getWakeableParentForChildEvent: vi.fn(),
   findMentionedAgents: vi.fn(async () => []),
 }));
 
@@ -181,6 +182,7 @@ describe("issue dependency wakeups in issue routes", () => {
     });
     mockIssueService.listWakeableBlockedDependents.mockResolvedValue([]);
     mockIssueService.getWakeableParentAfterChildCompletion.mockResolvedValue(null);
+    mockIssueService.getWakeableParentForChildEvent.mockResolvedValue(null);
   });
 
   it("wakes dependents when the final blocker transitions to done", async () => {
@@ -427,6 +429,107 @@ describe("issue dependency wakeups in issue routes", () => {
       ...overrides,
     };
   }
+
+  it("wakes the parent when a direct child transitions to blocked", async () => {
+    mockIssueService.getById.mockResolvedValue({
+      id: "child-1",
+      companyId: "company-1",
+      identifier: "PAP-101",
+      title: "Blocked child",
+      description: null,
+      status: "in_progress",
+      priority: "medium",
+      parentId: "parent-1",
+      assigneeAgentId: "agent-1",
+      assigneeUserId: null,
+      createdByAgentId: null,
+      createdByUserId: null,
+      executionWorkspaceId: null,
+      labels: [],
+      labelIds: [],
+    });
+    mockIssueService.update.mockResolvedValue({
+      id: "child-1",
+      companyId: "company-1",
+      identifier: "PAP-101",
+      title: "Blocked child",
+      description: null,
+      status: "blocked",
+      priority: "medium",
+      parentId: "parent-1",
+      assigneeAgentId: "agent-1",
+      assigneeUserId: null,
+      createdByAgentId: null,
+      createdByUserId: null,
+      executionWorkspaceId: null,
+      labels: [],
+      labelIds: [],
+    });
+    mockIssueService.getWakeableParentForChildEvent.mockResolvedValue({
+      id: "parent-1",
+      assigneeAgentId: "agent-9",
+    });
+
+    const res = await request(await createApp()).patch("/api/issues/child-1").send({ status: "blocked", unblockDescriptor: { owner: "board", action: "Provide credentials" } });
+    expect(res.status).toBe(200);
+    await vi.waitFor(() => {
+      expect(mockWakeup).toHaveBeenCalledWith(
+        "agent-9",
+        expect.objectContaining({
+          reason: "issue_child_blocked",
+          payload: expect.objectContaining({
+            issueId: "parent-1",
+            blockedChildIssueId: "child-1",
+          }),
+          contextSnapshot: expect.objectContaining({
+            wakeReason: "issue_child_blocked",
+            blockedChildIssueId: "child-1",
+          }),
+        }),
+      );
+    });
+  });
+
+  it("does not wake the parent when a non-parent issue transitions to blocked", async () => {
+    mockIssueService.getById.mockResolvedValue({
+      id: "issue-1",
+      companyId: "company-1",
+      identifier: "PAP-100",
+      title: "Standalone",
+      description: null,
+      status: "in_progress",
+      priority: "medium",
+      parentId: null,
+      assigneeAgentId: "agent-1",
+      assigneeUserId: null,
+      createdByAgentId: null,
+      createdByUserId: null,
+      executionWorkspaceId: null,
+      labels: [],
+      labelIds: [],
+    });
+    mockIssueService.update.mockResolvedValue({
+      id: "issue-1",
+      companyId: "company-1",
+      identifier: "PAP-100",
+      title: "Standalone",
+      description: null,
+      status: "blocked",
+      priority: "medium",
+      parentId: null,
+      assigneeAgentId: "agent-1",
+      assigneeUserId: null,
+      createdByAgentId: null,
+      createdByUserId: null,
+      executionWorkspaceId: null,
+      labels: [],
+      labelIds: [],
+    });
+
+    const res = await request(await createApp()).patch("/api/issues/issue-1").send({ status: "blocked", unblockDescriptor: { owner: "board", action: "Provide credentials" } });
+    expect(res.status).toBe(200);
+    expect(mockIssueService.getWakeableParentForChildEvent).not.toHaveBeenCalled();
+  });
 
   it("wakes a Release-like dependent after a terminal reset using the current blocked cycle", async () => {
     const reviewIssueId = "11111111-1111-4111-8111-111111111111";

@@ -45,8 +45,10 @@ import type {
   UpdateRoutineTrigger,
 } from "@paperclipai/shared";
 import {
+  ISSUE_STATUSES,
   WORKSPACE_BRANCH_ROUTINE_VARIABLE,
   getBuiltinRoutineVariableValues,
+  isTerminalIssueStatus,
   extractRoutineVariableNames,
   interpolateRoutineTemplate,
   isValidRoutineDateString,
@@ -79,9 +81,11 @@ import { logActivity } from "./activity-log.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 import { runtimePublicOrigin } from "./cloud-runtime-identity.js";
 
-const OPEN_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked"];
+// Derived, not spelled out: a status added to the shared list must land on
+// exactly one side of this split, and hand-maintaining the open half is how
+// `human_approved` would have silently read as open work forever.
+const OPEN_ISSUE_STATUSES = ISSUE_STATUSES.filter((status) => !isTerminalIssueStatus(status));
 const LIVE_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"];
-const TERMINAL_ISSUE_STATUSES = new Set(["done", "cancelled"]);
 const MAX_CATCH_UP_RUNS = 25;
 const MAX_ROUTINE_REVISIONS = 100;
 const EXECUTION_ISSUE_TRANSIENT_FAILURE_CODE = "execution_issue_status";

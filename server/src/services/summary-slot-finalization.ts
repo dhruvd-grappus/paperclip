@@ -2,8 +2,8 @@ import { and, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { summarySlots } from "@paperclipai/db";
 import type { IssueStatus } from "@paperclipai/shared";
+import { isTerminalIssueStatus } from "@paperclipai/shared";
 
-const TERMINAL_ISSUE_STATUSES = new Set<IssueStatus>(["done", "cancelled"]);
 
 interface TerminalGenerationIssue {
   id: string;
@@ -24,7 +24,7 @@ export async function finalizeSummarySlotsForTerminalIssue(
   dbOrTx: Pick<Db, "update">,
   issue: TerminalGenerationIssue,
 ) {
-  if (!TERMINAL_ISSUE_STATUSES.has(issue.status)) return [];
+  if (!isTerminalIssueStatus(issue.status)) return [];
 
   return dbOrTx
     .update(summarySlots)

@@ -7,12 +7,13 @@ PIPELINE_DIR?=$(HOME)/Desktop/dev-pipe/paperclip
 # working tree. Override with BACKUP_DIR.
 BACKUP_DIR?=$(HOME)/dev-pipe-backups
 
-# make deploy: ship skills + AGENTS.md (dev-pipe) and host helpers (here) to the VPS, run the native deploy
+# make deploy: ship skills + AGENTS.md (dev-pipe) and host helpers (here) to the VPS, install the agent sandbox's
+# Claude settings (vps/clarifier-settings.json: deny list, also hides unused tools from the prompt), run the native deploy
 # as paperclip. deploy-native.py expects skills/, agents/clarifier.md and vps/ side by side, so the tarball
 # is assembled from both trees.
 deploy:
 	@test -f $(PIPELINE_DIR)/agents/clarifier.md || { echo "PIPELINE_DIR=$(PIPELINE_DIR) has no agents/clarifier.md"; exit 1; }
-	@COPYFILE_DISABLE=1 tar cf - -C $(PIPELINE_DIR) skills agents/clarifier.md -C $(CURDIR) vps deploy-native.py 2>/dev/null | ssh $(VPS) 'rm -rf /home/paperclip/deploy.new && mkdir -p /home/paperclip/deploy.new && tar xf - -C /home/paperclip/deploy.new 2>/dev/null && rm -rf /home/paperclip/deploy && mv /home/paperclip/deploy.new /home/paperclip/deploy && chown -R paperclip:paperclip /home/paperclip/deploy && cp /home/paperclip/deploy/vps/build-start /usr/local/bin/build-start && chmod 755 /usr/local/bin/build-start && su - paperclip -c "cd ~/deploy && python3 deploy-native.py $(ARGS)"'
+	@COPYFILE_DISABLE=1 tar cf - -C $(PIPELINE_DIR) skills agents/clarifier.md -C $(CURDIR) vps deploy-native.py 2>/dev/null | ssh $(VPS) 'rm -rf /home/paperclip/deploy.new && mkdir -p /home/paperclip/deploy.new && tar xf - -C /home/paperclip/deploy.new 2>/dev/null && rm -rf /home/paperclip/deploy && mv /home/paperclip/deploy.new /home/paperclip/deploy && chown -R paperclip:paperclip /home/paperclip/deploy && cp /home/paperclip/deploy/vps/build-start /usr/local/bin/build-start && chmod 755 /usr/local/bin/build-start && su - paperclip -c "cd ~/deploy && python3 deploy-native.py $(ARGS)" && install -m 644 -o paperclip -g paperclip /home/paperclip/deploy/vps/clarifier-settings.json /home/paperclip/clarifier-sandbox/.claude/settings.json && echo "sandbox settings installed"'
 
 # make install-backup: put the backup/snapshot/reasoning helpers on the host (idempotent).
 install-backup:
@@ -63,10 +64,22 @@ install-updater:
 	  systemctl daemon-reload; systemctl enable --now paperclip-update.path; \
 	  systemctl is-active paperclip-update.path; rm -f /tmp/paperclip-overlay /tmp/paperclip-update.path /tmp/paperclip-update.service'
 
+# make install-providers: host side of the in-app Providers panel (paperclip-providers + its root path
+# unit) and the managed-settings guard drop-in (deny list from vps/clarifier-settings.json), which reaches
+# every agent run whatever its working directory.
+install-providers:
+	@scp -q vps/paperclip-providers vps/paperclip-providers.path vps/paperclip-providers.service vps/clarifier-settings.json $(VPS):/tmp/
+	@ssh $(VPS) 'set -e; install -m 755 -o root -g root /tmp/paperclip-providers /usr/local/bin/paperclip-providers; \
+	  install -m 644 /tmp/paperclip-providers.path /tmp/paperclip-providers.service /etc/systemd/system/; \
+	  install -d -m 700 -o paperclip -g paperclip /home/paperclip/.paperclip/grappus-providers; \
+	  paperclip-providers install-guards /tmp/clarifier-settings.json; \
+	  systemctl daemon-reload; systemctl enable --now paperclip-providers.path; systemctl is-active paperclip-providers.path; \
+	  rm -f /tmp/paperclip-providers /tmp/paperclip-providers.path /tmp/paperclip-providers.service /tmp/clarifier-settings.json'
+
 paperclip-rollback:
 	@ssh $(VPS) 'paperclip-overlay rollback'
 
 paperclip-status:
 	@ssh $(VPS) 'paperclip-overlay status'
 
-.PHONY: deploy install-backup install-heal install-preview backup reasoning install-updater paperclip-rollback paperclip-status
+.PHONY: deploy install-backup install-heal install-preview install-providers backup reasoning install-updater paperclip-rollback paperclip-status

@@ -21,6 +21,11 @@ import {
 import { environmentService } from "../services/environments.js";
 import { instanceBuildInfo } from "../services/instance-build.js";
 import {
+  InstanceProvidersError,
+  instanceProvidersService,
+  type InstanceProvidersService,
+} from "../services/instance-providers.js";
+import {
   githubRepoSlug,
   instanceUpdateService,
   InstanceUpdateError,
@@ -123,7 +128,10 @@ function canManageInstance(req: Request): boolean {
   return req.actor.type === "board" && (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin === true);
 }
 
-export function instanceSettingsRoutes(db: Db, opts: { updates?: InstanceUpdateService | null } = {}) {
+export function instanceSettingsRoutes(
+  db: Db,
+  opts: { updates?: InstanceUpdateService | null; providers?: InstanceProvidersService | null } = {},
+) {
   const router = Router();
   const svc = instanceSettingsService(db);
   const environments = environmentService(db);
@@ -184,6 +192,37 @@ export function instanceSettingsRoutes(db: Db, opts: { updates?: InstanceUpdateS
     } catch (err) {
       if (err instanceof InstanceUpdateError) {
         if (err.code === "update_in_progress") throw conflict(err.message, { code: err.code });
+        throw unprocessable(err.message, { code: err.code });
+      }
+      throw err;
+    }
+  });
+
+  // Providers panel (fork builds only, same gate as self-update): Claude versions on
+  // this host and the two host actions (effort level, host CLI update). See
+  // services/instance-providers.ts; the host's root helper applies requests.
+  const providers = opts.providers !== undefined
+    ? opts.providers
+    : updates ? instanceProvidersService() : null;
+
+  router.get("/instance/providers", async (req, res) => {
+    assertBoardOrgAccess(req);
+    if (!providers) {
+      res.json({ enabled: false, canManage: false });
+      return;
+    }
+    res.json({ enabled: true, canManage: canManageInstance(req), ...(await providers.info(req.query.refresh === "1")) });
+  });
+
+  router.post("/instance/providers/action", async (req, res) => {
+    assertCanManageInstanceSettings(req);
+    if (!providers) throw notFound("Providers are only managed on fork builds");
+    try {
+      const actor = getActorInfo(req);
+      res.status(202).json(providers.request(req.body ?? {}, actor.actorId ?? "board"));
+    } catch (err) {
+      if (err instanceof InstanceProvidersError) {
+        if (err.code === "providers_in_progress") throw conflict(err.message, { code: err.code });
         throw unprocessable(err.message, { code: err.code });
       }
       throw err;

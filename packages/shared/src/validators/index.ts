@@ -716,6 +716,13 @@ export {
 } from "./finance.js";
 
 export {
+  statsRangeQuerySchema,
+  statsOverviewQuerySchema,
+  type StatsRangeQuery,
+  type StatsOverviewQuery,
+} from "./stats.js";
+
+export {
   ASSET_NAMESPACE_MAX_LENGTH,
   ASSET_NAMESPACE_RULE,
   createAssetImageMetadataSchema,

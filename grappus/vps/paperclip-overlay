@@ -17,8 +17,10 @@
 #   paperclip-overlay rollback                          # back to the previous install
 #   paperclip-overlay status                            # what runs now
 #
-# The tarball carries dist/, optionally ui-dist/, and GRAPPUS_BUILD (json: base, build, sha, branch,
-# builtAt). A build of the bare tag is byte-identical to the npm dist and ui-dist (checked 2026-09-27).
+# The tarball carries dist/, optionally ui-dist/, optionally pkg-dist/<pkg>/ (full
+# dist/ of changed @paperclipai/* workspace packages, e.g. shared), and GRAPPUS_BUILD
+# (json: base, build, sha, branch, builtAt, packages). A build of the bare tag is
+# byte-identical to the npm dist and ui-dist (checked 2026-09-27).
 # Refuses while agent runs are live unless --force. Run as root.
 set -euo pipefail
 CLI=/home/paperclip/.paperclip/cli
@@ -115,6 +117,19 @@ install_overlay() {
   if [ -d "$tmp/ui-dist" ]; then
     # Vite asset names are content hashes, so the UI is replaced whole.
     echo "ui files changed: $(rsync -rc --delete --out-format='%n' "$tmp/ui-dist/" "$STORE/$name.new/$SERVER_UI/" | grep -vc '/$' || true)"
+  fi
+  if [ -d "$tmp/pkg-dist" ]; then
+    # Workspace packages the server loads at runtime (node_modules/@paperclipai/<pkg>/dist).
+    # Without these a server/dist change that needs a new workspace export fails at boot
+    # (build 20: stats.js needed statsOverviewQuerySchema from shared). Old tarballs
+    # carry no pkg-dist/; the guard skips them.
+    for pkgd in "$tmp/pkg-dist/"*/; do
+      [ -d "$pkgd" ] || continue
+      pkg=$(basename "$pkgd")
+      [ -d "$STORE/$name.new/node_modules/@paperclipai/$pkg" ] || { echo "WARN: no installed package @paperclipai/$pkg; skipping"; continue; }
+      mkdir -p "$STORE/$name.new/node_modules/@paperclipai/$pkg/dist"
+      echo "package @paperclipai/$pkg dist files changed: $(rsync -rc --delete --out-format='%n' "$pkgd" "$STORE/$name.new/node_modules/@paperclipai/$pkg/dist/" | grep -vc '/$' || true)"
+    done
   fi
   cp "$tmp/GRAPPUS_BUILD" "$STORE/$name.new/GRAPPUS_BUILD"
   chown -R paperclip:paperclip "$STORE/$name.new"

@@ -16,6 +16,7 @@ import {
   issueWorkProducts,
 } from "@paperclipai/db";
 import type { IssueWatchdog, IssueWatchdogSummary } from "@paperclipai/shared";
+import { isTerminalIssueStatus } from "@paperclipai/shared";
 import { conflict, notFound } from "../errors.js";
 import { parseObject } from "../adapters/utils.js";
 import { logActivity } from "./activity-log.js";
@@ -28,7 +29,6 @@ const TASK_WATCHDOG_STOP_FINGERPRINT_PREFIX = "task_watchdog_stop:";
 const TASK_WATCHDOG_SUBTREE_MAX_DEPTH = 100;
 const TASK_WATCHDOG_LIVE_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const TASK_WATCHDOG_WAKE_REQUEST_STATUSES = ["queued", "deferred_issue_execution"] as const;
-const TASK_WATCHDOG_TERMINAL_ISSUE_STATUSES = ["done", "cancelled"] as const;
 const TASK_WATCHDOG_TERMINAL_RUN_STATUSES = ["succeeded", "interrupted", "failed", "cancelled", "timed_out"] as const;
 // Grace window after an issue is created/assigned during which its first
 // assignment run/wake may have been enqueued but is not yet visible to a
@@ -732,12 +732,6 @@ function watchdogWakeContext(input: {
     resumeIntent: true,
     followUpRequested: true,
   };
-}
-
-function isTerminalIssueStatus(status: string) {
-  return TASK_WATCHDOG_TERMINAL_ISSUE_STATUSES.includes(
-    status as (typeof TASK_WATCHDOG_TERMINAL_ISSUE_STATUSES)[number],
-  );
 }
 
 function isWatchdogReviewDisposition(issue: Pick<

@@ -4,6 +4,7 @@ import { GitCommitHorizontal } from "lucide-react";
 import { instanceBuildApi, type InstanceBuildInfo } from "../api/instanceBuild";
 import { queryKeys } from "../lib/queryKeys";
 import { SidebarBuildUpdate } from "./SidebarBuildUpdate";
+import { SidebarProviders } from "./SidebarProviders";
 import { cn, formatDateTime, SIDEBAR_RAIL_HIDDEN_LABEL } from "../lib/utils";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import {
@@ -104,6 +105,7 @@ export function SidebarBuildInfo({ rail }: { rail: boolean }) {
             </ol>
           )}
           {open ? <SidebarBuildUpdate build={build} /> : null}
+          {open ? <SidebarProviders /> : null}
         </DialogContent>
       </Dialog>
     </div>

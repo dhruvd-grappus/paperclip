@@ -1,0 +1,87 @@
+#!/usr/bin/env bash
+# paperclip-providers: host side of the in-app "Providers" panel (sidebar build dialog). (→ /usr/local/bin/paperclip-providers)
+#
+# Paperclip writes /home/paperclip/.paperclip/grappus-providers/request.json; the root path unit
+# paperclip-providers.path runs `paperclip-providers apply-request`, which does the one requested action
+# and reports it in status.json next to the request. The server never gets root.
+#
+# Actions:
+#   {"action":"set_effort","effortLevel":"low|medium|high|xhigh|max|default"}
+#       Claude Code effort for every agent run on this host, via a managed-settings drop-in
+#       (/etc/claude-code/managed-settings.d/50-paperclip-effort.json). Managed settings apply whatever
+#       the run's $HOME or working directory is (project runs start in the project's primary clone, so
+#       a sandbox settings.json does not reach them). "default" removes the drop-in (Claude Code's own
+#       default, which is "high" for Opus 5 on 2.1.263).
+#   {"action":"update_claude_cli"}
+#       npm i -g @anthropic-ai/claude-code@latest: the host CLI used for the paperclip login, token
+#       refresh (native-token.sh) and cswap. Agent runs do NOT use it: they run the Claude Code binary
+#       bundled with the runner's pinned @anthropic-ai/claude-agent-sdk (see runner-shim.sh).
+#
+#   paperclip-providers apply-request      # run by the path unit
+#   paperclip-providers install-guards F   # install F (a settings JSON with permissions.deny) as the
+#                                          # managed guard drop-in 40-paperclip-guards.json
+set -euo pipefail
+DIR=/home/paperclip/.paperclip/grappus-providers
+DROPIN=/etc/claude-code/managed-settings.d
+LEVELS="low medium high xhigh max default"
+
+write_status() {
+  local state=$1 action=$2 message=$3
+  mkdir -p "$DIR"; chown paperclip:paperclip "$DIR"; chmod 700 "$DIR"
+  jq -n --arg s "$state" --arg a "$action" --arg m "$message" --arg at "$(date -u +%FT%T.000Z)" \
+    '{state:$s, action:$a, message:$m, updatedAt:$at}' > "$DIR/status.json.tmp"
+  chown paperclip:paperclip "$DIR/status.json.tmp"; chmod 600 "$DIR/status.json.tmp"
+  mv "$DIR/status.json.tmp" "$DIR/status.json"
+}
+
+set_effort() {
+  local level=$1
+  case " $LEVELS " in *" $level "*) ;; *) write_status failed set_effort "unknown effort level '$level'"; return 1 ;; esac
+  mkdir -p "$DROPIN"; chmod 755 "$DROPIN"
+  if [ "$level" = default ]; then
+    rm -f "$DROPIN/50-paperclip-effort.json"
+    write_status succeeded set_effort "effort back to Claude Code's default"
+  else
+    jq -n --arg e "$level" '{effortLevel:$e}' > "$DROPIN/50-paperclip-effort.json.tmp"
+    chmod 644 "$DROPIN/50-paperclip-effort.json.tmp"; mv "$DROPIN/50-paperclip-effort.json.tmp" "$DROPIN/50-paperclip-effort.json"
+    write_status succeeded set_effort "effort set to $level (applies to new agent runs)"
+  fi
+}
+
+update_cli() {
+  write_status running update_claude_cli "installing the latest Claude Code CLI"
+  local before after
+  before=$(su - paperclip -c 'claude --version 2>/dev/null' | awk '{print $1}' || true)
+  if ! npm i -g @anthropic-ai/claude-code@latest >/tmp/paperclip-providers-npm.log 2>&1; then
+    write_status failed update_claude_cli "npm install failed; see /tmp/paperclip-providers-npm.log"; return 1
+  fi
+  after=$(su - paperclip -c 'claude --version 2>/dev/null' | awk '{print $1}' || true)
+  [ -n "$after" ] || { write_status failed update_claude_cli "claude --version fails after the update"; return 1; }
+  write_status succeeded update_claude_cli "Claude Code CLI ${before:-?} -> $after"
+}
+
+apply_request() {
+  local req=$DIR/request.json
+  [ -f "$req" ] || { echo "no request"; return 0; }
+  local action level
+  action=$(jq -r '.action // empty' "$req" 2>/dev/null || true)
+  level=$(jq -r '.effortLevel // empty' "$req" 2>/dev/null || true)
+  rm -f "$req"   # consumed; the path unit must not loop on it
+  case "$action" in
+    set_effort) set_effort "$level" ;;
+    update_claude_cli) update_cli ;;
+    *) write_status failed "${action:-unknown}" "unknown action" ; return 1 ;;
+  esac
+}
+
+case "${1:-}" in
+  apply-request) apply_request ;;
+  install-guards)
+    f=${2:?settings file}; jq -e '.permissions.deny | length > 0' "$f" >/dev/null
+    mkdir -p "$DROPIN"; chmod 755 "$DROPIN"
+    jq '{permissions:{deny:.permissions.deny}}' "$f" > "$DROPIN/40-paperclip-guards.json.tmp"
+    chmod 644 "$DROPIN/40-paperclip-guards.json.tmp"; mv "$DROPIN/40-paperclip-guards.json.tmp" "$DROPIN/40-paperclip-guards.json"
+    echo "guards: $(jq '.permissions.deny|length' "$DROPIN/40-paperclip-guards.json") deny rules" ;;
+  set-effort) set_effort "${2:?level}" ;;
+  *) echo "usage: paperclip-providers apply-request | install-guards <settings.json> | set-effort <level>" >&2; exit 1 ;;
+esac
