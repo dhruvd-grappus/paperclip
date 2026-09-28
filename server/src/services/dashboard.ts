@@ -1,6 +1,14 @@
-import { and, eq, gte, sql } from "drizzle-orm";
+import { and, eq, gte, inArray, isNotNull, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { agents, approvals, companies, costEvents, heartbeatRuns, issues } from "@paperclipai/db";
+import {
+  agents,
+  approvals,
+  companies,
+  costEvents,
+  heartbeatRuns,
+  issues,
+  issueThreadInteractions,
+} from "@paperclipai/db";
 import { notFound } from "../errors.js";
 import { budgetService } from "./budgets.js";
 import { executionIssueCondition } from "./issue-visibility.js";
@@ -51,6 +59,46 @@ export function dashboardService(db: Db) {
         .select({ count: sql<number>`count(*)` })
         .from(approvals)
         .where(and(eq(approvals.companyId, companyId), eq(approvals.status, "pending")))
+        .then((rows) => Number(rows[0]?.count ?? 0));
+
+      // Human sign-off, counted from the two places a person can give it: a
+      // confirmation card accepted in the task thread, and an approval-queue
+      // request. Both are filtered on the *user* id — an interaction an agent
+      // resolved on its own carries only `resolved_by_agent_id`, and counting
+      // those would report agent self-approval as human approval.
+      const humanApprovedInteractions = await db
+        .select({
+          tasks: sql<number>`count(distinct ${issueThreadInteractions.issueId})`,
+          confirmations: sql<number>`count(*)`,
+        })
+        .from(issueThreadInteractions)
+        .where(
+          and(
+            eq(issueThreadInteractions.companyId, companyId),
+            eq(issueThreadInteractions.status, "accepted"),
+            isNotNull(issueThreadInteractions.resolvedByUserId),
+            inArray(issueThreadInteractions.kind, [
+              "request_confirmation",
+              "request_checkbox_confirmation",
+              "request_item_verdicts",
+            ]),
+          ),
+        )
+        .then((rows) => ({
+          tasks: Number(rows[0]?.tasks ?? 0),
+          confirmations: Number(rows[0]?.confirmations ?? 0),
+        }));
+
+      const humanApprovedApprovals = await db
+        .select({ count: sql<number>`count(*)` })
+        .from(approvals)
+        .where(
+          and(
+            eq(approvals.companyId, companyId),
+            eq(approvals.status, "approved"),
+            isNotNull(approvals.decidedByUserId),
+          ),
+        )
         .then((rows) => Number(rows[0]?.count ?? 0));
 
       const agentCounts: Record<string, number> = {
@@ -200,6 +248,11 @@ export function dashboardService(db: Db) {
           monthUtilizationPercent: Number(utilization.toFixed(2)),
         },
         pendingApprovals,
+        humanApproved: {
+          tasks: humanApprovedInteractions.tasks,
+          confirmations: humanApprovedInteractions.confirmations,
+          approvals: humanApprovedApprovals,
+        },
         budgets: {
           activeIncidents: budgetOverview.activeIncidents.length,
           pendingApprovals: budgetOverview.pendingApprovalCount,

@@ -44,6 +44,20 @@ export interface DashboardSummary {
     monthUtilizationPercent: number;
   };
   pendingApprovals: number;
+  /**
+   * Work a person signed off on, so the dashboard can show what human review
+   * has actually cleared rather than only what is still queued. Only decisions
+   * carrying a user id count — an agent resolving its own confirmation is not
+   * human approval.
+   */
+  humanApproved: {
+    /** Distinct tasks with at least one confirmation a person accepted. */
+    tasks: number;
+    /** Confirmation interactions a person accepted, across all tasks. */
+    confirmations: number;
+    /** Approval-queue requests a person approved. */
+    approvals: number;
+  };
   budgets: {
     activeIncidents: number;
     pendingApprovals: number;

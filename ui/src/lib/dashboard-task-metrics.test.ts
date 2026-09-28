@@ -21,7 +21,34 @@ describe("dashboard task metrics", () => {
     ], NOW);
     expect(metrics).toEqual({
       doneLast7Days: 1, doneTotal: 2, inProgress: 1, open: 4, blocked: 2, blockedNeedingAttention: 1,
+      needsAttention: 1, awaitingHuman: 0,
     });
+  });
+
+  it("counts needs-attention across stalled blockers and stalled reviews, ignoring closed work", () => {
+    const metrics = dashboardTaskMetrics([
+      issue("blocker-attention", "blocked", { blockerAttention: { state: "needs_attention" } }),
+      issue("blocker-stalled", "blocked", { blockerAttention: { state: "stalled" } }),
+      issue("blocker-covered", "blocked", { blockerAttention: { state: "covered" } }),
+      issue("review-stalled", "in_review", { reviewAttention: { state: "stalled" } }),
+      issue("review-covered", "in_review", { reviewAttention: { state: "covered" } }),
+      // A finished task keeps whatever attention state it had; it needs nothing.
+      issue("closed", "done", { completedAt: "2026-09-26T09:00:00Z", blockerAttention: { state: "needs_attention" } }),
+    ], NOW);
+    expect(metrics.needsAttention).toBe(3);
+  });
+
+  it("counts open tasks parked on a person, not ones an agent or monitor still owns", () => {
+    const metrics = dashboardTaskMetrics([
+      issue("reviewer", "in_review", { reviewAttention: { state: "covered", paths: [{ kind: "human_reviewer" }] } }),
+      issue("question", "in_review", { reviewAttention: { state: "covered", paths: [{ kind: "interaction" }] } }),
+      issue("approval", "in_review", { reviewAttention: { state: "covered", paths: [{ kind: "approval" }] } }),
+      issue("agent", "in_progress", { reviewAttention: { state: "covered", paths: [{ kind: "active_run" }] } }),
+      issue("monitor", "in_review", { reviewAttention: { state: "covered", paths: [{ kind: "monitor" }] } }),
+      issue("settled", "done", { completedAt: "2026-09-26T09:00:00Z", reviewAttention: { state: "covered", paths: [{ kind: "human_reviewer" }] } }),
+      issue("bare", "todo"),
+    ], NOW);
+    expect(metrics.awaitingHuman).toBe(3);
   });
 
   it("reads the project from projectId or the Slack Project: line", () => {

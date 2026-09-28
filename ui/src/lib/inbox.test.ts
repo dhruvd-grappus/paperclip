@@ -302,6 +302,7 @@ const dashboard: DashboardSummary = {
     monthUtilizationPercent: 90,
   },
   pendingApprovals: 1,
+  humanApproved: { tasks: 0, confirmations: 0, approvals: 0 },
   budgets: {
     activeIncidents: 0,
     pendingApprovals: 0,

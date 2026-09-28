@@ -21,7 +21,7 @@ import { MetricCard } from "../components/MetricCard";
 import { EmptyState } from "../components/EmptyState";
 import { usePublishSharedQueryData, useSharedPollingQuery } from "../hooks/useSharedPolling";
 
-import { Bot, CircleCheck, CircleDot, OctagonAlert, ShieldCheck, LayoutDashboard, PauseCircle } from "lucide-react";
+import { Bot, CircleCheck, CircleDot, OctagonAlert, ShieldCheck, LayoutDashboard, PauseCircle, BellRing, UserCheck } from "lucide-react";
 import { RunningByProjectPanel } from "../components/RunningByProjectPanel";
 import { HumanInterventionPanel } from "../components/HumanInterventionPanel";
 import { ClaudeUsagePanel } from "../components/ClaudeUsagePanel";
@@ -295,7 +295,7 @@ export function Dashboard() {
             </div>
           ) : null}
 
-          <div className="grid grid-cols-2 xl:grid-cols-4 gap-1 sm:gap-2">
+          <div className="grid grid-cols-2 xl:grid-cols-3 gap-1 sm:gap-2">
             <MetricCard
               icon={CircleCheck}
               value={taskMetrics.doneLast7Days}
@@ -333,6 +333,30 @@ export function Dashboard() {
                   {data.budgets.pendingApprovals > 0
                     ? `${data.budgets.pendingApprovals} budget overrides awaiting board review`
                     : "Awaiting board review"}
+                </span>
+              }
+            />
+            <MetricCard
+              icon={BellRing}
+              value={taskMetrics.needsAttention}
+              label="Needs Attention"
+              to="/issues"
+              description={
+                <span>
+                  {taskMetrics.awaitingHuman > 0
+                    ? `${taskMetrics.awaitingHuman} waiting on a person`
+                    : "no task is waiting on a person"}
+                </span>
+              }
+            />
+            <MetricCard
+              icon={UserCheck}
+              value={data.humanApproved?.tasks ?? 0}
+              label="Human Approved"
+              to="/approvals"
+              description={
+                <span>
+                  tasks a person signed off · {(data.humanApproved?.confirmations ?? 0) + (data.humanApproved?.approvals ?? 0)} decisions
                 </span>
               }
             />
