@@ -113,6 +113,64 @@ case "$cmd" in
     remote "$n" "$script" > "$log" 2>&1; rc=$?
     grep -m1 '^xcodebuild ' "$log"; grep -E '(fatal )?error:' "$log" | sort -u | head -15
     tail -3 "$log"; echo "log: $log"; exit $rc;;
+  sim) # simulator control on one Mac; serialised per Mac (one booted simulator, shared by all tasks)
+    n=${1:?mac sim <name> <action> ...}; a=${2:?mac sim <name> devices|boot|shutdown|install|reinstall|launch|terminate|screenshot|openurl|hierarchy|flow}; shift 2
+    need "$n"; need_online "$n"; mkdir -p "$HOME/.mac-locks"; exec 8>"$HOME/.mac-locks/$n-sim.lock"
+    flock -n 8 || { echo "mac: simulator on $n busy, waiting (max 20 min)" >&2; flock -w 1200 8 || die "gave up waiting for $n simulator"; }
+    w=$(workdir "$n"); ts=$(date +%Y%m%d-%H%M%S); art="$w/sim-artifacts/$ts"; out="$HOME/mac-logs/sim/$ts"
+    # app of a repo = newest *.app its warm clone's DerivedData built for the simulator (optionally one build config)
+    app_of() { local r=$1; [ -d "$r" ] && r=$(repo_key "$r"); echo "app=\$(ls -td $(printf %q "$w")/DerivedData/$(printf %q "$r")/Build/Products/${cfg:-*}-iphonesimulator/*.app 2>/dev/null | head -1)
+      [ -n \"\$app\" ] || { echo 'no simulator build for $r: run mac build first' >&2; exit 3; }
+      bid=\$(/usr/libexec/PlistBuddy -c 'Print CFBundleIdentifier' \"\$app/Info.plist\")"; }
+    find_booted='dev=$(xcrun simctl list devices booted -j | python3 -c "import json,sys;d=[x for v in json.load(sys.stdin)[\"devices\"].values() for x in v];print(d[0][\"udid\"] if d else \"\")")'
+    booted="$find_booted"'
+      [ -n "$dev" ] || { echo "no simulator booted: mac sim <mac> boot" >&2; exit 3; }'
+    java='export PATH="$HOME/.maestro/bin:$PATH"; for j in /opt/homebrew/opt/openjdk@17 /opt/homebrew/opt/openjdk /usr/local/opt/openjdk@17; do [ -x $j/bin/java ] && export JAVA_HOME=$j && break; done'
+    pull() { mkdir -p "$out"; rsync -r -e "ssh ${SSHO[*]}" "$(target "$n"):$art/" "$out/" && echo "artifacts: $out" && ls "$out" | head -20; }
+    cfg=""; except=""; args=(); while [ $# -gt 0 ]; do case "$1" in --config) cfg=$2; shift 2;; --except) except=$2; shift 2;; *) args+=("$1"); shift;; esac; done; set -- "${args[@]+"${args[@]}"}"
+    case "$a" in
+      devices) remote "$n" 'xcrun simctl list devices available | grep -E "^--|iPhone|iPad"';;
+      boot) # [device name|udid] [--except cats]: always a slim simulator (simslim: ~170 background daemons off, ~4x less RAM).
+        # Default device: the booted one, else iPhone 16 Pro, else the last available iPhone. Opens the Simulator window.
+        d=$(printf %q "${1:-}"); ex=$(printf %q "$except")
+        remote "$n" "command -v simslim >/dev/null || { echo 'simslim missing on this Mac: brew install mobai-app/tap/simslim' >&2; exit 3; }
+          want=$d; ex=$ex; $find_booted
+          if [ -z \"\$dev\" ] || [ -n \"\$want\" ]; then dev=\$(xcrun simctl list devices available -j | python3 -c 'import json,sys
+w=sys.argv[1]; d=[x for k,v in sorted(json.load(sys.stdin)[\"devices\"].items()) if \"iOS\" in k for x in v]
+m=[x for x in d if w in (x[\"name\"],x[\"udid\"])] if w else [x for x in d if x[\"state\"]==\"Booted\"] or [x for x in d if x[\"name\"]==\"iPhone 16 Pro\"] or [x for x in d if x[\"name\"].startswith(\"iPhone\")]
+print(m[-1][\"udid\"] if m else \"\")' \"\$want\"); [ -n \"\$dev\" ] || { echo 'no such simulator (mac sim <mac> devices)'; exit 3; }; fi
+          for u in \$(xcrun simctl list devices booted -j | python3 -c 'import json,sys;[print(x[\"udid\"]) for v in json.load(sys.stdin)[\"devices\"].values() for x in v]'); do [ \$u = \$dev ] || xcrun simctl shutdown \$u; done   # one simulator per Mac
+          slim=\$(simslim list --json | python3 -c 'import json,sys;print(next((x.get(\"managedDisabled\",0) for x in json.load(sys.stdin) if x[\"udid\"]==sys.argv[1]),0))' \$dev)
+          if [ \"\$slim\" = 0 ] || [ -n \"\$ex\" ]; then simslim on \$dev \${ex:+--except} \${ex:+\$ex} >/dev/null || exit 1   # slims + (re)boots
+          else simslim boot \$dev >/dev/null 2>&1 || true; fi
+          open -a Simulator --args -CurrentDeviceUDID \$dev
+          simslim list --json | python3 -c 'import json,sys
+x=next(x for x in json.load(sys.stdin) if x[\"udid\"]==sys.argv[1]); m=x.get(\"memory\") or {}
+print(x[\"name\"], x[\"osVersion\"], x[\"udid\"], x[\"state\"], \"slim %s/%s daemons off\" % (x.get(\"managedDisabled\",0), x[\"managedTotal\"]), \"%d MB\" % (m.get(\"bytes\",0)/1e6))' \$dev";;
+      shutdown) remote "$n" 'xcrun simctl shutdown all && echo shut down';;
+      install|reinstall|launch|terminate) # <repo|worktree> [--config Debug-Dev]
+        r=${1:?mac sim <name> $a <repo|worktree>}; s=$(app_of "$r")
+        case "$a" in
+          install) act='xcrun simctl install $dev "$app" && echo "installed $bid from $app"';;
+          reinstall) act='xcrun simctl terminate $dev $bid 2>/dev/null; xcrun simctl uninstall $dev $bid; xcrun simctl install $dev "$app" && xcrun simctl launch $dev $bid && echo "reinstalled (fresh data) + launched $bid"';;
+          launch) act='xcrun simctl launch --terminate-running-process $dev $bid';;
+          terminate) act='xcrun simctl terminate $dev $bid && echo terminated $bid';;
+        esac
+        remote "$n" "$booted
+          $s
+          $act";;
+      screenshot) remote "$n" "$booted; mkdir -p $art && xcrun simctl io \$dev screenshot $art/screen.png >/dev/null" && pull;;
+      openurl) u=${1:?mac sim <name> openurl <url>}; remote "$n" "$booted; xcrun simctl openurl \$dev $(printf %q "$u") && echo opened";;
+      hierarchy) remote "$n" "$booted; $java; maestro --device \$dev hierarchy --compact 2>/dev/null" \
+          | grep -E 'accessibilityText=[^ ;]|[^a-z]text=|resource-id=' | grep -v 'scroll bar' \
+          | sed -E 's/^[0-9]+,[0-9]+,"//; s/; enabled=[a-z]+//g; s/",[0-9]*$//' | awk '!seen[$0]++' | head -"${1:-80}";;
+      flow) # <flow.yaml | dir of flows on this host>: Maestro taps/types/swipes/asserts on the booted simulator
+        f=${1:?mac sim <name> flow <flow.yaml|dir>}; [ -e "$f" ] || die "no flow $f"
+        remote "$n" "mkdir -p $art/flow" && rsync -r -e "ssh ${SSHO[*]}" "$f" "$(target "$n"):$art/flow/" || die "flow upload failed"
+        remote "$n" "$booted; $java; cd $art && maestro --device \$dev test flow/$(basename "$f") --format junit --output report.xml --debug-output debug --test-output-dir shots"; rc=$?
+        pull; exit $rc;;
+      *) die "unknown sim action $a (mac help)";;
+    esac;;
   help|*)
     cat <<'EOF'
 mac: run Xcode/Swift/iOS/macOS work on a real Mac from this Linux host (it cannot build Apple targets itself).
@@ -132,6 +190,17 @@ mac: run Xcode/Swift/iOS/macOS work on a real Mac from this Linux host (it canno
                                             sync <dir>, then xcodebuild in <dir>/<subdir> (workspace over project, first scheme by default,
                                             generic iOS Simulator, Mac-native arch only, no signing); prints the command,
                                             errors, BUILD SUCCEEDED/FAILED and a log path under ~/mac-logs; exit code = xcodebuild's
+  mac sim <name> devices | boot [device] [--except health,store] | shutdown
+                                            boot = always a slim simulator (simslim, ~4x less RAM), opens its window;
+                                            --except keeps daemon categories the app needs (health, store = push, icloud ...)
+  mac sim <name> install|reinstall|launch|terminate <repo|worktree> [--config Debug-Dev]
+                                            the app from that repo's last `mac build`; reinstall = uninstall + install +
+                                            launch (fresh app data); launch relaunches when running
+  mac sim <name> screenshot | openurl <url> | hierarchy [lines]
+                                            screenshot lands on this host (path printed); hierarchy = labelled UI elements + bounds
+  mac sim <name> flow <flow.yaml|dir>       Maestro flow (tapOn, inputText, swipe, assertVisible, takeScreenshot ...) on the
+                                            booted simulator; report + screenshots come back to ~/mac-logs/sim/<ts>
+                                            One simulator per Mac, shared: sim commands wait their turn.
   mac run <name> -- <command>               any command in a login zsh from the Mac's workdir (swift test, flutter
                                             build ios --no-codesign, xcrun simctl ..., pod install)
 Rules: build from your worktree, never edit files on the Mac (sync overwrites). No signing, no App Store/TestFlight upload,
