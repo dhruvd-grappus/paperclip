@@ -24154,6 +24154,75 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     expect(providerRuntime.edits).toHaveLength(2);
   });
 
+  it("posts one Slack run's replies beside its working placeholder", async () => {
+    const fixture = await seedCompany();
+    const { callbacks, endpoint, runtime, service } =
+      await configuredSlackEndpoint(fixture);
+    const thread = makeThread({
+      channelId: "C-SLACK-REPLY-LANE",
+      id: "slack:C-SLACK-REPLY-LANE:4810.1",
+      name: "reply-lane",
+    });
+    await deliverMessage({
+      callbacks,
+      endpointId: endpoint.id,
+      thread: thread.thread,
+      message: makeMessage({
+        id: "4810.1",
+        text: "@maya answer in a new message",
+        mentioned: true,
+      }),
+      trigger: "mention",
+    });
+    const [conversation] = await db
+      .select()
+      .from(chatConversations)
+      .where(eq(chatConversations.endpointId, endpoint.id));
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId: fixture.companyId,
+      agentId: fixture.assignedAgentId,
+      status: "running",
+      contextSnapshot: await chatWakeContext({
+        endpointId: endpoint.id,
+        issueId: conversation.issueId,
+        provider: "slack",
+        providerMessageId: "4810.1",
+      }),
+    });
+    await db.insert(chatPublications).values({
+      companyId: fixture.companyId,
+      endpointId: endpoint.id,
+      conversationId: conversation.id,
+      issueId: conversation.issueId,
+      idempotencyKey: `run:${runId}:working:${endpoint.id}`,
+      payload: { text: "Maya is working…", progressState: "working" },
+      state: "pending",
+    });
+    await service.processPendingPublications();
+    for (const body of ["First Slack reply", "Second Slack reply"]) {
+      await addSelectedChatFinal({
+        agentId: fixture.assignedAgentId,
+        body,
+        companyId: fixture.companyId,
+        issueId: conversation.issueId,
+        runId,
+      });
+      await service.processPendingPublications();
+    }
+
+    const providerRuntime = runtime.endpoints.get(endpoint.id);
+    // Slack never notifies a thread follower about an edit, so neither reply
+    // may consume the working placeholder.
+    expect(providerRuntime?.posts).toEqual([
+      { threadId: thread.thread.id, text: "Maya is working…" },
+      { threadId: thread.thread.id, text: "First Slack reply" },
+      { threadId: thread.thread.id, text: "Second Slack reply" },
+    ]);
+    expect(providerRuntime?.edits).toEqual([]);
+  });
+
   describe("Telegram callback-only native private responses", () => {
     async function nativePrivateFixture(linked = false, privateChat = false) {
       const fixture = await seedCompany();
@@ -26410,16 +26479,24 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       ]);
 
       const providerRuntime = runtime.endpoints.get(endpoint.id);
-      expect(providerRuntime?.posts.map((post) => post.text)).toEqual([
-        "Maya is working…",
-      ]);
-      expect(providerRuntime?.edits).toEqual([
-        {
-          threadId: thread.thread.id,
-          messageId: "outbound-1",
-          text: "answer-final",
-        },
-      ]);
+      // Slack sends the selected final as its own message so the thread is
+      // notified; GitHub still coalesces it into the working comment.
+      expect(providerRuntime?.posts.map((post) => post.text)).toEqual(
+        provider === "slack"
+          ? ["Maya is working…", "answer-final"]
+          : ["Maya is working…"],
+      );
+      expect(providerRuntime?.edits).toEqual(
+        provider === "slack"
+          ? []
+          : [
+              {
+                threadId: thread.thread.id,
+                messageId: "outbound-1",
+                text: "answer-final",
+              },
+            ],
+      );
       const commentPublications = await db
         .select()
         .from(chatPublications)
@@ -26434,7 +26511,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         expect.objectContaining({
           commentId: comments[2].id,
           state: "published",
-          providerMessageId: "outbound-1",
+          providerMessageId: provider === "slack" ? "outbound-2" : "outbound-1",
         }),
       ]);
       expect(
@@ -26458,7 +26535,9 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
               eq(chatMessageLinks.direction, "outbound"),
             ),
           ),
-      ).toHaveLength(1);
+        // On Slack the working placeholder and the selected final are separate
+        // messages, so each owns an outbound link.
+      ).toHaveLength(provider === "slack" ? 2 : 1);
       await service.shutdown();
     },
   );
@@ -26770,8 +26849,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       result: { sessionStatus: "active" },
     });
 
-    // A final response produces one edit, then a fresh revision of the status
-    // lane. Neither a retry nor restart posts another copy of that response.
+    // A final response is its own Slack message, then the status lane takes a
+    // fresh revision. Neither a retry nor restart posts another copy of it.
     await addSelectedChatFinal({
       agentId: fixture.assignedAgentId,
       body: "SLACK-SESSION-DONE",
@@ -26784,12 +26863,16 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     await resumed.service.processPendingSlackSessionSyncs(25, action.id);
     expect(statusCalls).toEqual(["processing", "active", "active"]);
     expect(firstProviderRuntime.posts.length).toBe(providerPosts);
-    expect(runtime.endpoints.get(endpoint.id)?.posts.length ?? 0).toBe(0);
     expect(
       runtime.endpoints
         .get(endpoint.id)
-        ?.edits.filter((edit) => edit.text === "SLACK-SESSION-DONE"),
+        ?.posts.filter((post) => post.text === "SLACK-SESSION-DONE") ?? [],
     ).toHaveLength(1);
+    expect(
+      runtime.endpoints
+        .get(endpoint.id)
+        ?.edits.filter((edit) => edit.text === "SLACK-SESSION-DONE") ?? [],
+    ).toHaveLength(0);
 
     // A worker can select a due status row, then lose to another worker before
     // observing an endpoint pause. Its stale snapshot must not resurrect the
@@ -26878,7 +26961,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     await resumed.service.shutdown();
   });
 
-  it("coalesces one Slack run's lifecycle and final response despite an interleaved task control", async () => {
+  it("coalesces one Slack run's lifecycle but posts its final response beside an interleaved task control", async () => {
     const fixture = await seedCompany();
     const { callbacks, endpoint, runtime, service } =
       await configuredSlackEndpoint(fixture);
@@ -26978,8 +27061,15 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     await service.processPendingPublications();
 
     const providerRuntime = runtime.endpoints.get(endpoint.id);
+    // Lifecycle milestones and the interleaved status control share the run's
+    // one placeholder, but the agent's reply is its own Slack message so the
+    // thread notifies about it.
     expect(providerRuntime?.posts).toEqual([
       { threadId: thread.thread.id, text: "Maya is queued." },
+      expect.objectContaining({
+        threadId: thread.thread.id,
+        text: finalText,
+      }),
     ]);
     expect(providerRuntime?.edits).toEqual([
       {
@@ -26992,11 +27082,6 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         messageId: "outbound-1",
         text: expect.stringMatching(/ — /),
       },
-      {
-        threadId: thread.thread.id,
-        messageId: "outbound-1",
-        text: finalText,
-      },
     ]);
     const renderedSlackMessages = new Map(
       providerRuntime!.posts.map((post, index) => [
@@ -27006,7 +27091,10 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     );
     for (const edit of providerRuntime!.edits)
       renderedSlackMessages.set(edit.messageId, edit.text);
-    expect([...renderedSlackMessages.values()]).toEqual([finalText]);
+    expect([...renderedSlackMessages.values()]).toEqual([
+      expect.stringMatching(/ — /),
+      finalText,
+    ]);
     const publications = await db
       .select()
       .from(chatPublications)
@@ -27024,6 +27112,11 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         ),
     ).toBe(true);
     expect(
+      publications.find(
+        (publication) => publication.commentId === finalComment.id,
+      ),
+    ).toMatchObject({ state: "published", providerMessageId: "outbound-2" });
+    expect(
       await db
         .select()
         .from(chatMessageLinks)
@@ -27036,6 +27129,10 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     ).toEqual([
       expect.objectContaining({
         providerMessageId: "outbound-1",
+        commentId: null,
+      }),
+      expect.objectContaining({
+        providerMessageId: "outbound-2",
         commentId: finalComment.id,
       }),
     ]);
@@ -27046,6 +27143,10 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     await service.processPendingPublications();
     expect(providerRuntime?.posts).toEqual([
       { threadId: thread.thread.id, text: "Maya is queued." },
+      expect.objectContaining({
+        threadId: thread.thread.id,
+        text: finalText,
+      }),
       { threadId: thread.thread.id, text: expect.stringMatching(/ — /) },
     ]);
   });
@@ -56897,8 +56998,11 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         expect(answerPublication?.providerMessageId).not.toBe(
           failurePublication?.providerMessageId,
         );
+        // Slack posts the selected answer as its own message, so the run's
+        // failure milestone always keeps that run's working lane there. Other
+        // providers still let a first answer coalesce into the lane.
         expect(
-          order === "failure_first"
+          order === "failure_first" || provider === "slack"
             ? failurePublication?.providerMessageId
             : answerPublication?.providerMessageId,
         ).toBe(originalWorking!.providerMessageId);

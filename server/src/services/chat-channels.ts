@@ -33846,6 +33846,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
   async function runPublicationToReplace(
     publication: typeof chatPublications.$inferSelect,
     payload: SafeChatPublicationPayload,
+    provider?: EndpointRow["provider"],
   ): Promise<string | null> {
     if (payload.attachmentIds?.length) return null;
     const currentRunId =
@@ -33883,12 +33884,22 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       .orderBy(desc(chatPublications.createdAt), desc(chatPublications.id))
       .then(async (rows) => {
         // Progress updates are one replaceable provider-message lane per run.
-        // The first durable agent comment may turn that placeholder into the
-        // terminal response, but later comments from the same run are distinct
-        // user-visible outputs and must be posted separately. Re-editing the
-        // placeholder for each comment silently erases the earlier replies.
+        // On Slack a durable agent comment is a distinct user-visible output
+        // and is always posted as its own message: editing the queued/working
+        // placeholder into the reply hides that an answer arrived, because
+        // Slack does not notify a channel or thread follower about an edit.
+        // Only an already-published failure milestone may still be replaced by
+        // this run's committed response, which corrects that same message
+        // instead of adding a new output.
+        //
+        // Other providers keep coalescing the run's first comment into the
+        // placeholder. The first durable agent comment may turn that
+        // placeholder into the terminal response, but later comments from the
+        // same run are distinct outputs and must be posted separately.
+        // Re-editing the placeholder for each comment erases earlier replies.
         if (
           publication.commentId &&
+          provider !== "slack" &&
           rows.some(
             (row) =>
               row.commentId !== null && row.payload.progressState === undefined,
@@ -33898,7 +33909,10 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         const replacement = rows.find(
           (row) =>
             Boolean(row.providerMessageId) &&
-            row.payload.progressState !== undefined,
+            row.payload.progressState !== undefined &&
+            (provider !== "slack" ||
+              !publication.commentId ||
+              row.payload.progressState === "failed"),
         );
         if (!replacement?.providerMessageId) return null;
         if (
@@ -36947,7 +36961,11 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
                     publication,
                     payload,
                   )) ??
-                  (await runPublicationToReplace(publication, payload)) ??
+                  (await runPublicationToReplace(
+                    publication,
+                    payload,
+                    endpoint.provider,
+                  )) ??
                   (await inboundWakePublicationToReplace(
                     publication,
                     payload,
