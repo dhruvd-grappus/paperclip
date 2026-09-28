@@ -169,6 +169,7 @@ export function instanceSettingsRoutes(
       latest = await updates.latestRelease(req.query.refresh === "1");
     } catch (err) {
       error = err instanceof Error ? err.message : "Could not reach GitHub";
+      latest = updates.cached() ?? null;
     }
     res.json({
       enabled: true,

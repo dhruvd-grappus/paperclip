@@ -102,8 +102,8 @@ export function SidebarBuildUpdate({ build }: { build: InstanceBuildInfo }) {
                 ? `Could not check for updates (${info.error}).`
                 : !checked && !info.updateAvailable
                   ? "Check GitHub for a newer build."
-                  : info.updateAvailable && latest
-                    ? `Build ${latest.build ?? latest.sha} is available (${latest.sha.slice(0, 9)}).`
+                   : info.updateAvailable && latest
+                    ? `Build ${latest.build ?? latest.sha} is available (${latest.sha.slice(0, 9)}).${info.error ? ` (last refresh failed: ${info.error})` : ""}`
                     : "You are on the latest build."}
             </span>
             {info.updateAvailable && latest ? (
