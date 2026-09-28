@@ -877,6 +877,18 @@ export type {
 export type { CostEvent, CostSummary, IssueCostSummary, CostByAgent, CostByProviderModel, CostByBiller, CostByAgentModel, CostWindowSpendRow, CostByProject } from "./cost.js";
 export type { FinanceEvent, FinanceSummary, FinanceByBiller, FinanceByKind } from "./finance.js";
 export type {
+  StatsRange,
+  StatsTimeBurnDay,
+  StatsTimeBurn,
+  StatsParentTaskDurations,
+  StatsTaskExtreme,
+  StatsThroughputDay,
+  StatsThroughput,
+  StatsOverview,
+  StatsProjectPerformance,
+  StatsByProject,
+} from "./stats.js";
+export type {
   AgentWakeupResponse,
   ChatFailedRunRetryResponse,
   AgentWakeupSkipped,
