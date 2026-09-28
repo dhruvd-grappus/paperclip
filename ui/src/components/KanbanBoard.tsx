@@ -35,7 +35,7 @@ export type KanbanColumnPageSize = (typeof KANBAN_COLUMN_PAGE_SIZE_OPTIONS)[numb
 export const KANBAN_COLUMN_DEFAULT_PAGE_SIZE: KanbanColumnPageSize = 10;
 export const KANBAN_COLUMN_INITIAL_VISIBLE_LIMIT = KANBAN_COLUMN_DEFAULT_PAGE_SIZE;
 export const KANBAN_COLUMN_REVEAL_INCREMENT = KANBAN_COLUMN_DEFAULT_PAGE_SIZE;
-export const KANBAN_COLD_STATUSES = ["backlog", "done", "cancelled"] as const;
+export const KANBAN_COLD_STATUSES = ["backlog", "done", "human_approved", "cancelled"] as const;
 
 export const boardStatuses = [
   "backlog",
@@ -44,6 +44,7 @@ export const boardStatuses = [
   "in_review",
   "blocked",
   "done",
+  "human_approved",
   "cancelled",
 ] as const satisfies readonly IssueStatus[];
 
@@ -113,6 +114,18 @@ export const kanbanColumnTones: Partial<Record<IssueStatus, typeof defaultKanban
     count: "text-green-700/65 dark:text-green-300/65",
     body: "bg-green-50/45 ring-1 ring-inset ring-green-500/15 dark:bg-green-950/15",
     bodyOver: "bg-green-100/70 ring-1 ring-inset ring-green-500/25 dark:bg-green-950/30",
+    card: "",
+  },
+  // Sign-off sits on top of done, so it stays in the green family — but at a
+  // heavier weight (emerald, solid ring) rather than a second identical green
+  // lane, which would leave two adjacent columns indistinguishable at a glance.
+  human_approved: {
+    rail: "border-emerald-500/40 bg-emerald-50/70 dark:bg-emerald-950/25",
+    railOver: "bg-emerald-100/80 ring-1 ring-emerald-500/40 dark:bg-emerald-950/40",
+    header: "text-emerald-800 dark:text-emerald-200",
+    count: "text-emerald-800/65 dark:text-emerald-200/65",
+    body: "bg-emerald-50/55 ring-1 ring-inset ring-emerald-500/25 dark:bg-emerald-950/20",
+    bodyOver: "bg-emerald-100/80 ring-1 ring-inset ring-emerald-500/40 dark:bg-emerald-950/35",
     card: "",
   },
   cancelled: {

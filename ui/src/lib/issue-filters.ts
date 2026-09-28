@@ -76,14 +76,16 @@ export function externalObjectFilterLabel(value: string): string {
   return EXTERNAL_OBJECT_FILTER_LABELS[value] ?? issueFilterLabel(value);
 }
 
-export const issueStatusOrder = ["in_progress", "todo", "backlog", "in_review", "blocked", "done", "cancelled"];
+export const issueStatusOrder = ["in_progress", "todo", "backlog", "in_review", "blocked", "done", "human_approved", "cancelled"];
 export const issuePriorityOrder = ["critical", "high", "medium", "low"];
 
 export const issueQuickFilterPresets = [
   { label: "All", statuses: [] as string[] },
   { label: "Active", statuses: ["todo", "in_progress", "in_review", "blocked"] },
   { label: "Backlog", statuses: ["backlog"] },
-  { label: "Done", statuses: ["done", "cancelled"] },
+  // "Done" means finished, so it has to include the sign-off status too —
+  // otherwise approving a task makes it vanish from both Active and Done.
+  { label: "Done", statuses: ["done", "human_approved", "cancelled"] },
 ];
 
 export function issueFilterLabel(value: string): string {
