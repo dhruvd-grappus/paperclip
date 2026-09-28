@@ -27120,6 +27120,218 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     ]);
   });
 
+  it("publishes the final comment of a chat-origin run woken by child completion", async () => {
+    const fixture = await seedCompany();
+    const { callbacks, endpoint, runtime, service } =
+      await configuredTelegramEndpoint(fixture);
+    const chatId = "77112251";
+    const dm = makeThread({
+      channelId: `telegram:${chatId}`,
+      id: `telegram:${chatId}`,
+      isDM: true,
+      name: "Telegram delegated task",
+    });
+    await deliverMessage({
+      callbacks,
+      endpointId: endpoint.id,
+      provider: "telegram",
+      thread: dm.thread,
+      message: makeMessage({
+        id: `${chatId}:71`,
+        text: "RCA for this",
+        userId: chatId,
+      }),
+      trigger: "direct_message",
+    });
+    await qualifySetupRoundTrip(service, endpoint.id, chatId);
+    await service.test(endpoint.id, "owner-user");
+    const [conversation] = await db
+      .select()
+      .from(chatConversations)
+      .where(eq(chatConversations.endpointId, endpoint.id));
+    if (!conversation) throw new Error("Expected Telegram conversation");
+
+    // The delegating run is woken by its children, not by an inbound chat
+    // message, so it has no chat wake comment to walk back to.
+    const childWakeContext = {
+      issueId: conversation.issueId,
+      taskId: conversation.issueId,
+      source: "native_status_decision",
+      wakeReason: "issue_children_completed",
+    };
+    const [childWokenRun] = await db
+      .insert(heartbeatRuns)
+      .values({
+        companyId: fixture.companyId,
+        agentId: fixture.assignedAgentId,
+        status: "succeeded",
+        contextSnapshot: childWakeContext,
+      })
+      .returning();
+    if (!childWokenRun) throw new Error("Expected child-woken run");
+
+    const finalComment = await addSelectedChatFinal({
+      agentId: fixture.assignedAgentId,
+      body: "TELEGRAM-CHILD-COMPLETION-RCA",
+      companyId: fixture.companyId,
+      issueId: conversation.issueId,
+      runId: childWokenRun.id,
+    });
+    await service.processPendingPublications();
+    await expect(
+      db
+        .select()
+        .from(chatPublications)
+        .where(eq(chatPublications.commentId, finalComment.id)),
+    ).resolves.toEqual([
+      expect.objectContaining({
+        conversationId: conversation.id,
+        endpointId: endpoint.id,
+        state: "published",
+      }),
+    ]);
+    expect(runtime.endpoints.get(endpoint.id)?.posts).toEqual(
+      expect.arrayContaining([
+        { threadId: dm.thread.id, text: "TELEGRAM-CHILD-COMPLETION-RCA" },
+      ]),
+    );
+
+    // The explicitly authored answer already reached the thread, so the safe
+    // milestone backstop must not add a second generic completion line.
+    await db
+      .update(heartbeatRuns)
+      .set({
+        resultJson: {
+          presentationDecision: {
+            chosenSource: "final_agent_message",
+            commentAction: "create",
+            commentId: finalComment.id,
+          },
+        },
+        updatedAt: new Date(),
+      })
+      .where(eq(heartbeatRuns.id, childWokenRun.id));
+    await enqueueChatRunMilestones(db);
+    await service.processPendingPublications();
+    await expect(
+      db
+        .select()
+        .from(chatPublications)
+        .where(
+          like(
+            chatPublications.idempotencyKey,
+            `run:${childWokenRun.id}:completed:%`,
+          ),
+        ),
+    ).resolves.toHaveLength(0);
+
+    // A run that owns a provider-visible question keeps its final internal.
+    const [interactionRun] = await db
+      .insert(heartbeatRuns)
+      .values({
+        companyId: fixture.companyId,
+        agentId: fixture.assignedAgentId,
+        status: "succeeded",
+        contextSnapshot: childWakeContext,
+      })
+      .returning();
+    if (!interactionRun) throw new Error("Expected interaction-owning run");
+    await issueThreadInteractionService(db).create(
+      { id: conversation.issueId, companyId: fixture.companyId },
+      {
+        kind: "request_confirmation",
+        continuationPolicy: "wake_assignee",
+        sourceRunId: interactionRun.id,
+        payload: { version: 1, prompt: "Ship the fix?" },
+      },
+      { agentId: fixture.assignedAgentId, runId: interactionRun.id },
+    );
+    await service.processPendingPublications();
+    await expect(
+      resolveChatRunPresentationAuthorizationReason(db, {
+        companyId: fixture.companyId,
+        issueId: conversation.issueId,
+        runId: interactionRun.id,
+      }),
+    ).resolves.toBe("internal_agent_write");
+
+    // An endpoint assigned to another agent is not this run's destination.
+    await db
+      .update(chatEndpoints)
+      .set({ assignedAgentId: fixture.replacementAgentId })
+      .where(eq(chatEndpoints.id, endpoint.id));
+    const [foreignAgentRun] = await db
+      .insert(heartbeatRuns)
+      .values({
+        companyId: fixture.companyId,
+        agentId: fixture.assignedAgentId,
+        status: "succeeded",
+        contextSnapshot: childWakeContext,
+      })
+      .returning();
+    if (!foreignAgentRun) throw new Error("Expected foreign-agent run");
+    await expect(
+      resolveChatRunPresentationAuthorizationReason(db, {
+        companyId: fixture.companyId,
+        issueId: conversation.issueId,
+        runId: foreignAgentRun.id,
+      }),
+    ).resolves.toBe("internal_agent_write");
+
+    // An explicit publication mode still suppresses automatic publication.
+    await db
+      .update(chatEndpoints)
+      .set({
+        assignedAgentId: fixture.assignedAgentId,
+        publicationMode: "explicit",
+      })
+      .where(eq(chatEndpoints.id, endpoint.id));
+    const [explicitModeRun] = await db
+      .insert(heartbeatRuns)
+      .values({
+        companyId: fixture.companyId,
+        agentId: fixture.assignedAgentId,
+        status: "succeeded",
+        contextSnapshot: childWakeContext,
+      })
+      .returning();
+    if (!explicitModeRun) throw new Error("Expected explicit-mode run");
+    await expect(
+      resolveChatRunPresentationAuthorizationReason(db, {
+        companyId: fixture.companyId,
+        issueId: conversation.issueId,
+        runId: explicitModeRun.id,
+      }),
+    ).resolves.toBe("internal_agent_write");
+    // The milestone sweep is global; assert this endpoint's exact receipts
+    // rather than counting work staged for other fixture companies.
+    await enqueueChatRunMilestones(db);
+    await expect(
+      db
+        .select({ id: chatPublications.id })
+        .from(chatPublications)
+        .where(
+          and(
+            eq(chatPublications.endpointId, endpoint.id),
+            or(
+              like(
+                chatPublications.idempotencyKey,
+                `run:${interactionRun.id}:%`,
+              ),
+              like(
+                chatPublications.idempotencyKey,
+                `run:${foreignAgentRun.id}:%`,
+              ),
+              like(
+                chatPublications.idempotencyKey,
+                `run:${explicitModeRun.id}:%`,
+              ),
+            ),
+          ),
+        ),
+    ).resolves.toHaveLength(0);
+  });
+
   it("publishes a Telegram failure for an exact confirmation continuation that stops before commenting", async () => {
     const fixture = await seedCompany();
     const { callbacks, endpoint, runtime, service } =
