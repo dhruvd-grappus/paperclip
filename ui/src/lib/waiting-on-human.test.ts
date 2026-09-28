@@ -260,6 +260,24 @@ describe("waitingOnHumanRows", () => {
     expect(statuses.get("GRA-81")).toBeNull();
   });
 
+  it("never renders hidden, harness or chat-container tasks", () => {
+    const rows = waitingOnHumanRows(
+      [
+        item({ id: "on-hidden", relatedIssue: relatedIssue("i-hidden", "GRA-101", "Card on a hidden task") }),
+        item({ id: "on-visible", relatedIssue: relatedIssue("i-ok", "GRA-100", "Card on a real task") }),
+      ],
+      [
+        issue({ id: "i-ok", identifier: "GRA-100" }),
+        issue({ id: "i-hidden", identifier: "GRA-101", hiddenAt: new Date(NOW) } as Partial<Issue> & { id: string }),
+        issue({ id: "i-harness", identifier: "GRA-102", harnessKind: "smoke" } as Partial<Issue> & { id: string }),
+        issue({ id: "i-chat", identifier: "GRA-103", conversationAgentId: "agent-1" } as Partial<Issue> & { id: string }),
+      ],
+      NOW,
+    );
+    // Both the task's own row and any pending card pointing at it are dropped.
+    expect(rows.map((row) => row.identifier)).toEqual(["GRA-100"]);
+  });
+
   it("folds a pending card and its review into one row, oldest wait first", () => {
     const rows = waitingOnHumanRows(
       [

@@ -1,5 +1,6 @@
 import type { AttentionItem, Issue } from "@paperclipai/shared";
 import { attentionDetailLine, attentionTaskRef } from "./attention";
+import { isVisibleWorkTask } from "./task-visibility";
 
 /**
  * "Waiting on you" (GRA-296): the tasks whose next move belongs to a person.
@@ -21,6 +22,10 @@ import { attentionDetailLine, attentionTaskRef } from "./attention";
  * `done` come from the issue list, because a review with no pending card raises
  * no feed row at all until it stalls, and a finished task raises none ever —
  * and those are exactly the states this widget is asked to show.
+ *
+ * Hidden, harness and chat-container tasks never appear — `isVisibleWorkTask`
+ * is the same rule the server applies to every queue it builds. The task list
+ * endpoint does not apply it, so this list has to.
  *
  * Parent tasks only. A subtask's question or review is a step inside work the
  * parent already represents, so listing both turns one thing to look at into a
@@ -105,6 +110,9 @@ const HUMAN_REVIEW_PATH_KINDS = new Set(["human_reviewer", "interaction", "appro
 type ReviewIssue = Pick<Issue, "id" | "status" | "title" | "updatedAt"> & {
   identifier?: string | null;
   parentId?: string | null;
+  hiddenAt?: Date | string | null;
+  harnessKind?: string | null;
+  conversationAgentId?: string | null;
   createdByUserId?: string | null;
   responsibleUserId?: string | null;
   assigneeUserId?: string | null;
@@ -190,12 +198,17 @@ export function waitingOnHumanRows(
 ): WaitingOnHumanRow[] {
   const drafts = new Map<string, Draft>();
 
-  // Which task ids are subtasks. A feed row carries no parentage of its own, so
-  // its task is looked up here; a card on a task the list does not cover (an
-  // older task, or one past the list's page) stays in — an unknown parent is no
-  // reason to drop a decision nobody has made.
+  // Which task ids are subtasks, and which are not board-visible work. A feed
+  // row carries neither fact of its own, so its task is looked up here; a card
+  // on a task the list does not cover (an older task, or one past the list's
+  // page) stays in — an unknown parent is no reason to drop a decision nobody
+  // has made. A task the list *does* cover and marks hidden is dropped, since
+  // then it is known to be off the board.
   const childIssueIds = new Set(
     issues.filter((issue) => issue.parentId != null).map((issue) => issue.id),
+  );
+  const invisibleIssueIds = new Set(
+    issues.filter((issue) => !isVisibleWorkTask(issue)).map((issue) => issue.id),
   );
 
   const issueById = new Map(issues.map((issue) => [issue.id, issue]));
@@ -246,7 +259,7 @@ export function waitingOnHumanRows(
     if (!reason) continue;
     const task = attentionTaskRef(item);
     const issueId = item.relatedIssue?.kind === "issue" ? item.relatedIssue.id : null;
-    if (issueId && childIssueIds.has(issueId)) continue;
+    if (issueId && (childIssueIds.has(issueId) || invisibleIssueIds.has(issueId))) continue;
     merge({
       // Keyed on the task where there is one, so a second card on the same task
       // folds into its row instead of listing it twice.
@@ -267,7 +280,7 @@ export function waitingOnHumanRows(
 
   for (const issue of issues) {
     if (issue.parentId != null) continue;
-    if (issue.archivedAt) continue;
+    if (!isVisibleWorkTask(issue)) continue;
     const reason: WaitingReason | null = reviewAwaitsPerson(issue)
       ? "in_review"
       : doneAwaitsApproval(issue)

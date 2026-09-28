@@ -28,6 +28,7 @@ import { HumanInterventionPanel } from "../components/HumanInterventionPanel";
 import { WaitingOnYouPanel } from "../components/WaitingOnYouPanel";
 import { ClaudeUsagePanel } from "../components/ClaudeUsagePanel";
 import { dashboardTaskMetrics } from "../lib/dashboard-task-metrics";
+import { visibleWorkTasks } from "../lib/task-visibility";
 import { heartbeatsApi } from "../api/heartbeats";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { Button } from "@/components/ui/button";
@@ -218,7 +219,12 @@ export function Dashboard() {
     () => new Set((liveRuns ?? []).flatMap((run) => (run.issueId ? [run.issueId] : []))),
     [liveRuns],
   );
-  const taskMetrics = useMemo(() => dashboardTaskMetrics(issues ?? []), [issues]);
+  // The task list endpoint returns hidden, harness and chat-container tasks and
+  // leaves the filtering to the caller, while every server-side count applies
+  // `executionIssueCondition`. Filter once here so no panel or metric on this
+  // page shows a task the rest of the product treats as absent.
+  const visibleIssues = useMemo(() => visibleWorkTasks(issues ?? []), [issues]);
+  const taskMetrics = useMemo(() => dashboardTaskMetrics(visibleIssues), [visibleIssues]);
 
   if (!selectedCompanyId) {
     if (companies.length === 0) {
@@ -401,18 +407,21 @@ export function Dashboard() {
 
           <WaitingOnYouPanel
             attentionItems={attentionFeed?.items ?? []}
+            // The unfiltered list on purpose: the row builder needs to tell a
+            // hidden task from one it has never heard of, so it applies the
+            // visibility rule itself.
             issues={issues ?? []}
             userName={(userId) => (userId ? userProfileMap.get(userId)?.label ?? null : null)}
             onUpdateIssue={(issueId, data) => updateIssueStatus.mutate({ issueId, data })}
           />
 
           <HumanInterventionPanel
-            issues={issues ?? []}
+            issues={visibleIssues}
             userName={(userId) => (userId ? userProfileMap.get(userId)?.label ?? null : null)}
             onUpdateIssue={(issueId, data) => updateIssueStatus.mutate({ issueId, data })}
           />
 
-          <RunningByProjectPanel issues={issues ?? []} projects={projects ?? []} liveIssueIds={liveIssueIds} />
+          <RunningByProjectPanel issues={visibleIssues} projects={projects ?? []} liveIssueIds={liveIssueIds} />
 
           <SmokeLabDashboardCard companyId={selectedCompanyId!} />
 
