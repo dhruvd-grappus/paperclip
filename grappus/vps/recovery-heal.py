@@ -9,9 +9,11 @@ changed. For the failures below the cause is ours, not the work, so a resume is 
 
   identity  runner_state_identity_mismatch        session-state read bug (dev-pipe gotcha 33); fails at startup
   auth      ACP agent reported a terminal access failure    expired/revoked Claude token (gotcha 34);
-  service   ACP agent reported a terminal service failure   Anthropic-side outage
-            → only once the current Claude token has >= 30 min left
-  limit     ACP agent reported a terminal limit failure     subscription rate limit → only 60 min after the failure
+   service   ACP agent reported a terminal service failure   Anthropic-side outage
+             → only once the current Claude token has >= 30 min left
+   limit     ACP agent reported a terminal limit failure     subscription rate limit → only 60 min after the failure
+   timeout   recovery cause native_session_retry_exhausted   the 25-minute run cap expired mid-work and the
+             resume did not survive (GRA-262: timeout collided with a server restart)
 
 For each, in this order, so the issue gets exactly ONE new run:
   1. post the instruction comment while the recovery action is still open: Paperclip skips wakes then
@@ -47,11 +49,13 @@ CLASSES = [
     ("service", re.compile(r"ACP agent reported a terminal service failure")),
     ("limit", re.compile(r"ACP agent reported a terminal limit failure")),
 ]
+TIMEOUT_CAUSE = "native_session_retry_exhausted"
 WHY = {
     "identity": "a Paperclip session-state bug at startup (fork build 12 fixes the cause)",
     "auth": "an expired Claude login token",
     "service": "a temporary Anthropic outage",
     "limit": "the Claude subscription rate limit",
+    "timeout": "the 25-minute run cap expiring mid-work (the automatic resume did not survive)",
 }
 
 
@@ -100,6 +104,32 @@ def wake_text(issue, klass, did_work):
     else:
         what = "Resume: re-read the current state of this task and its children before acting; do not redo finished steps."
     return f"Auto-recovery: the previous run stopped because of {why}, not because of the work. {what}"
+
+
+def notify_parent(issue, ident, klass):
+    """Tell the parent task a child was auto-recovered, so scope hears about it.
+
+    A board comment on the still-open parent restarts it (status → todo, blockers cleared);
+    the scope skill's timed-out-child branch then posts the requester notice and re-blocks.
+    Skipped when the parent is already finished (never reopen an accepted task)."""
+    parent_id = issue.get("parentId")
+    if not parent_id:
+        return
+    try:
+        parent = req("GET", f"/issues/{parent_id}")
+    except Exception as e:
+        log(f"{ident}: parent unreadable ({e})")
+        return
+    if (parent.get("status") or "") in ("done", "cancelled"):
+        log(f"{ident}: parent {parent.get('identifier') or parent_id} already finished; no notice")
+        return
+    body = (f"Auto-recovery: {ident} stopped ({WHY[klass]}) and was resumed. "
+            f"Still waiting on it; no action needed.")
+    try:
+        req("POST", f"/issues/{parent_id}/comments", {"body": body})
+        log(f"{ident}: parent {parent.get('identifier') or parent_id} notified")
+    except Exception as e:
+        log(f"{ident}: parent notice failed ({e})")
 
 
 def nudge_pending(state, now):
@@ -156,6 +186,8 @@ def main():
             continue
         err = run.get("error") or ""
         klass = next((name for name, rx in CLASSES if rx.search(err)), None)
+        if klass is None and active.get("cause") == TIMEOUT_CAUSE:
+            klass = "timeout"  # retry-exhausted: the run's own error text names the last resume failure, not the cap
         if klass is None:
             log(f"{ident}: not auto-recoverable ({active.get('cause')}: {err[:120]}); left for a human")
             state["runs"].append(run_id)
@@ -191,6 +223,7 @@ def main():
         except Exception as e:
             log(f"{ident}: comment/resolve failed ({e})")
             continue
+        notify_parent(it, ident, klass)
         state["runs"].append(run_id)
         state["issues"][it["id"]] = recent + [now]
         state["pending"][it["id"]] = now
