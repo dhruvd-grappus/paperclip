@@ -1314,6 +1314,7 @@ export const storybookDashboardSummary: DashboardSummary = {
     monthUtilizationPercent: 27,
   },
   pendingApprovals: 2,
+  humanApproved: { tasks: 6, confirmations: 9, approvals: 3 },
   budgets: {
     activeIncidents: 1,
     pendingApprovals: 1,

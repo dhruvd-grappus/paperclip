@@ -1,6 +1,14 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { agents, companies, createDb, heartbeatRuns } from "@paperclipai/db";
+import {
+  agents,
+  approvals,
+  companies,
+  createDb,
+  heartbeatRuns,
+  issues,
+  issueThreadInteractions,
+} from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -47,6 +55,9 @@ describeEmbeddedPostgres("dashboard service", () => {
   }, 20_000);
 
   afterEach(async () => {
+    await db.delete(issueThreadInteractions);
+    await db.delete(approvals);
+    await db.delete(issues);
     await db.delete(heartbeatRuns);
     await db.delete(agents);
     await db.delete(companies);
@@ -236,5 +247,104 @@ describeEmbeddedPostgres("dashboard service", () => {
     });
     // process_lost kills that recovered must not leak into the failed breakdown.
     expect(bucket?.failedByErrorCode.process_lost).toBeUndefined();
+  });
+
+  it("counts human approvals from confirmations and the approval queue, ignoring agent self-resolution", async () => {
+    const companyId = randomUUID();
+    const otherCompanyId = randomUUID();
+    const agentId = randomUUID();
+    const taskA = randomUUID();
+    const taskB = randomUUID();
+
+    await db.insert(companies).values(
+      [companyId, otherCompanyId].map((id, index) => ({
+        id,
+        name: index === 0 ? "Paperclip" : "Other",
+        issuePrefix: `T${id.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      })),
+    );
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "PaperClipFixer",
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db.insert(issues).values(
+      [taskA, taskB].map((id, index) => ({
+        id,
+        companyId,
+        title: `Task ${index}`,
+        status: "in_progress",
+      })),
+    );
+
+    const interaction = (
+      overrides: Partial<typeof issueThreadInteractions.$inferInsert>,
+    ): typeof issueThreadInteractions.$inferInsert => ({
+      id: randomUUID(),
+      companyId,
+      issueId: taskA,
+      kind: "request_confirmation",
+      status: "accepted",
+      resolvedByUserId: "user-1",
+      payload: {} as never,
+      ...overrides,
+    });
+
+    await db.insert(issueThreadInteractions).values([
+      // Two accepted confirmations on the same task: two decisions, one task.
+      interaction({}),
+      interaction({ kind: "request_checkbox_confirmation" }),
+      // A second task, approved by a different person.
+      interaction({ issueId: taskB, kind: "request_item_verdicts", resolvedByUserId: "user-2" }),
+      // Not human approval: rejected, agent-resolved, still pending, or a question.
+      interaction({ status: "rejected" }),
+      interaction({ resolvedByUserId: null, resolvedByAgentId: agentId }),
+      interaction({ status: "pending", resolvedByUserId: null }),
+      interaction({ kind: "ask_user_questions", status: "answered" }),
+    ]);
+
+    await db.insert(approvals).values([
+      {
+        id: randomUUID(),
+        companyId,
+        type: "agent_creation",
+        status: "approved",
+        decidedByUserId: "user-1",
+        payload: {},
+      },
+      // Approved by automation, rejected, or still open — none are human sign-off.
+      { id: randomUUID(), companyId, type: "agent_creation", status: "approved", payload: {} },
+      {
+        id: randomUUID(),
+        companyId,
+        type: "agent_creation",
+        status: "rejected",
+        decidedByUserId: "user-1",
+        payload: {},
+      },
+      { id: randomUUID(), companyId, type: "agent_creation", status: "pending", payload: {} },
+      // Another company's sign-off must not leak in.
+      {
+        id: randomUUID(),
+        companyId: otherCompanyId,
+        type: "agent_creation",
+        status: "approved",
+        decidedByUserId: "user-9",
+        payload: {},
+      },
+    ]);
+
+    const summary = await dashboardService(db).summary(companyId);
+
+    expect(summary.humanApproved).toEqual({ tasks: 2, confirmations: 3, approvals: 1 });
   });
 });
