@@ -93,24 +93,6 @@ export function WaitingOnYouPanel({
             const editable = onUpdateIssue && row.issueId && row.status;
             const body = (
               <>
-                {editable ? (
-                  <span
-                    className="shrink-0"
-                    // The row is a link to the task; the picker inside it is not.
-                    onClick={(event) => {
-                      event.preventDefault();
-                      event.stopPropagation();
-                    }}
-                  >
-                    <StatusIcon
-                      status={row.status!}
-                      size="md"
-                      onChange={(status) => onUpdateIssue!(row.issueId!, { status })}
-                    />
-                  </span>
-                ) : (
-                  <StatusGlyph status={glyphStatus(row.reasons)} className="shrink-0" />
-                )}
                 <span className="min-w-0 flex-1">
                   <span className="block truncate" title={row.title}>{row.title}</span>
                   <span className="block truncate text-xs text-muted-foreground" title={secondary}>
@@ -122,16 +104,36 @@ export function WaitingOnYouPanel({
                 </span>
               </>
             );
-            const className = "flex items-center gap-2 px-3 py-2 text-sm no-underline text-inherit hover:bg-accent/50";
-            // A row with no task link still belongs in the list — its count is
-            // the signal — so it renders as plain text rather than a dead link.
-            return row.href ? (
-              <Link key={row.key} to={row.href} className={className}>
-                {body}
-              </Link>
-            ) : (
-              <div key={row.key} className={className}>
-                {body}
+            const linkClassName = "flex min-w-0 flex-1 items-center gap-2 text-sm no-underline text-inherit";
+            // The status control sits *beside* the row's link, not inside it: a
+            // popover trigger nested in an anchor is invalid markup, and the
+            // anchor wins the click, which is why the first attempt at inline
+            // editing did nothing.
+            return (
+              <div
+                key={row.key}
+                className="flex items-center gap-2 px-3 py-2 text-sm hover:bg-accent/50"
+              >
+                {editable ? (
+                  <StatusIcon
+                    status={row.status!}
+                    size="md"
+                    onChange={(status) => onUpdateIssue!(row.issueId!, { status })}
+                  />
+                ) : (
+                  <StatusGlyph status={glyphStatus(row.reasons)} className="shrink-0" />
+                )}
+                {/*
+                  * A row with no task link still belongs in the list — its count
+                  * is the signal — so it renders as plain text, not a dead link.
+                  */}
+                {row.href ? (
+                  <Link to={row.href} className={linkClassName}>
+                    {body}
+                  </Link>
+                ) : (
+                  <div className={linkClassName}>{body}</div>
+                )}
               </div>
             );
           })}

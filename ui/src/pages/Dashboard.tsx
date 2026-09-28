@@ -22,7 +22,7 @@ import { MetricCard } from "../components/MetricCard";
 import { EmptyState } from "../components/EmptyState";
 import { usePublishSharedQueryData, useSharedPollingQuery } from "../hooks/useSharedPolling";
 
-import { Bot, CircleCheck, CircleDot, OctagonAlert, ShieldCheck, LayoutDashboard, PauseCircle, BellRing, UserCheck } from "lucide-react";
+import { Bot, CircleCheck, CircleDot, OctagonAlert, LayoutDashboard, PauseCircle, BellRing, UserCheck } from "lucide-react";
 import { RunningByProjectPanel } from "../components/RunningByProjectPanel";
 import { HumanInterventionPanel } from "../components/HumanInterventionPanel";
 import { WaitingOnYouPanel } from "../components/WaitingOnYouPanel";
@@ -323,6 +323,16 @@ export function Dashboard() {
             </div>
           ) : null}
 
+          {/*
+            * Where each number comes from matters. `data.tasks` and
+            * `data.humanApproved` are counted by the server over every task in
+            * the company, so they are exact; `taskMetrics` is derived from the
+            * task list this page loaded, which the API caps at 500, so it
+            * under-reports on a large board. Anything the server can count is
+            * therefore read from `data`, and only the two figures that need
+            * per-task state the summary does not carry — the 7-day window and
+            * the attention predicates — come from `taskMetrics`.
+            */}
           <div className="grid grid-cols-2 xl:grid-cols-3 gap-1 sm:gap-2">
             <MetricCard
               icon={CircleCheck}
@@ -332,18 +342,18 @@ export function Dashboard() {
               // so a task a person signed off is delivered work too. The list
               // has no date filter, so it shows all of them, not just 7 days.
               to="/issues?status=done,human_approved"
-              description={<span>last 7 days · {taskMetrics.doneTotal} all time</span>}
+              description={<span>last 7 days · {data.tasks.done} all time</span>}
             />
             <MetricCard
               icon={CircleDot}
-              value={taskMetrics.inProgress}
+              value={data.tasks.inProgress}
               label="Tasks In Progress"
               to="/issues?status=in_progress"
-              description={<span>{taskMetrics.open} open · {liveIssueIds.size} with a live agent run</span>}
+              description={<span>{data.tasks.open} open · {liveIssueIds.size} with a live agent run</span>}
             />
             <MetricCard
               icon={OctagonAlert}
-              value={taskMetrics.blocked}
+              value={data.tasks.blocked}
               label="Tasks Blocked"
               to="/issues?status=blocked"
               description={
@@ -355,22 +365,10 @@ export function Dashboard() {
               }
             />
             <MetricCard
-              icon={ShieldCheck}
-              value={data.pendingApprovals + data.budgets.pendingApprovals}
-              label="Pending Approvals"
-              // Stays on /approvals: this counts approval records, not tasks,
-              // and several of them are budget overrides with no task at all.
-              to="/approvals"
-              description={
-                <span>
-                  {data.budgets.pendingApprovals > 0
-                    ? `${data.budgets.pendingApprovals} budget overrides awaiting board review`
-                    : "Awaiting board review"}
-                </span>
-              }
-            />
-            <MetricCard
               icon={BellRing}
+              // Client-side by necessity: "no live path is moving it" reads
+              // each task's blocker and review attention, which the summary
+              // does not carry. Capped with the loaded list.
               value={taskMetrics.needsAttention}
               label="Needs Attention"
               // No status describes this one — it is open tasks whose blocker or

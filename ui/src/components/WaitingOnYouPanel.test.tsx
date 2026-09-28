@@ -76,6 +76,17 @@ function reviewIssue(identifier: string): Issue {
   } as unknown as Issue;
 }
 
+function doneIssue(identifier: string): Issue {
+  return {
+    id: `issue-${identifier}`,
+    identifier,
+    title: `Finished ${identifier}`,
+    status: "done",
+    updatedAt: new Date("2026-09-28T11:00:00.000Z"),
+    completedAt: new Date("2026-09-28T11:00:00.000Z"),
+  } as unknown as Issue;
+}
+
 describe("WaitingOnYouPanel", () => {
   let container: HTMLDivElement;
   let root: ReturnType<typeof createRoot>;
@@ -144,17 +155,63 @@ describe("WaitingOnYouPanel", () => {
     expect(hrefs).not.toContain("/waiting-on-you");
   });
 
-  it("offers an inline status picker only for rows with a known task status", () => {
+  it("approves a finished task from the row without leaving the list", () => {
+    const changes: Array<[string, { status: string }]> = [];
+    const issue = doneIssue("GRA-60");
+    render([], [issue], { onUpdateIssue: (issueId, data) => changes.push([issueId, data]) });
+
+    // The picker must not sit inside the row's link, or the anchor takes the
+    // click and the popover never opens — the bug this pins down.
+    const trigger = container.querySelector("[aria-haspopup]") as HTMLElement | null;
+    expect(trigger).not.toBeNull();
+    expect(trigger!.closest("a")).toBeNull();
+
+    flushSync(() => {
+      trigger!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    // `human_approved` is only offered on a finished task (see
+    // `offeredStatuses`), which is exactly the sign-off this desk is for.
+    const option = [...document.querySelectorAll("button")].find((button) =>
+      (button.textContent ?? "").includes("Human Approved"),
+    );
+    expect(option).toBeDefined();
+    flushSync(() => {
+      option!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(changes).toEqual([[issue.id, { status: "human_approved" }]]);
+  });
+
+  it("lets an in-review row be moved on, without offering sign-off yet", () => {
+    const changes: Array<[string, { status: string }]> = [];
+    const issue = reviewIssue("GRA-20");
+    render([], [issue], { onUpdateIssue: (issueId, data) => changes.push([issueId, data]) });
+    const trigger = container.querySelector("[aria-haspopup]") as HTMLElement | null;
+    flushSync(() => {
+      trigger!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    const labels = [...document.querySelectorAll("button")].map((button) => button.textContent ?? "");
+    expect(labels.some((label) => label.includes("Done"))).toBe(true);
+    // A task has to be finished before a person can sign it off.
+    expect(labels.some((label) => label.includes("Human Approved"))).toBe(false);
+
+    const done = [...document.querySelectorAll("button")].find((button) =>
+      (button.textContent ?? "").includes("Done"),
+    );
+    flushSync(() => {
+      done!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(changes).toEqual([[issue.id, { status: "done" }]]);
+  });
+
+  it("leaves rows with no known task status read-only", () => {
     const changes: Array<[string, { status: string }]> = [];
     render(
-      // A pending card on a task outside the list: nothing to edit against.
+      // A pending card on a task outside the loaded list: nothing to edit.
       [interactionItem("GRA-90", "Off-list card")],
-      [reviewIssue("GRA-20")],
+      [],
       { onUpdateIssue: (issueId, data) => changes.push([issueId, data]) },
     );
-    // One picker trigger, for the in-review task; the off-list row keeps a glyph.
-    const triggers = [...container.querySelectorAll("[aria-haspopup], button")];
-    expect(triggers.length).toBe(1);
+    expect(container.querySelector("[aria-haspopup]")).toBeNull();
     expect(changes).toEqual([]);
   });
 

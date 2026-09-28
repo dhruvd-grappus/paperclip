@@ -1,3 +1,7 @@
+// Every board route root belongs here. A root that is missing is read as a
+// company prefix by `extractCompanyPrefixFromPath` — "/waiting-on-you" parsed
+// as company "WAITING-ON-YOU" — so its links silently stay unprefixed and the
+// unprefixed→prefixed redirect never fires for them.
 const BOARD_ROUTE_ROOTS = new Set([
   "dashboard",
   "companies",
@@ -13,6 +17,7 @@ const BOARD_ROUTE_ROOTS = new Set([
   "execution-workspaces",
   "issues",
   "tasks",
+  "waiting-on-you",
   "routines",
   "goals",
   "artifacts",

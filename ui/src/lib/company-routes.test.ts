@@ -13,6 +13,15 @@ describe("company routes", () => {
     expect(applyCompanyPrefix("/tasks", "PAP")).toBe("/PAP/tasks");
   });
 
+  it("prefixes the waiting-on-you page instead of reading it as a company", () => {
+    // A hyphenated root is the trap: unregistered, "waiting-on-you" parses as
+    // the company prefix "WAITING-ON-YOU" and the path stays unprefixed.
+    expect(isBoardPathWithoutPrefix("/waiting-on-you")).toBe(true);
+    expect(extractCompanyPrefixFromPath("/waiting-on-you")).toBeNull();
+    expect(applyCompanyPrefix("/waiting-on-you", "GRA")).toBe("/GRA/waiting-on-you");
+    expect(toCompanyRelativePath("/GRA/waiting-on-you")).toBe("/waiting-on-you");
+  });
+
   it("treats execution workspace paths as board routes that need a company prefix", () => {
     expect(isBoardPathWithoutPrefix("/execution-workspaces/workspace-123")).toBe(true);
     expect(isBoardPathWithoutPrefix("/execution-workspaces/workspace-123/routines")).toBe(true);
