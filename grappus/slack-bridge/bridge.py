@@ -12,6 +12,9 @@ What it does, with board rights (outside any agent run):
    card is answered or withdrawn elsewhere first, the copy is withdrawn.
 2. Question notice. For every new pending card on a Slack-bound root (the agent's own cards and relayed copies),
    one new thread message is posted, so Slack notifies the thread.
+4. QA screenshots. Image attachments named `qa-*` on a Slack-bound root (QA uploads one per criterion to its parent
+   task) are uploaded into the Slack thread, one message per QA run. Other attachments (e.g. the requester's own
+   Slack uploads) are never echoed.
 Cards opened before `--since` (first start) are ignored unless listed with `--include <interactionId>`.
 
   python3 bridge.py --dry-run          show what it would do
@@ -25,6 +28,7 @@ import re
 import subprocess
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 
 BASE = "http://127.0.0.1:3100"
@@ -161,6 +165,42 @@ def board_send(root, text, key):
     log("notice posted", root["identifier"], key)
 
 
+def slack_api(method, fields):
+    r = urllib.request.Request("https://slack.com/api/" + method, method="POST", data=json.dumps(fields).encode(),
+                               headers={"Authorization": "Bearer " + SLACK_TOKEN, "Content-Type": "application/json; charset=utf-8"})
+    with urllib.request.urlopen(r, timeout=60) as resp:
+        out = json.loads(resp.read())
+    if not out.get("ok"):
+        raise RuntimeError(f"slack {method} failed: {out.get('error')}")
+    return out
+
+
+def slack_upload_images(conv, files, comment):
+    """files: [(filename, bytes)] -> one thread message with all images (files.getUploadURLExternal flow, files:write)."""
+    parts = (conv.get("externalThreadId") or "").split(":")  # slack:<channel>:<thread ts>
+    if len(parts) != 3 or not parts[2]:
+        raise RuntimeError(f"no Slack thread for conversation {conv.get('id')}")
+    ids = []
+    for name, data in files:
+        q = urllib.parse.urlencode({"filename": name, "length": len(data)}).encode()
+        r = urllib.request.Request("https://slack.com/api/files.getUploadURLExternal", data=q, method="POST",
+                                   headers={"Authorization": "Bearer " + SLACK_TOKEN})
+        with urllib.request.urlopen(r, timeout=30) as resp:
+            up = json.loads(resp.read())
+        if not up.get("ok"):
+            raise RuntimeError(f"slack files.getUploadURLExternal failed: {up.get('error')}")
+        with urllib.request.urlopen(urllib.request.Request(up["upload_url"], data=data, method="POST"), timeout=60):
+            pass
+        ids.append({"id": up["file_id"], "title": name.rsplit(".", 1)[0]})
+    slack_api("files.completeUploadExternal", {"files": ids, "channel_id": parts[1], "thread_ts": parts[2], "initial_comment": comment})
+
+
+def attachment_bytes(content_path):
+    r = urllib.request.Request(BASE + content_path, headers={"Authorization": "Bearer " + TOKEN})
+    with urllib.request.urlopen(r, timeout=60) as resp:
+        return resp.read()
+
+
 def unpublished_comment_ids(comment_ids):
     """Read-only DB check: which of these comments have no Slack publication at all."""
     if not comment_ids:
@@ -192,6 +232,48 @@ state.setdefault("notified", [])
 state.setdefault("republished", [])
 state.setdefault("noPushRoots", [])   # root issue ids whose build worktrees must not push (review first)
 state.setdefault("noPushDone", [])    # worktree paths already marked
+state.setdefault("slackFiles", [])    # attachment ids already uploaded to Slack
+def post_screenshots(root, root_id, conv):
+    # 4. QA screenshots -> Slack thread (29 Sep: requesters see what was tested, not only the verdict)
+    shots = [a for a in items(req("GET", f"/api/issues/{root_id}/attachments") or [])
+             if (a.get("originalFilename") or "").startswith("qa-") and (a.get("contentType") or "").startswith("image/")
+             and a["id"] not in state["slackFiles"] and P(a["createdAt"]) >= since
+             and now() - P(a["createdAt"]) > dt.timedelta(minutes=1)]   # let a QA run finish uploading its set
+    if not (shots and SLACK_TOKEN and conv):
+        return
+    shots = sorted(shots, key=lambda a: a["originalFilename"])[:10]
+    try:
+        if DRY:
+            log("DRY slack screenshots", root["identifier"], [a["originalFilename"] for a in shots])
+            return
+        slack_upload_images(conv, [(a["originalFilename"], attachment_bytes(a["contentPath"])) for a in shots],
+                            "Screenshots from testing:")
+        state["slackFiles"].extend(a["id"] for a in shots)
+        log("slack screenshots posted", root["identifier"], len(shots))
+    except Exception as e:  # never let an upload failure stop the other steps; retried next minute
+        log("slack screenshots failed", root["identifier"], e)
+
+
+def republish_unpublished(root, root_id, floor=dt.timedelta(minutes=2)):
+    # 3a. agent replies that Paperclip never published (26 Sep, GRA-115: after a Slack form answer the first run fails
+    #     reviewed_chat_execution_binding_not_authorized, and the recovery run's reply is kept off Slack)
+    cs = req("GET", f"/api/issues/{root_id}/comments")
+    cs = cs if isinstance(cs, list) else items(cs)
+    candidates = [c["id"] for c in cs if c.get("authorAgentId") and c["id"] not in state["republished"]
+                  and P(c["createdAt"]) >= since and floor < now() - P(c["createdAt"]) < dt.timedelta(minutes=30)]
+    for cid in unpublished_comment_ids(candidates):
+        b = root.get("externalChannelBinding") or {}
+        if DRY:
+            log("DRY republish reply", root["identifier"], cid)
+            continue
+        req("POST", f"/api/chat-endpoints/{b['endpointId']}/conversations/{b['conversationId']}/publications", {"commentId": cid})
+        state["republished"].append(cid)
+        log("republished undelivered reply", root["identifier"], cid)
+    for cid in candidates:  # published normally: remember so it is not checked again
+        if cid not in state["republished"] and not DRY:
+            state["republished"].append(cid)
+
+
 since = P(state["since"])
 os.makedirs(HOME, exist_ok=True)
 
@@ -204,7 +286,17 @@ for e in items(req("GET", f"/api/companies/{COMPANY}/chat-endpoints")):
 
 for root_id, conv in roots.items():
     root = req("GET", f"/api/issues/{root_id}")
-    if root.get("status") in ("done", "cancelled") or root.get("originKind") != "chat_channel":
+    if root.get("originKind") != "chat_channel":
+        continue
+    if root.get("status") in ("done", "cancelled"):
+        # A root can be marked done a moment before its final comment is written (28 Sep, GRA-283: done at
+        # 16:33:35.496, the reply landed ~200ms later), so dropping it here loses the answer. Keep the question
+        # relay off for a terminal root, but still sweep its unpublished replies for a short window, and drop the
+        # 2-minute floor since a terminal root has no run left that could still publish.
+        upd = root.get("updatedAt")
+        if upd and now() - P(upd) < dt.timedelta(minutes=30):
+            republish_unpublished(root, root_id, floor=dt.timedelta(seconds=20))
+            post_screenshots(root, root_id, conv)
         continue
     root_cards = {it["id"]: it for it in items(req("GET", f"/api/issues/{root_id}/interactions"))}
 
@@ -329,23 +421,8 @@ for root_id, conv in roots.items():
             state["noPushDone"].append(path)
             log("marked no-push", root["identifier"], path)
 
-    # 3a. agent replies that Paperclip never published (26 Sep, GRA-115: after a Slack form answer the first run fails
-    #     reviewed_chat_execution_binding_not_authorized, and the recovery run's reply is kept off Slack)
-    cs = req("GET", f"/api/issues/{root_id}/comments")
-    cs = cs if isinstance(cs, list) else items(cs)
-    candidates = [c["id"] for c in cs if c.get("authorAgentId") and c["id"] not in state["republished"]
-                  and P(c["createdAt"]) >= since and dt.timedelta(minutes=2) < now() - P(c["createdAt"]) < dt.timedelta(minutes=30)]
-    for cid in unpublished_comment_ids(candidates):
-        b = root.get("externalChannelBinding") or {}
-        if DRY:
-            log("DRY republish reply", root["identifier"], cid)
-            continue
-        req("POST", f"/api/chat-endpoints/{b['endpointId']}/conversations/{b['conversationId']}/publications", {"commentId": cid})
-        state["republished"].append(cid)
-        log("republished undelivered reply", root["identifier"], cid)
-    for cid in candidates:  # published normally: remember so it is not checked again
-        if cid not in state["republished"] and not DRY:
-            state["republished"].append(cid)
+    republish_unpublished(root, root_id)
+    post_screenshots(root, root_id, conv)
 
     # 3. finished children but the root never woke (26 Sep, GRA-111: a follow-up sent while children ran left
     #    unadmitted chat input, which blocks every later wake until a new message arrives in the thread)
