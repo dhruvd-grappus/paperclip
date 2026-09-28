@@ -44,6 +44,7 @@ import { useCompany } from "../context/CompanyContext";
 import { useSidebar } from "../context/SidebarContext";
 import { useKeyboardShortcuts } from "../hooks/useKeyboardShortcuts";
 import { useCompanyPageMemory } from "../hooks/useCompanyPageMemory";
+import { useBrowserNotifications } from "../hooks/useBrowserNotifications";
 import { healthApi } from "../api/health";
 import { instanceSettingsApi } from "../api/instanceSettings";
 import {
@@ -136,6 +137,10 @@ export function Layout() {
     selectionSource,
     setSelectedCompanyId,
   } = useCompany();
+  // OS-level notifications for the attention feed (GRA-294). Inert until the
+  // user enables them and the browser grants permission, so this adds no
+  // polling for everyone else.
+  useBrowserNotifications(selectedCompanyId);
   const { companyPrefix, pluginRoutePath: matchedPluginRoutePath } = useParams<{
     companyPrefix: string;
     pluginRoutePath?: string;
