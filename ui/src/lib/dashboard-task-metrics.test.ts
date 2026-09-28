@@ -25,6 +25,21 @@ describe("dashboard task metrics", () => {
     });
   });
 
+  it("treats human_approved as delivered, not as open work", () => {
+    // The two statuses landed in separate PRs. Merging both would otherwise have
+    // left this file's inline ["done", "cancelled"] test counting an approved
+    // task as open *and* excluding it from throughput — wrong on both sides.
+    const metrics = dashboardTaskMetrics([
+      issue("signed-off", "human_approved", { completedAt: "2026-09-26T09:00:00Z" }),
+      issue("plain-done", "done", { completedAt: "2026-09-26T09:00:00Z" }),
+      issue("still-going", "in_progress"),
+    ], NOW);
+    expect(metrics.doneTotal).toBe(2);
+    expect(metrics.doneLast7Days).toBe(2);
+    expect(metrics.open).toBe(1);
+    expect(metrics.needsAttention).toBe(0);
+  });
+
   it("counts needs-attention across stalled blockers and stalled reviews, ignoring closed work", () => {
     const metrics = dashboardTaskMetrics([
       issue("blocker-attention", "blocked", { blockerAttention: { state: "needs_attention" } }),

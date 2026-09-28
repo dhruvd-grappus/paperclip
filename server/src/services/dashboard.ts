@@ -9,6 +9,7 @@ import {
   issues,
   issueThreadInteractions,
 } from "@paperclipai/db";
+import { isCompletedIssueStatus, isTerminalIssueStatus } from "@paperclipai/shared";
 import { notFound } from "../errors.js";
 import { budgetService } from "./budgets.js";
 import { executionIssueCondition } from "./issue-visibility.js";
@@ -124,8 +125,11 @@ export function dashboardService(db: Db) {
         const count = Number(row.count);
         if (row.status === "in_progress") taskCounts.inProgress += count;
         if (row.status === "blocked") taskCounts.blocked += count;
-        if (row.status === "done") taskCounts.done += count;
-        if (row.status !== "done" && row.status !== "cancelled") taskCounts.open += count;
+        // Asked as predicates, not spelled-out statuses: `human_approved` is a
+        // completion sitting on top of `done`, so naming the statuses here would
+        // have both dropped it from `done` and counted it as still open.
+        if (isCompletedIssueStatus(row.status)) taskCounts.done += count;
+        if (!isTerminalIssueStatus(row.status)) taskCounts.open += count;
       }
 
       const now = new Date();

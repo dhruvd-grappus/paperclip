@@ -1,4 +1,5 @@
 import type { Issue } from "@paperclipai/shared";
+import { isCompletedIssueStatus, isTerminalIssueStatus } from "@paperclipai/shared";
 
 type IssueLike = Pick<Issue, "id" | "status" | "projectId" | "updatedAt" | "completedAt"> & {
   description?: string | null;
@@ -11,9 +12,16 @@ const HUMAN_REVIEW_PATH_KINDS = new Set(["human_reviewer", "interaction", "appro
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-/** When a done issue finished: completedAt, else its last update. */
+/**
+ * When a completed issue finished: completedAt, else its last update.
+ *
+ * Asks `isCompletedIssueStatus` rather than testing `=== "done"`, so a task a
+ * person signed off on still counts as delivered. Spelling the status out here
+ * would have quietly dropped every `human_approved` task out of the throughput
+ * numbers the moment that status existed.
+ */
 function doneAt(issue: IssueLike): number | null {
-  if (issue.status !== "done") return null;
+  if (!isCompletedIssueStatus(issue.status)) return null;
   const at = Date.parse(String(issue.completedAt ?? issue.updatedAt));
   return Number.isFinite(at) ? at : null;
 }
@@ -39,7 +47,7 @@ export interface DashboardTaskMetrics {
 
 /** Open work: still countable, not finished or abandoned. */
 function isOpen(issue: IssueLike): boolean {
-  return !["done", "cancelled"].includes(issue.status);
+  return !isTerminalIssueStatus(issue.status);
 }
 
 /** A task is "needs attention" when no live path is moving it. */
@@ -72,7 +80,7 @@ export function dashboardTaskMetrics(issues: readonly IssueLike[], now = Date.no
       if (now - at <= 7 * DAY_MS) metrics.doneLast7Days += 1;
     }
     if (issue.status === "in_progress") metrics.inProgress += 1;
-    if (!["done", "cancelled"].includes(issue.status)) metrics.open += 1;
+    if (isOpen(issue)) metrics.open += 1;
     if (issue.status === "blocked") {
       metrics.blocked += 1;
       if (issue.blockerAttention?.state === "needs_attention") metrics.blockedNeedingAttention += 1;
