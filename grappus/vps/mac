@@ -1,0 +1,143 @@
+#!/bin/bash
+# mac: build and run things on registered Mac machines (Xcode, Swift, iOS/macOS, Flutter iOS) from the VPS.
+# Installed at /usr/local/bin/mac (make install-mac); runs as paperclip. Macs are reached with plain ssh over
+# Tailscale (the VPS and every Mac sit in one tailnet); nothing is exposed publicly.
+# Registry: /home/paperclip/macs.json  {"macs":{"<name>":{"host","user","workdir","note"}}}
+# Key:      /home/paperclip/.ssh/mac_builder (ed25519, created by `mac pubkey`), authorised on each Mac.
+# `mac help` is the manual (agents read it there).
+set -uo pipefail
+export HOME=/home/paperclip
+REG=${MAC_REGISTRY:-$HOME/macs.json}
+KEY=${MAC_KEY:-$HOME/.ssh/mac_builder}
+[ -s "$REG" ] || echo '{"macs":{}}' > "$REG"
+
+die() { echo "mac: $*" >&2; exit 1; }
+field() { jq -r --arg n "$1" --arg f "$2" '.macs[$n][$f] // empty' "$REG"; }
+need() { jq -e --arg n "$1" '.macs[$n]' "$REG" >/dev/null || die "no mac named '$1' (mac list)"; }
+SSHO=(-i "$KEY" -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=8 -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30)
+# Tailnet view: one line per node "<name> <ip> <os> <online>", name = first label of the MagicDNS name. Names resolve through it,
+# so a Mac is reachable by its Tailscale name without MagicDNS on this host.
+TS=$(tailscale status --json 2>/dev/null | jq -r '[.Self] + [.Peer[]?] | .[] | "\(.DNSName|split(".")[0]|ascii_downcase) \(.TailscaleIPs[0]) \(.OS) \(.Online)"')
+node() { awk -v h="$(echo "$1" | tr A-Z a-z)" '$1==h || $2==h' <<<"$TS" | head -1; }
+ip() { local h; h=$(field "$1" host); local l; l=$(node "$h"); [ -n "$l" ] && echo "${l#* }" | cut -d' ' -f1 || echo "$h"; }
+online() { [ "$(node "$(field "$1" host)" | cut -d' ' -f4)" = true ]; }
+need_online() { online "$1" || die "$1 is offline in Tailscale: nothing to do on it (mac list)"; }
+target() { echo "$(field "$1" user)@$(ip "$1")"; }
+workdir() { local w; w=$(field "$1" workdir); echo "${w:-paperclip-builds}"; }
+# remote: run a command string in a login zsh (brew, flutter, pod on PATH) from the Mac user's home.
+remote() { local n=$1; shift; ssh "${SSHO[@]}" "$(target "$n")" "zsh -lc $(printf %q "$*")"; }
+
+# One persistent build clone per repo on each Mac, named after the origin remote (ateam, not GRA-123-foo), shared by
+# every task and worktree of that repo, so Pods and DerivedData stay warm and each build only recompiles the diff.
+repo_key() { local u; u=$(git -C "$1" remote get-url origin 2>/dev/null); u=${u%.git}; u=${u##*/}; echo "${u:-$(basename "$(cd "$1" && pwd)")}"; }
+# Tasks take turns on a clone: flock on this host (the only driver) per Mac + repo, held until the command exits.
+lock() { [ -d "$2" ] || die "no dir $2"; mkdir -p "$HOME/.mac-locks"; exec 9>"$HOME/.mac-locks/$1-$(repo_key "$2").lock"
+  flock -n 9 || { echo "mac: $1 is busy with another $(repo_key "$2") build, waiting (max 20 min)" >&2; flock -w 1200 9 || die "gave up waiting for $1"; }; }
+# Content-only compare (-c) and no -t: unchanged files keep their Mac mtimes even when the worktree is brand new,
+# otherwise Xcode would see every file as modified and rebuild from scratch.
+sync_to() { local n=$1 src=$2 dest; dest="$(workdir "$n")/$(repo_key "$src")"
+  remote "$n" "mkdir -p $(printf %q "$dest")" || die "ssh to $n failed (mac check $n)"
+  rsync -rlc --delete -e "ssh ${SSHO[*]}" --exclude .git --exclude node_modules --exclude DerivedData --exclude /build --exclude Pods/ \
+    "${src%/}/" "$(target "$n"):$dest/" >&2 || die "rsync failed"
+  echo "$dest"; }
+
+set_fields() { # $1 name, rest: --host/--user/--workdir/--note pairs
+  local n=$1; shift; local args=()
+  while [ $# -gt 0 ]; do case "$1" in
+    --host|--user|--workdir|--note) [ $# -ge 2 ] || die "$1 needs a value"; args+=(--arg "${1#--}" "$2"); shift 2;;
+    *) die "unknown option $1";; esac; done
+  local tmp; tmp=$(mktemp)
+  jq --arg n "$n" "${args[@]}" '.macs[$n] = ((.macs[$n] // {}) + ($ARGS.named | del(.n)))' "$REG" > "$tmp" && mv "$tmp" "$REG"
+}
+
+cmd=${1:-list}; shift || true
+case "$cmd" in
+  list) # registered Macs with Tailscale state; exit 1 when none is online (= nothing to do)
+    up=0; rows=""
+    while IFS=$'\t' read -r n rest; do [ -n "$n" ] || continue
+      if online "$n"; then st=online; up=$((up+1)); else st=offline; fi
+      rows+="$n"$'\t'"$st"$'\t'"$rest"$'\n'
+    done < <(jq -r '.macs | to_entries[] | "\(.key)\t\(.value.user)@\(.value.host)\t\(.value.note // "")"' "$REG")
+    [ -n "$rows" ] && printf '%s' "$rows" | column -t -s $'\t'
+    reg=$(jq -r '.macs[].host | ascii_downcase' "$REG")
+    other=$(awk '$3=="macOS"{print $1" ("($4=="true"?"online":"offline")")"}' <<<"$TS" | grep -vxF -f <(sed 's/$/ (online)/;p;s/(online)/(offline)/' <<<"$reg") | paste -sd, -)
+    [ -n "$other" ] && echo "tailnet Macs not registered (mac add): $other"
+    [ "$up" -gt 0 ] || { echo "no Mac online: nothing to do"; exit 1; };;
+  add)
+    n=${1:?mac add <name> --host <tailscale name|100.x ip> --user <mac user> [--workdir <dir>] [--note <text>]}; shift
+    jq -e --arg n "$n" '.macs[$n]' "$REG" >/dev/null && die "'$n' exists (mac edit)"
+    set_fields "$n" "$@"
+    [ -n "$(field "$n" host)" ] && [ -n "$(field "$n" user)" ] || { jq --arg n "$n" 'del(.macs[$n])' "$REG" > "$REG.tmp" && mv "$REG.tmp" "$REG"; die "--host and --user are required"; }
+    echo "added $n"; echo "authorise the key on it: mac pubkey";;
+  edit)
+    n=${1:?mac edit <name> [--host h] [--user u] [--workdir d] [--note t]}; shift; need "$n"; set_fields "$n" "$@"; echo "updated $n";;
+  remove)
+    n=${1:?mac remove <name>}; need "$n"
+    jq --arg n "$n" 'del(.macs[$n])' "$REG" > "$REG.tmp" && mv "$REG.tmp" "$REG"; echo "removed $n";;
+  pubkey)
+    [ -f "$KEY" ] || ssh-keygen -q -t ed25519 -N '' -C paperclip-mac-builder -f "$KEY"
+    echo "On the Mac (Remote Login on, Tailscale in the same tailnet), as the build user, run:"
+    echo "  mkdir -p ~/.ssh && chmod 700 ~/.ssh && echo '$(cat "$KEY.pub")' >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys";;
+  check)
+    names=("$@"); [ $# -gt 0 ] || mapfile -t names < <(jq -r '.macs|keys[]' "$REG")
+    for n in "${names[@]}"; do need "$n"
+      printf '%s (%s): ' "$n" "$(target "$n")"; online "$n" || { echo offline; continue; }
+      remote "$n" 'echo "ok macOS $(sw_vers -productVersion), $(xcodebuild -version 2>/dev/null | head -1 || echo "no Xcode"), $(df -h ~ | awk "NR==2{print \$4}") free"' 2>&1 | tail -1
+    done;;
+  run)
+    n=${1:?mac run <name> -- <command>}; shift; need "$n"; need_online "$n"; [ "${1:-}" = "--" ] && shift
+    [ $# -gt 0 ] || die "no command"; w=$(printf %q "$(workdir "$n")"); remote "$n" "mkdir -p $w && cd $w && $*";;
+  sync)
+    n=${1:?mac sync <name> <local dir>}; src=${2:?mac sync <name> <local dir>}; need "$n"; need_online "$n"
+    lock "$n" "$src"; sync_to "$n" "$src";;
+  build)
+    n=${1:?mac build <name> <local dir> [--path P] [--scheme S] [--dest D] [-- extra xcodebuild args]}; src=${2:?local dir}; shift 2; need "$n"; need_online "$n"
+    scheme=""; dest="generic/platform=iOS Simulator"; extra=(); sub=.
+    while [ $# -gt 0 ]; do case "$1" in
+      --scheme) scheme=$2; shift 2;; --path) sub=$2; shift 2;; --dest) dest=$2; shift 2;; --) shift; extra=("$@"); break;;
+      *) die "unknown option $1";; esac; done
+    lock "$n" "$src"; rdir=$(sync_to "$n" "$src") || exit 1
+    log="$HOME/mac-logs/$(basename "$rdir")-$(date +%Y%m%d-%H%M%S).log"; mkdir -p "$HOME/mac-logs"
+    # xcworkspace (CocoaPods/SPM) beats xcodeproj; no --scheme = the first scheme xcodebuild lists.
+    x=""; [ ${#extra[@]} -gt 0 ] && x=$(printf '%q ' "${extra[@]}")
+    script="dd=\$(cd $(printf %q "$(dirname "$rdir")") && pwd)/DerivedData/$(basename "$rdir")
+      cd $(printf %q "$rdir/$sub") || exit 1
+      c=\$(ls -d *.xcworkspace 2>/dev/null | grep -v '^Pods' | head -1); k=-workspace
+      [ -n \"\$c\" ] || { c=\$(ls -d *.xcodeproj | head -1); k=-project; }
+      # Pods never sync (repos commit them partially, without the big binary slices): the Mac installs its own,
+      # again only when Podfile.lock moves. Uses the Mac's CocoaPods cache.
+      if [ -f Podfile ] && ! cmp -s Podfile.lock Pods/Manifest.lock; then pod install || exit 1; fi
+      s=$(printf %q "$scheme"); [ -n \"\$s\" ] || s=\$(xcodebuild -list \$k \"\$c\" -json | python3 -c 'import json,sys;d=json.load(sys.stdin);print((d.get(\"workspace\") or d.get(\"project\"))[\"schemes\"][0])')
+      echo \"xcodebuild \$k \$c -scheme \$s\"
+      xcodebuild \$k \"\$c\" -scheme \"\$s\" -destination $(printf %q "$dest") -derivedDataPath \"\$dd\" CODE_SIGNING_ALLOWED=NO ARCHS=\$(uname -m) ONLY_ACTIVE_ARCH=YES build $x"
+    remote "$n" "$script" > "$log" 2>&1; rc=$?
+    grep -m1 '^xcodebuild ' "$log"; grep -E '(fatal )?error:' "$log" | sort -u | head -15
+    tail -3 "$log"; echo "log: $log"; exit $rc;;
+  help|*)
+    cat <<'EOF'
+mac: run Xcode/Swift/iOS/macOS work on a real Mac from this Linux host (it cannot build Apple targets itself).
+  mac  (= mac list)                         FIRST STEP: registered Macs, online/offline (Tailscale), unregistered tailnet
+                                            Macs. Exit 1 + "no Mac online: nothing to do" when none is online: then stop
+  mac check [name]...                       reachable? macOS, Xcode version, free disk
+  mac add <name> --host <h> --user <u> [--workdir <dir>] [--note <text>]   host = Tailscale name or 100.x IP
+  mac edit <name> [--host|--user|--workdir|--note <v>]
+  mac remove <name>
+  mac pubkey                                key + one-liner to authorise this host on a new Mac
+  mac sync <name> <dir>                     rsync a worktree into the Mac's one clone of that repo, <workdir>/<repo>
+                                            (repo = origin remote name; reused by every task, so builds stay warm; no .git, node_modules,
+                                            top-level build/, Pods/: build runs pod install on the Mac when Podfile.lock changes);
+                                            prints the remote dir. React Native/Flutter: run
+                                            `npm ci` / `flutter pub get` there with mac run before building
+  mac build <name> <dir> [--path <subdir>] [--scheme S] [--dest D] [-- extra xcodebuild args]
+                                            sync <dir>, then xcodebuild in <dir>/<subdir> (workspace over project, first scheme by default,
+                                            generic iOS Simulator, Mac-native arch only, no signing); prints the command,
+                                            errors, BUILD SUCCEEDED/FAILED and a log path under ~/mac-logs; exit code = xcodebuild's
+  mac run <name> -- <command>               any command in a login zsh from the Mac's workdir (swift test, flutter
+                                            build ios --no-codesign, xcrun simctl ..., pod install)
+Rules: build from your worktree, never edit files on the Mac (sync overwrites). No signing, no App Store/TestFlight upload,
+no keychain, no installing on the Mac without the requester asking. A Mac that fails `check` is offline: say so in the
+handoff (`not covered: iOS build, no Mac online`), never wait for it; run/sync/build refuse offline Macs. Adding a Mac: Tailscale + Remote Login on it,
+`mac add`, run the `mac pubkey` line there, `mac check <name>`.
+EOF
+    ;;
+esac

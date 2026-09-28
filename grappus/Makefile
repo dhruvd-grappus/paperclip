@@ -111,10 +111,16 @@ install-snapshot:
 	  test -s /root/.hostinger_token || echo "WARN: /root/.hostinger_token missing"; \
 	  printf "SHELL=/bin/sh\nPATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n30 3 * * * root /usr/local/bin/hostinger-snapshot\n" > /etc/cron.d/hostinger-snapshot; chmod 644 /etc/cron.d/hostinger-snapshot; cat /etc/cron.d/hostinger-snapshot'
 
+# make install-mac: the `mac` tool (Xcode/iOS builds on registered Macs over Tailscale ssh). Registry
+# /home/paperclip/macs.json and key ~/.ssh/mac_builder stay on the host; Macs are added with `mac add` there.
+install-mac:
+	@scp -q vps/mac $(VPS):/tmp/mac
+	@ssh $(VPS) 'set -e; install -m 755 -o root -g root /tmp/mac /usr/local/bin/mac; rm -f /tmp/mac; su - paperclip -c "mac pubkey >/dev/null; mac list"'
+
 paperclip-rollback:
 	@ssh $(VPS) 'paperclip-overlay rollback'
 
 paperclip-status:
 	@ssh $(VPS) 'paperclip-overlay status'
 
-.PHONY: deploy install-backup install-heal install-preview install-providers install-skills-sync backup reasoning install-updater paperclip-rollback paperclip-status
+.PHONY: deploy install-mac install-backup install-heal install-preview install-providers install-skills-sync backup reasoning install-updater paperclip-rollback paperclip-status

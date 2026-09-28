@@ -23,7 +23,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 HOME = os.path.expanduser("~")
 K = json.load(open(f"{HOME}/.paperclip/auth.json"))["credentials"][B]["token"]
 FORCE = "--force" in sys.argv
-SLUGS = ["pc-lite", "scope", "build", "review", "qa", "memory", "env", "figma"]
+SLUGS = ["pc-lite", "scope", "build", "review", "qa", "memory", "env", "figma", "mobile"]
 
 
 def req(m, p, body=None):
