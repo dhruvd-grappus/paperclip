@@ -104,6 +104,13 @@ install-identities:
 	  install -m 644 -o root -g root /tmp/managed-git.json /etc/claude-code/managed-settings.d/45-paperclip-git.json; \
 	  rm -f /tmp/git-credential-identity /tmp/managed-git.json; echo installed'
 
+# Daily Hostinger VPS snapshot (one per VM, expires after 24 h, so daily is mandatory). Needs /root/.hostinger_token.
+install-snapshot:
+	@scp -q vps/hostinger-snapshot $(VPS):/tmp/
+	@ssh $(VPS) 'set -e; install -m 755 -o root -g root /tmp/hostinger-snapshot /usr/local/bin/hostinger-snapshot; rm -f /tmp/hostinger-snapshot; \
+	  test -s /root/.hostinger_token || echo "WARN: /root/.hostinger_token missing"; \
+	  printf "SHELL=/bin/sh\nPATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n30 3 * * * root /usr/local/bin/hostinger-snapshot\n" > /etc/cron.d/hostinger-snapshot; chmod 644 /etc/cron.d/hostinger-snapshot; cat /etc/cron.d/hostinger-snapshot'
+
 paperclip-rollback:
 	@ssh $(VPS) 'paperclip-overlay rollback'
 

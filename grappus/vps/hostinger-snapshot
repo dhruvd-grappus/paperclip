@@ -1,0 +1,32 @@
+#!/bin/sh
+# Daily Hostinger VPS snapshot (root cron 30 3 * * *, after the 03:17 paperclip-backup dump).
+# Hostinger keeps ONE snapshot per VM and it expires 24 h after creation, so this must run every day.
+# Token: /root/.hostinger_token (mode 600, root only; created in hPanel, API tokens). VM id: $HOSTINGER_VM (default 2005857).
+# Log: /var/log/hostinger-snapshot.log. Status JSON for humans/hygiene: /var/backups/paperclip/hostinger-snapshot.json
+set -u
+VM=${HOSTINGER_VM:-2005857}
+B=https://developers.hostinger.com/api/vps/v1
+LOG=/var/log/hostinger-snapshot.log
+STATUS=/var/backups/paperclip/hostinger-snapshot.json
+T=$(cat /root/.hostinger_token 2>/dev/null) || { echo "$(date -u +%FT%TZ) no token" >> "$LOG"; exit 1; }
+api() { curl -s -m 60 -H "Authorization: Bearer $T" -H "Content-Type: application/json" "$@"; }
+log() { echo "$(date -u +%FT%TZ) $*" >> "$LOG"; }
+
+act=$(api -X POST "$B/virtual-machines/$VM/snapshot")
+aid=$(printf %s "$act" | jq -r '.id // empty')
+[ -n "$aid" ] || { log "create failed: $act"; printf '{"ok":false,"at":"%s","error":%s}\n' "$(date -u +%FT%TZ)" "$(printf %s "$act" | jq -Rs .)" > "$STATUS"; exit 1; }
+log "create requested, action $aid"
+
+state=
+for i in $(seq 1 60); do            # up to 30 min
+  sleep 30
+  state=$(api "$B/virtual-machines/$VM/actions/$aid" | jq -r '.state // empty')
+  case "$state" in success|error|failed) break ;; esac
+done
+snap=$(api "$B/virtual-machines/$VM/snapshot")
+log "action $aid state=${state:-unknown} snapshot=$snap"
+if [ "$state" = success ]; then
+  printf '{"ok":true,"at":"%s","action":%s,"snapshot":%s}\n' "$(date -u +%FT%TZ)" "$aid" "$snap" > "$STATUS"
+else
+  printf '{"ok":false,"at":"%s","action":%s,"state":"%s","snapshot":%s}\n' "$(date -u +%FT%TZ)" "$aid" "${state:-unknown}" "$snap" > "$STATUS"; exit 1
+fi
