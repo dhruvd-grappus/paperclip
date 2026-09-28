@@ -1,0 +1,97 @@
+#!/bin/bash
+# branch-map: what is on each environment branch of a project's repos right now. Installed at /usr/local/bin/branch-map.
+# Usage: branch-map --project <projectId> [--workspace <name>]...   (no --workspace = every workspace of the project)
+#        branch-map --primary <path>...
+# Fetches origin (prune) in every primary clone in parallel, then lists the long-lived environment branches only, by tier:
+#   prod    main master prod production live
+#   staging staging stage uat preprod pre-prod
+#   lower   develop development dev ai-dev qa test testing sandbox, plus the workspace repoRef (the build base) when its
+#           name is not one of these (a base named master stays prod)
+# hotfix/*, release/*, feature and personal branches are skipped. A branch with no commit for STALE_DAYS (120) is
+# marked STALE: it is not an environment any more. For every live lower/staging branch it prints the drift against
+# each live prod branch, counted by patch (cherry-picked releases match their original), merge commits excluded:
+# "+N unreleased" (changes on it that prod lacks) and "-M prod-only" (prod changes, e.g. hotfixes, it lacks).
+# Plain text, one block per workspace. Read-only apart from the fetch. Tests: grappus/vps/test-branch-map.sh.
+set -uo pipefail
+export HOME=/home/paperclip
+PROJECT=""; WSS=(); PRIMARIES=()
+while [ $# -gt 0 ]; do case "$1" in
+  --project) PROJECT=$2; shift 2;; --workspace) WSS+=("$2"); shift 2;; --primary) PRIMARIES+=("$2"); shift 2;;
+  *) echo "unknown arg $1" >&2; exit 2;; esac; done
+C=d255c3a4-2066-4d81-8c40-862ad8208963
+PC=${BRANCH_MAP_PC:-/home/paperclip/pc}
+ROOT_BASE=${BRANCH_MAP_ROOT:-/home/paperclip/.paperclip/instances/default/projects/$C}
+STALE_DAYS=${STALE_DAYS:-120}
+NOW=$(date +%s)
+TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
+
+tier() { case "$1" in
+  main|master|prod|production|live) echo prod;;
+  staging|stage|uat|preprod|pre-prod) echo staging;;
+  develop|development|dev|ai-dev|qa|test|testing|sandbox) echo lower;;
+  *) echo "";; esac; }
+
+map_one() { # $1 index  $2 name  $3 primary  $4 repoRef
+  local i=$1 name=$2 p=$3 ref=${4#refs/heads/}
+  echo "== $name  ($p)"
+  if [ ! -d "$p/.git" ] && [ ! -f "$p/.git" ]; then echo "   primary clone missing"; return; fi
+  if [ -s "$TMP/$i.err" ]; then echo "   fetch FAILED: $(tail -1 "$TMP/$i.err")  (showing last fetched state)"; fi
+  local def; def=$(git -C "$p" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's#^origin/##')
+  local rows=() prods=() b t ts age st
+  while read -r b; do
+    t=$(tier "$b"); [ -z "$t" ] && [ -n "$ref" ] && [ "$b" = "$ref" ] && t=lower
+    [ -n "$t" ] || continue
+    ts=$(git -C "$p" log -1 --format=%ct "origin/$b"); age=$(( (NOW - ts) / 86400 ))
+    st=""; [ "$age" -gt "$STALE_DAYS" ] && st=" STALE"
+    rows+=("$t|$b|$age|$st")
+    [ "$t" = prod ] && [ -z "$st" ] && prods+=("$b")
+  done < <(git -C "$p" for-each-ref refs/remotes/origin --format='%(refname:lstrip=3)' | grep -vx HEAD)
+  [ ${#rows[@]} -gt 0 ] || { echo "   no environment branches found (default: ${def:-?})"; return; }
+  local order r drift pb a m
+  for order in prod staging lower; do
+    for r in "${rows[@]}"; do
+      IFS='|' read -r t b age st <<<"$r"; [ "$t" = "$order" ] || continue
+      drift=""
+      if [ "$t" != prod ] && [ -z "$st" ]; then
+        for pb in ${prods[@]+"${prods[@]}"}; do
+          a=$(git -C "$p" rev-list --count --no-merges --cherry-pick --right-only "origin/$pb...origin/$b")
+          m=$(git -C "$p" rev-list --count --no-merges --cherry-pick --left-only "origin/$pb...origin/$b")
+          drift+="  vs $pb: +$a unreleased, -$m prod-only"
+        done
+      fi
+      printf '   %-7s %-12s %s  %sd ago%s%s%s\n' "$t" "$b" "$(git -C "$p" log -1 --format='%h %s' "origin/$b" | cut -c1-60)" "$age" "$st" \
+        "$([ "$b" = "$ref" ] && echo '  [build base]')$([ "$b" = "$def" ] && echo '  [default]')" "$drift"
+    done
+  done
+}
+
+# Collect targets as name|path|repoRef.
+TARGETS=()
+if [ ${#PRIMARIES[@]} -gt 0 ]; then
+  for p in "${PRIMARIES[@]}"; do TARGETS+=("$(basename "$p")|$p|"); done
+else
+  [ -n "$PROJECT" ] || { echo "--project or --primary required" >&2; exit 2; }
+  PJ=$("$PC" GET "/projects/$PROJECT")
+  echo "$PJ" | jq -e '.workspaces' >/dev/null 2>&1 || { echo "project $PROJECT not found or has no workspaces" >&2; exit 1; }
+  while IFS='|' read -r name path ref; do
+    [ -n "$name" ] || continue
+    if [ ${#WSS[@]} -gt 0 ] && ! printf '%s\n' "${WSS[@]}" | grep -qx "$name"; then continue; fi
+    [ -n "$path" ] || path="$ROOT_BASE/$PROJECT/$name"
+    TARGETS+=("$name|$path|$ref")
+  done < <(echo "$PJ" | jq -r '.workspaces[]? | [.name, (.localPath // .effectiveLocalFolder // ""), (.repoRef // "")] | join("|")')
+  [ ${#TARGETS[@]} -gt 0 ] || { echo "no matching workspace in project $PROJECT" >&2; exit 1; }
+fi
+
+# Fetch every clone in parallel (a slow remote costs its own time only), then print in order.
+for i in "${!TARGETS[@]}"; do
+  IFS='|' read -r name path ref <<<"${TARGETS[$i]}"
+  [ -e "$path/.git" ] && {
+    timeout 60 git -C "$path" fetch origin --prune --quiet 2>"$TMP/$i.log" \
+      || { [ -s "$TMP/$i.log" ] && mv "$TMP/$i.log" "$TMP/$i.err" || echo "timed out after 60s" >"$TMP/$i.err"; }
+  } &
+done
+wait
+for i in "${!TARGETS[@]}"; do
+  IFS='|' read -r name path ref <<<"${TARGETS[$i]}"
+  map_one "$i" "$name" "$path" "$ref"
+done
