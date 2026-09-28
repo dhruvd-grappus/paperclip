@@ -578,6 +578,78 @@ export type ChatPublicationBinding = {
   endpointId: string;
 };
 
+const CHILD_COMPLETION_WAKE_REASONS = new Set([
+  "issue_children_completed",
+  "issue_child_blocked",
+]);
+
+/**
+ * The delegation wake shape that has no chat lineage of its own: a status
+ * decision, or a run woken because this issue's children finished. Every other
+ * non-chat source (a board comment, automation, a timer) stays internal.
+ */
+function isChildCompletionWake(
+  snapshot: Record<string, unknown>,
+  contextSource: string | null,
+): boolean {
+  if (contextSource === "native_status_decision") return true;
+  const wakeReason = readStringFromRecord(snapshot, "wakeReason");
+  return wakeReason !== null && CHILD_COMPLETION_WAKE_REASONS.has(wakeReason);
+}
+
+/**
+ * A chat-origin issue that delegates work is woken by its children, not by an
+ * inbound chat message, so the run that writes the answer has no chat wake to
+ * walk back to. The issue's own live conversation is an unambiguous
+ * destination, so it can stand in for that missing lineage. Bindings still
+ * come from the issue (never from the wake), and the endpoint must publish
+ * automatically and belong to the same agent as the run lineage.
+ */
+async function resolveChatBoundIssueOriginBindings(
+  dbOrTx: any,
+  companyId: string,
+  issueId: string,
+  lineageAgentId: string,
+): Promise<Array<ChatPublicationBinding & { hasControl: boolean }>> {
+  const chatOriginIssue = await dbOrTx
+    .select({ id: issues.id })
+    .from(issues)
+    .where(
+      and(
+        eq(issues.id, issueId),
+        eq(issues.companyId, companyId),
+        eq(issues.originKind, "chat_channel"),
+      ),
+    )
+    .limit(1)
+    .then((rows: Array<{ id: string }>) => rows[0] ?? null);
+  if (!chatOriginIssue) return [];
+  return dbOrTx
+    .select({
+      companyId: chatConversations.companyId,
+      conversationId: chatConversations.id,
+      endpointId: chatConversations.endpointId,
+      hasControl: sql<boolean>`exists (select 1 from chat_publications control where control.company_id = ${chatConversations.companyId} and control.endpoint_id = ${chatConversations.endpointId} and control.conversation_id = ${chatConversations.id} and control.state = 'published' and (control.idempotency_key like 'control:new:%' or control.idempotency_key like 'control:close:%'))`,
+    })
+    .from(chatConversations)
+    .innerJoin(
+      chatEndpoints,
+      and(
+        eq(chatEndpoints.companyId, chatConversations.companyId),
+        eq(chatEndpoints.id, chatConversations.endpointId),
+        eq(chatEndpoints.publicationMode, "automatic"),
+        eq(chatEndpoints.assignedAgentId, lineageAgentId),
+      ),
+    )
+    .where(
+      and(
+        eq(chatConversations.companyId, companyId),
+        eq(chatConversations.issueId, issueId),
+        inArray(chatConversations.state, ["active", "waiting"]),
+      ),
+    );
+}
+
 async function resolvePublishedInteractionPromptBindings(
   dbOrTx: any,
   companyId: string,
@@ -1307,8 +1379,21 @@ export async function resolveChatOriginPublicationBindings(
       contextSource !== "issue.interaction.cancel" &&
       contextSource !== "issue.interaction.withdraw" &&
       contextSource !== "external_chat.interaction.resolve"
-    )
-      return [];
+    ) {
+      if (!isChildCompletionWake(snapshot, contextSource)) return [];
+      return authorizeChatPublicationBindings(
+        dbOrTx,
+        companyId,
+        issueId,
+        originRunId,
+        await resolveChatBoundIssueOriginBindings(
+          dbOrTx,
+          companyId,
+          issueId,
+          lineageAgentId!,
+        ),
+      );
+    }
 
     const interactionId = readStringFromRecord(snapshot, "interactionId");
     const sourceRunId = readStringFromRecord(snapshot, "sourceRunId");
@@ -1474,6 +1559,22 @@ export async function resolveChatOriginPublicationBindings(
             : []),
         ),
       );
+  return authorizeChatPublicationBindings(
+    dbOrTx,
+    companyId,
+    issueId,
+    originRunId,
+    bindings,
+  );
+}
+
+async function authorizeChatPublicationBindings(
+  dbOrTx: any,
+  companyId: string,
+  issueId: string,
+  originRunId: string,
+  bindings: Array<ChatPublicationBinding & { hasControl: boolean }>,
+): Promise<ChatPublicationBinding[]> {
   const authorized: ChatPublicationBinding[] = [];
   // A coalesced batch has one inbound link per comment. Prove each destination
   // once, not once per link (the proof itself still checks the complete batch).

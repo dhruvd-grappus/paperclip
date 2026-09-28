@@ -633,6 +633,25 @@ export async function enqueueChatRunMilestones(
         )
       )
   )`;
+  // Backstop for a chat-origin issue whose terminal run was woken by something
+  // other than chat (a child-completion or status decision). Publication still
+  // has to clear `resolveChatOriginPublicationBindings` per row; this only
+  // keeps such a run inside the candidate set so the gap degrades to a
+  // "finished, see the task" line instead of silence.
+  const terminalRunOnChatOriginIssue = sql<boolean>`(
+    ${inArray(heartbeatRuns.status, ["succeeded", "interrupted", "failed", "timed_out", "cancelled"])}
+    and (
+      ${heartbeatRuns.contextSnapshot} ->> 'source' = 'native_status_decision'
+      or ${heartbeatRuns.contextSnapshot} ->> 'wakeReason' in ('issue_children_completed', 'issue_child_blocked')
+    )
+    and exists (
+      select 1
+      from issues chat_origin_issue
+      where chat_origin_issue.company_id = ${heartbeatRuns.companyId}
+        and chat_origin_issue.id = ${chatConversations.issueId}
+        and chat_origin_issue.origin_kind = 'chat_channel'
+    )
+  )`;
   let inserted = 0;
   let cursor: {
     updatedAt: Date;
@@ -717,6 +736,7 @@ export async function enqueueChatRunMilestones(
               hasDirectInteractionContinuation,
             ),
             hasQuestionContinuationTarget,
+            terminalRunOnChatOriginIssue,
           ),
           // Heartbeat marks a run succeeded before the presentation resolver
           // finishes. Waiting for its durable decision prevents a generic
@@ -796,6 +816,7 @@ export async function enqueueChatRunMilestones(
                 and target_delivery.target_run_id = ${heartbeatRuns.id}
                 and target_delivery.status in ('delivered', 'fallback_queued')
             )`,
+            terminalRunOnChatOriginIssue,
           ),
           gte(heartbeatRuns.updatedAt, since),
           isNull(chatPublications.id),
