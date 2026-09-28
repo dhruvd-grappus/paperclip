@@ -1,5 +1,3 @@
-import type { IssueWorkProduct } from "./types/work-product.js";
-
 /**
  * Work product types that count as proof a task actually produced something.
  *
@@ -32,7 +30,13 @@ const RETRACTED_WORK_PRODUCT_STATUSES: ReadonlySet<string> = new Set([
   "archived",
 ]);
 
-type WorkProductLike = Pick<IssueWorkProduct, "type"> & {
+/**
+ * `type` is `string`, not the `IssueWorkProduct` union: the column is plain
+ * text, so a row can legitimately hold a type this build has never heard of.
+ * Narrowing here would only push a cast onto every caller reading the database.
+ */
+export type WorkProductLike = {
+  type: string;
   url?: string | null;
   status?: string | null;
 };
@@ -83,10 +87,14 @@ export function hasCompletionEvidence(workProducts: readonly WorkProductLike[]):
 // ---------------------------------------------------------------------------
 
 /** Which tasks the gate applies to. */
-export type CompletionEvidenceScope = "all" | "parents" | "roots";
+export const COMPLETION_EVIDENCE_SCOPES = ["all", "parents", "roots"] as const;
+
+export type CompletionEvidenceScope = (typeof COMPLETION_EVIDENCE_SCOPES)[number];
 
 /** How much evidence a task in scope has to show. */
-export type CompletionEvidenceRequirement = "either" | "both";
+export const COMPLETION_EVIDENCE_REQUIREMENTS = ["either", "both"] as const;
+
+export type CompletionEvidenceRequirement = (typeof COMPLETION_EVIDENCE_REQUIREMENTS)[number];
 
 /**
  * When a task may move to `done`.
@@ -182,4 +190,29 @@ export function evaluateCompletionGate(
     reason: allowed ? null : "missing_any",
     presentTypes,
   };
+}
+
+/**
+ * A refusal message that names what is missing rather than restating the rule.
+ *
+ * The caller being refused is usually an agent that has just finished real work
+ * and is trying to close the task. "Not allowed" sends it looking through
+ * settings; naming the missing record tells it what to create, which is the
+ * only action that clears the gate.
+ */
+export function describeCompletionGateFailure(result: CompletionGateResult): string {
+  const present =
+    result.presentTypes.length > 0
+      ? ` Recorded so far: ${result.presentTypes.join(", ")}.`
+      : " No evidence work product is recorded on this task.";
+  switch (result.reason) {
+    case "missing_pull_request":
+      return `This task needs a pull_request work product before it can be completed.${present}`;
+    case "missing_artifact":
+      return `This task needs an artifact, preview_url, or runtime_service work product before it can be completed.${present}`;
+    case "missing_any":
+      return `This task needs a pull_request, artifact, preview_url, or runtime_service work product before it can be completed.${present}`;
+    default:
+      return "This task may be completed.";
+  }
 }

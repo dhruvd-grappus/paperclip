@@ -1,3 +1,4 @@
+import type { CompletionEvidencePolicy } from "../completion-evidence.js";
 import type {
   CompanyStatus,
   IssueThreadInteractionKind,
@@ -28,6 +29,7 @@ export interface Company {
   defaultResponsibleUserId: string | null;
   requireBoardApprovalForNewAgents: boolean;
   interactionResolverGovernance: InteractionResolverGovernance;
+  completionEvidencePolicy: CompletionEvidencePolicy;
   feedbackDataSharingEnabled: boolean;
   feedbackDataSharingConsentAt: Date | null;
   feedbackDataSharingConsentByUserId: string | null;

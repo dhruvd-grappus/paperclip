@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
+import { completionEvidencePolicyFromStorage } from "./validators/company.js";
 import {
   DEFAULT_COMPLETION_EVIDENCE_POLICY,
+  describeCompletionGateFailure,
   evaluateCompletionGate,
   hasCompletionEvidence,
   isCompletionEvidence,
@@ -149,5 +151,57 @@ describe("evaluateCompletionGate", () => {
       subject({ ownWorkProducts: [wp("artifact"), wp("branch")] }),
     );
     expect(result.presentTypes).toEqual(["artifact"]);
+  });
+});
+
+describe("describeCompletionGateFailure", () => {
+  it("names the missing leg and what is already recorded", () => {
+    expect(
+      describeCompletionGateFailure({
+        allowed: false,
+        inScope: true,
+        reason: "missing_artifact",
+        presentTypes: ["pull_request"],
+      }),
+    ).toBe(
+      "This task needs an artifact, preview_url, or runtime_service work product before it can be completed. Recorded so far: pull_request.",
+    );
+  });
+
+  it("says plainly when nothing at all is recorded", () => {
+    const message = describeCompletionGateFailure({
+      allowed: false,
+      inScope: true,
+      reason: "missing_any",
+      presentTypes: [],
+    });
+    expect(message).toContain("No evidence work product is recorded on this task.");
+  });
+});
+
+describe("completionEvidencePolicyFromStorage", () => {
+  it("reads a well-formed stored policy back unchanged", () => {
+    const stored = { enabled: true, scope: "parents", require: "both", countDescendants: false };
+    expect(completionEvidencePolicyFromStorage(stored)).toEqual(stored);
+  });
+
+  it("falls back to the shipped default for anything malformed", () => {
+    // Failing open is deliberate: a bad settings row must not make every task
+    // in the company uncompletable.
+    for (const value of [null, undefined, {}, { enabled: true }, "on", { enabled: true, scope: "everything", require: "both", countDescendants: true }]) {
+      expect(completionEvidencePolicyFromStorage(value)).toEqual(DEFAULT_COMPLETION_EVIDENCE_POLICY);
+    }
+  });
+
+  it("rejects unknown keys rather than storing them", () => {
+    expect(
+      completionEvidencePolicyFromStorage({
+        enabled: true,
+        scope: "all",
+        require: "either",
+        countDescendants: true,
+        alsoRequireApproval: true,
+      }),
+    ).toEqual(DEFAULT_COMPLETION_EVIDENCE_POLICY);
   });
 });

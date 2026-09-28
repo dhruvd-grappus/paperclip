@@ -1,4 +1,4 @@
-import type { InteractionResolverGovernance } from "@paperclipai/shared";
+import type { CompletionEvidencePolicy, InteractionResolverGovernance } from "@paperclipai/shared";
 import { pgTable, uuid, text, integer, timestamp, boolean, jsonb, uniqueIndex } from "drizzle-orm/pg-core";
 
 export const companies = pgTable(
@@ -22,6 +22,10 @@ export const companies = pgTable(
       .$type<InteractionResolverGovernance>()
       .notNull()
       .default({}),
+    completionEvidencePolicy: jsonb("completion_evidence_policy")
+      .$type<CompletionEvidencePolicy>()
+      .notNull()
+      .default({ enabled: false, scope: "all", require: "either", countDescendants: true }),
     feedbackDataSharingEnabled: boolean("feedback_data_sharing_enabled")
       .notNull()
       .default(false),

@@ -1,7 +1,16 @@
 import { deliverConversationComments, isConversation } from "../services/agent-conversations.js";
 import { issueRecoveryActionReadModel } from "../services/issue-recovery-actions.js";
 import { getExecutionBlocker } from "../services/execution-blocker.js";
-import { extractIssueReferenceIdentifiers, requiresExecutionReconciliation } from "@paperclipai/shared";
+import {
+  checkHumanApprovalTransition,
+  completionGateService,
+  HUMAN_APPROVAL_REFUSAL_MESSAGES,
+} from "../services/completion-gate.js";
+import {
+  extractIssueReferenceIdentifiers,
+  isTerminalIssueStatus,
+  requiresExecutionReconciliation,
+} from "@paperclipai/shared";
 import {
   validateExecutionReconciliation,
   markExecutionReconciliation,
@@ -2274,10 +2283,12 @@ function summarizeExecutionParticipants(
   );
 }
 
-function isClosedIssueStatus(
-  status: string | null | undefined,
-): status is "done" | "cancelled" {
-  return status === "done" || status === "cancelled";
+// Delegates to the shared terminal list rather than naming statuses inline.
+// With the literals, `human_approved` read as *open* everywhere this is used:
+// a comment on an approved task would have bounced it back to `todo`, and an
+// agent could have reopened it without an explicit resume.
+function isClosedIssueStatus(status: string | null | undefined): boolean {
+  return isTerminalIssueStatus(status);
 }
 
 function shouldImplicitlyMoveCommentedIssueToTodo(input: {
@@ -3548,6 +3559,7 @@ export function issueRoutes(
   const recoveryActionsSvc = issueRecoveryActionService(db);
   const executionWorkspacesSvc = executionWorkspaceServiceDirect(db);
   const workProductsSvc = workProductService(db);
+  const completionGateSvc = completionGateService(db);
   const documentsSvc = documentService(db);
   const artifactReviewDocumentsSvc = artifactReviewDocumentService(db, storage);
   const companySkillsSvc = companySkillService(db);
@@ -12837,6 +12849,35 @@ export function issueRoutes(
           actor: { type: actor.actorType, id: actor.actorId },
           reviewPolicy: existing.reviewPolicy,
         });
+      }
+      const requestedStatus =
+        typeof updateFields.status === "string" ? updateFields.status : null;
+      // `human_approved` means a person signed off. An agent moving its own work
+      // there would make the status mean "the assignee says so", which is the one
+      // thing it must not mean, so the actor check is the status.
+      const humanApprovalRefusal = requestedStatus
+        ? checkHumanApprovalTransition({
+            actorType: req.actor.type,
+            actorUserId: req.actor.userId,
+            fromStatus: existing.status,
+            toStatus: requestedStatus,
+          })
+        : null;
+      if (humanApprovalRefusal === "actor_not_human") {
+        throw forbidden(HUMAN_APPROVAL_REFUSAL_MESSAGES.actor_not_human);
+      }
+      if (humanApprovalRefusal === "not_done") {
+        throw unprocessable(HUMAN_APPROVAL_REFUSAL_MESSAGES.not_done);
+      }
+      // The completion gate. Off by default; when a company turns it on, a task
+      // cannot reach `done` without a recorded pull request or artifact.
+      if (requestedStatus === "done" && existing.status !== "done") {
+        const completionGate = await completionGateSvc.evaluate(existing);
+        if (!completionGate.allowed) {
+          throw unprocessable(
+            completionGate.message ?? "This task is missing its completion evidence",
+          );
+        }
       }
       const shouldCancelActiveRunForCancelledStatus =
         existing.status !== "cancelled" && updateFields.status === "cancelled";
