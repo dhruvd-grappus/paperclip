@@ -3,8 +3,8 @@ import { useQuery } from "@tanstack/react-query";
 import { GitCommitHorizontal } from "lucide-react";
 import { instanceBuildApi, type InstanceBuildInfo } from "../api/instanceBuild";
 import { queryKeys } from "../lib/queryKeys";
-import { SidebarBuildUpdate } from "./SidebarBuildUpdate";
-import { SidebarProviders } from "./SidebarProviders";
+import { Link } from "../lib/router";
+import { INSTANCE_SETTINGS_PATH_PREFIX } from "../lib/instance-settings";
 import { cn, formatDateTime, SIDEBAR_RAIL_HIDDEN_LABEL } from "../lib/utils";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import {
@@ -60,7 +60,7 @@ export function SidebarBuildInfo({ rail }: { rail: boolean }) {
         trigger
       )}
       <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className="max-w-2xl">
+        <DialogContent className="flex max-h-[80vh] max-w-2xl flex-col">
           <DialogHeader>
             <DialogTitle>Running {buildLabel(build)}</DialogTitle>
             <DialogDescription>
@@ -72,7 +72,7 @@ export function SidebarBuildInfo({ rail }: { rail: boolean }) {
           {build.commits.length === 0 ? (
             <p className="text-sm text-muted-foreground">No changes on top of the upstream release.</p>
           ) : (
-            <ol className="max-h-[60vh] space-y-3 overflow-y-auto pr-1" data-testid="sidebar-build-changelog">
+            <ol className="min-h-0 flex-1 space-y-3 overflow-y-auto pr-1" data-testid="sidebar-build-changelog">
               {build.commits.map((commit) => {
                 const url = commitUrl(build, commit.sha);
                 return (
@@ -104,8 +104,17 @@ export function SidebarBuildInfo({ rail }: { rail: boolean }) {
               })}
             </ol>
           )}
-          {open ? <SidebarBuildUpdate build={build} /> : null}
-          {open ? <SidebarProviders /> : null}
+          {/* Updates and providers live in Settings → Instance settings → Updates. */}
+          <div className="shrink-0 border-t border-border pt-3 text-sm">
+            <Link
+              to={`${INSTANCE_SETTINGS_PATH_PREFIX}/updates`}
+              onClick={() => setOpen(false)}
+              className="text-muted-foreground hover:text-foreground hover:underline"
+              data-testid="sidebar-build-updates-link"
+            >
+              Updates and providers
+            </Link>
+          </div>
         </DialogContent>
       </Dialog>
     </div>

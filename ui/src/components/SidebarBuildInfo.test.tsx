@@ -4,11 +4,13 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { MemoryRouter } from "react-router-dom";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { SidebarBuildInfo } from "./SidebarBuildInfo";
 
 const mockInstanceBuildApi = vi.hoisted(() => ({ get: vi.fn() }));
 const mockInstanceUpdateApi = vi.hoisted(() => ({ get: vi.fn(), request: vi.fn() }));
+vi.mock("@/context/CompanyContext", () => ({ useCompany: () => ({ selectedCompany: null }) }));
 vi.mock("../api/instanceBuild", () => ({ instanceBuildApi: mockInstanceBuildApi, instanceUpdateApi: mockInstanceUpdateApi }));
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -52,9 +54,11 @@ async function render(rail = false) {
   await act(async () => {
     root!.render(
       <QueryClientProvider client={client}>
-        <TooltipProvider>
-          <SidebarBuildInfo rail={rail} />
-        </TooltipProvider>
+        <MemoryRouter>
+          <TooltipProvider>
+            <SidebarBuildInfo rail={rail} />
+          </TooltipProvider>
+        </MemoryRouter>
       </QueryClientProvider>,
     );
   });

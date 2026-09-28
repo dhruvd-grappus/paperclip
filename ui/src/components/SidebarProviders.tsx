@@ -38,7 +38,7 @@ function VersionRow({ label, version, note }: { label: string; version: Provider
 }
 
 /**
- * Providers section of the build dialog: the Claude versions this host runs
+ * Providers section of Settings → Instance settings → Updates: the Claude versions this host runs
  * versus npm, the effort level for agent runs, and a host CLI update. Changes
  * are queued for the host's root helper (paperclip-providers), like self-update.
  */
