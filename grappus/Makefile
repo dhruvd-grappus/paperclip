@@ -7,12 +7,13 @@ PIPELINE_DIR?=$(HOME)/Desktop/dev-pipe/paperclip
 # working tree. Override with BACKUP_DIR.
 BACKUP_DIR?=$(HOME)/dev-pipe-backups
 
-# make deploy: ship skills + AGENTS.md (dev-pipe) and host helpers (here) to the VPS, run the native deploy
+# make deploy: ship skills + AGENTS.md (dev-pipe) and host helpers (here) to the VPS, install the agent sandbox's
+# Claude settings (vps/clarifier-settings.json: deny list, also hides unused tools from the prompt), run the native deploy
 # as paperclip. deploy-native.py expects skills/, agents/clarifier.md and vps/ side by side, so the tarball
 # is assembled from both trees.
 deploy:
 	@test -f $(PIPELINE_DIR)/agents/clarifier.md || { echo "PIPELINE_DIR=$(PIPELINE_DIR) has no agents/clarifier.md"; exit 1; }
-	@COPYFILE_DISABLE=1 tar cf - -C $(PIPELINE_DIR) skills agents/clarifier.md -C $(CURDIR) vps deploy-native.py 2>/dev/null | ssh $(VPS) 'rm -rf /home/paperclip/deploy.new && mkdir -p /home/paperclip/deploy.new && tar xf - -C /home/paperclip/deploy.new 2>/dev/null && rm -rf /home/paperclip/deploy && mv /home/paperclip/deploy.new /home/paperclip/deploy && chown -R paperclip:paperclip /home/paperclip/deploy && cp /home/paperclip/deploy/vps/build-start /usr/local/bin/build-start && chmod 755 /usr/local/bin/build-start && su - paperclip -c "cd ~/deploy && python3 deploy-native.py $(ARGS)"'
+	@COPYFILE_DISABLE=1 tar cf - -C $(PIPELINE_DIR) skills agents/clarifier.md -C $(CURDIR) vps deploy-native.py 2>/dev/null | ssh $(VPS) 'rm -rf /home/paperclip/deploy.new && mkdir -p /home/paperclip/deploy.new && tar xf - -C /home/paperclip/deploy.new 2>/dev/null && rm -rf /home/paperclip/deploy && mv /home/paperclip/deploy.new /home/paperclip/deploy && chown -R paperclip:paperclip /home/paperclip/deploy && cp /home/paperclip/deploy/vps/build-start /usr/local/bin/build-start && chmod 755 /usr/local/bin/build-start && su - paperclip -c "cd ~/deploy && python3 deploy-native.py $(ARGS)" && install -m 644 -o paperclip -g paperclip /home/paperclip/deploy/vps/clarifier-settings.json /home/paperclip/clarifier-sandbox/.claude/settings.json && echo "sandbox settings installed"'
 
 # make install-backup: put the backup/snapshot/reasoning helpers on the host (idempotent).
 install-backup:
