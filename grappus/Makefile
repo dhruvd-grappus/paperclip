@@ -11,9 +11,9 @@ BACKUP_DIR?=$(HOME)/dev-pipe-backups
 # Claude settings (vps/clarifier-settings.json: deny list, also hides unused tools from the prompt), run the native deploy
 # as paperclip. deploy-native.py expects skills/, agents/clarifier.md and vps/ side by side, so the tarball
 # is assembled from both trees.
-deploy:
+deploy: install-skills-sync
 	@test -f $(PIPELINE_DIR)/agents/clarifier.md || { echo "PIPELINE_DIR=$(PIPELINE_DIR) has no agents/clarifier.md"; exit 1; }
-	@COPYFILE_DISABLE=1 tar cf - -C $(PIPELINE_DIR) skills agents/clarifier.md -C $(CURDIR) vps deploy-native.py 2>/dev/null | ssh $(VPS) 'rm -rf /home/paperclip/deploy.new && mkdir -p /home/paperclip/deploy.new && tar xf - -C /home/paperclip/deploy.new 2>/dev/null && rm -rf /home/paperclip/deploy && mv /home/paperclip/deploy.new /home/paperclip/deploy && chown -R paperclip:paperclip /home/paperclip/deploy && cp /home/paperclip/deploy/vps/build-start /usr/local/bin/build-start && chmod 755 /usr/local/bin/build-start && su - paperclip -c "cd ~/deploy && python3 deploy-native.py $(ARGS)" && install -m 644 -o paperclip -g paperclip /home/paperclip/deploy/vps/clarifier-settings.json /home/paperclip/clarifier-sandbox/.claude/settings.json && echo "sandbox settings installed"'
+	@COPYFILE_DISABLE=1 tar cf - -C $(PIPELINE_DIR) skills agents/clarifier.md -C $(CURDIR) vps deploy-native.py 2>/dev/null | ssh $(VPS) 'rm -rf /home/paperclip/deploy.new && mkdir -p /home/paperclip/deploy.new && tar xf - -C /home/paperclip/deploy.new 2>/dev/null && rm -rf /home/paperclip/deploy && mv /home/paperclip/deploy.new /home/paperclip/deploy && chown -R paperclip:paperclip /home/paperclip/deploy && cp /home/paperclip/deploy/vps/build-start /usr/local/bin/build-start && chmod 755 /usr/local/bin/build-start && { su paperclip -c "bash /home/paperclip/deploy/vps/test-branch-map.sh /home/paperclip/deploy/vps/branch-map" > /tmp/branch-map-test.log 2>&1 || { grep -E "^FAIL|^pass" /tmp/branch-map-test.log; echo "branch-map tests failed, deploy stopped"; exit 1; }; } && tail -1 /tmp/branch-map-test.log && install -m 755 -o root -g root /home/paperclip/deploy/vps/branch-map /usr/local/bin/branch-map && su - paperclip -c "cd ~/deploy && python3 deploy-native.py $(ARGS)" && install -m 644 -o paperclip -g paperclip /home/paperclip/deploy/vps/clarifier-settings.json /home/paperclip/clarifier-sandbox/.claude/settings.json && echo "sandbox settings installed"'
 
 # make install-backup: put the backup/snapshot/reasoning helpers on the host (idempotent).
 install-backup:
@@ -32,6 +32,14 @@ install-heal:
 	  for f in worktree-heal.py project-policy-heal.py recovery-heal.py; do install -m 755 -o paperclip -g paperclip $$D/vps/$$f /home/paperclip/agents/$$f; done; \
 	  install -m 755 -o paperclip -g paperclip $$D/vps/native-token.sh /home/paperclip/native-token.sh; \
 	  rm -rf $$D; su - paperclip -c "crontab -l" | grep -E "heal|native-token"'
+
+# make install-skills-sync: mirror skills added in the Paperclip UI into /home/paperclip/skills
+# (cron every 5 min; deploy runs it too, so a UI skill reaches the agent without a redeploy).
+install-skills-sync:
+	@COPYFILE_DISABLE=1 tar cf - vps/skills-sync.sh | ssh $(VPS) 'set -e; D=/tmp/grappus-skills; rm -rf $$D; mkdir -p $$D; tar xf - -C $$D; \
+	  install -m 755 -o paperclip -g paperclip $$D/vps/skills-sync.sh /home/paperclip/skills-sync.sh; rm -rf $$D; \
+	  su - paperclip -c "crontab -l | grep -v skills-sync.sh | { cat; echo \"*/5 * * * * /home/paperclip/skills-sync.sh >> /home/paperclip/skills-sync.log 2>&1\"; } | crontab -"; \
+	  su - paperclip -c "crontab -l" | grep skills-sync'
 
 # make install-preview: preview-url (production build + serve, dev fallback), preview-stack (multi-repo
 # previews, recipes in ~/preview-stack.d), preview-reap and the preview router. Seed recipes never overwrite
@@ -90,4 +98,4 @@ paperclip-rollback:
 paperclip-status:
 	@ssh $(VPS) 'paperclip-overlay status'
 
-.PHONY: deploy install-backup install-heal install-preview install-providers backup reasoning install-updater paperclip-rollback paperclip-status
+.PHONY: deploy install-backup install-heal install-preview install-providers install-skills-sync backup reasoning install-updater paperclip-rollback paperclip-status
