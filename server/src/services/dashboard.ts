@@ -120,6 +120,7 @@ export function dashboardService(db: Db) {
         inProgress: 0,
         blocked: 0,
         done: 0,
+        humanApproved: 0,
       };
       for (const row of taskRows) {
         const count = Number(row.count);
@@ -128,6 +129,7 @@ export function dashboardService(db: Db) {
         // Asked as predicates, not spelled-out statuses: `human_approved` is a
         // completion sitting on top of `done`, so naming the statuses here would
         // have both dropped it from `done` and counted it as still open.
+        if (row.status === "human_approved") taskCounts.humanApproved += count;
         if (isCompletedIssueStatus(row.status)) taskCounts.done += count;
         if (!isTerminalIssueStatus(row.status)) taskCounts.open += count;
       }
@@ -253,7 +255,14 @@ export function dashboardService(db: Db) {
         },
         pendingApprovals,
         humanApproved: {
-          tasks: humanApprovedInteractions.tasks,
+          // Tasks *in* `human_approved`, not tasks that once had a confirmation
+          // accepted. Those are different populations — a person can accept a
+          // plan on a task that then keeps running — and the dashboard card is
+          // labelled with the status and links to the status, so counting
+          // anything else made the card disagree with the list it opens. The
+          // decision counts below still come from the interactions and the
+          // approval queue, which is what they are for.
+          tasks: taskCounts.humanApproved,
           confirmations: humanApprovedInteractions.confirmations,
           approvals: humanApprovedApprovals,
         },

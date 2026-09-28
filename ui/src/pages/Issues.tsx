@@ -8,13 +8,14 @@ import { heartbeatsApi } from "../api/heartbeats";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { collectLiveIssueIds } from "../lib/liveIssueIds";
+import { issueNeedsAttention } from "../lib/dashboard-task-metrics";
 import { usePublishSharedQueryData, useSharedPollingQuery } from "@/hooks/useSharedPolling";
 import { queryKeys } from "../lib/queryKeys";
 import { createIssueDetailLocationState } from "../lib/issueDetailBreadcrumb";
 import { EmptyState } from "../components/EmptyState";
 import { IssuesList } from "../components/IssuesList";
 import { CircleDot } from "lucide-react";
-import type { Issue } from "@paperclipai/shared";
+import { ISSUE_STATUSES, type Issue, type IssueStatus } from "@paperclipai/shared";
 import { useStreamlinedUiEnabled } from "../hooks/useStreamlinedUiEnabled";
 
 const WORKSPACE_FILTER_ISSUE_LIMIT = 1000;
@@ -51,6 +52,37 @@ export function mergeIssuePagesStable<T extends { id: string }>(pages: T[][]): T
   return merged;
 }
 
+/**
+ * `?status=human_approved` — or `?status=done,human_approved`, or the param
+ * repeated — opens the task list on those statuses. This is the link shape the
+ * dashboard metric cards use to point at the tasks they counted. Unknown
+ * values are dropped rather than filtering the list down to nothing.
+ */
+export function parseIssueStatusParams(values: readonly string[]): string[] {
+  const seen = new Set<string>();
+  for (const value of values) {
+    for (const part of value.split(",")) {
+      const status = part.trim();
+      if (ISSUE_STATUSES.includes(status as IssueStatus)) seen.add(status);
+    }
+  }
+  return [...seen];
+}
+
+/**
+ * `?attention=needs_attention` narrows the list to open tasks whose blocker or
+ * review has stalled. It is a param rather than a status filter because no
+ * status describes it, and it reuses the dashboard card's own predicate so a
+ * count of 7 on the card opens 7 rows here.
+ */
+export function applyIssueAttentionParam<T extends Parameters<typeof issueNeedsAttention>[0]>(
+  issues: readonly T[],
+  attention: string | null,
+): readonly T[] {
+  if (attention !== "needs_attention") return issues;
+  return issues.filter((issue) => issueNeedsAttention(issue));
+}
+
 export function buildIssuesSearchUrl(currentHref: string, search: string): string | null {
   const url = new URL(currentHref);
   const currentSearch = url.searchParams.get("q") ?? "";
@@ -85,6 +117,9 @@ export function Issues() {
   }, [searchOverride, urlSearch, location.search]);
   const participantAgentId = searchParams.get("participantAgentId") ?? undefined;
   const initialWorkspaces = searchParams.getAll("workspace").filter((workspaceId) => workspaceId.length > 0);
+  const initialStatuses = parseIssueStatusParams(searchParams.getAll("status"));
+  const statusFilterParam = initialStatuses.length > 0 ? initialStatuses.join(",") : undefined;
+  const attentionParam = searchParams.get("attention");
   const workspaceIdFilter = initialWorkspaces.length === 1 ? initialWorkspaces[0] : undefined;
   const handleSearchChange = useCallback((search: string) => {
     const nextUrl = buildIssuesSearchUrl(window.location.href, search);
@@ -156,6 +191,8 @@ export function Issues() {
       participantAgentId ?? "__all__",
       "workspace",
       workspaceIdFilter ?? "__all__",
+      "status",
+      statusFilterParam ?? "__all__",
       "compact",
       "with-routine-executions",
       "infinite",
@@ -164,6 +201,10 @@ export function Issues() {
     queryFn: ({ pageParam, signal }) => issuesApi.listCompact(selectedCompanyId!, {
       participantAgentId,
       workspaceId: workspaceIdFilter,
+      // Asked of the server, not filtered out of the first page: a status the
+      // link names can be older than the paging window, which is how a card
+      // reading 8 opened an empty list.
+      status: statusFilterParam,
       includeRoutineExecutions: true,
       limit: issuePageSize,
       offset: pageParam,
@@ -177,7 +218,11 @@ export function Issues() {
     placeholderData: (previousData) => previousData,
   });
 
-  const issues = useMemo(() => mergeIssuePagesStable(issuePages?.pages ?? []) as Issue[], [issuePages]);
+  const loadedIssues = useMemo(() => mergeIssuePagesStable(issuePages?.pages ?? []) as Issue[], [issuePages]);
+  const issues = useMemo(
+    () => applyIssueAttentionParam(loadedIssues, attentionParam) as Issue[],
+    [loadedIssues, attentionParam],
+  );
   const liveIssueIds = useMemo(() => collectLiveIssueIds(liveRuns, issues), [issues, liveRuns]);
   const hasMoreServerIssues = syncedSearch.trim().length === 0
     && hasNextPage === true;
@@ -223,6 +268,7 @@ export function Issues() {
       issueLinkState={issueLinkState}
       initialAssignees={searchParams.get("assignee") ? [searchParams.get("assignee")!] : undefined}
       initialWorkspaces={initialWorkspaces.length > 0 ? initialWorkspaces : undefined}
+      initialStatuses={initialStatuses.length > 0 ? initialStatuses : undefined}
       initialSearch={syncedSearch}
       onSearchChange={handleSearchChange}
       enableRoutineVisibilityFilter

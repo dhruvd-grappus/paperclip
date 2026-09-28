@@ -13,9 +13,16 @@ import { humanInterventionNeeded } from "../lib/dashboard-task-metrics";
 export function HumanInterventionPanel({
   issues,
   userName,
+  onUpdateIssue,
 }: {
   issues: readonly Issue[];
   userName: (userId: string | null | undefined) => string | null;
+  /**
+   * Given, the row's status icon becomes a picker — a blocked task can be
+   * cancelled or pushed back to `todo` from here, which is usually the whole
+   * decision, without opening it.
+   */
+  onUpdateIssue?: (issueId: string, data: { status: string }) => void;
 }) {
   const needed = humanInterventionNeeded(issues as Array<Issue & { originKind?: string | null }>);
 
@@ -34,24 +41,36 @@ export function HumanInterventionPanel({
             const by = userName(issue.createdByUserId);
             const stuckOn = issue.blockerAttention?.sampleBlockerIdentifier;
             return (
-              <Link
+              <div
                 key={issue.id}
-                to={`/issues/${issue.identifier ?? issue.id}`}
-                className="flex items-center gap-2 px-3 py-2 text-sm no-underline text-inherit hover:bg-accent/50"
+                className="flex items-center gap-2 px-3 py-2 text-sm hover:bg-accent/50"
               >
-                <StatusIcon status={issue.status} blockerAttention={issue.blockerAttention} />
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate" title={issue.title}>{issue.title}</span>
-                  <span className="block truncate text-xs text-muted-foreground">
-                    {[by ? `started by ${by}` : null, stuckOn ? `waiting on ${stuckOn}` : null, `blocked ${timeAgo(issue.updatedAt)}`]
-                      .filter(Boolean)
-                      .join(" · ")}
+                {/*
+                  * Beside the link, not inside it: a popover trigger nested in
+                  * an anchor is invalid markup and the anchor wins the click.
+                  */}
+                <StatusIcon
+                  status={issue.status}
+                  blockerAttention={issue.blockerAttention}
+                  onChange={onUpdateIssue ? (status) => onUpdateIssue(issue.id, { status }) : undefined}
+                />
+                <Link
+                  to={`/issues/${issue.identifier ?? issue.id}`}
+                  className="flex min-w-0 flex-1 items-center gap-2 text-sm no-underline text-inherit"
+                >
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate" title={issue.title}>{issue.title}</span>
+                    <span className="block truncate text-xs text-muted-foreground">
+                      {[by ? `started by ${by}` : null, stuckOn ? `waiting on ${stuckOn}` : null, `blocked ${timeAgo(issue.updatedAt)}`]
+                        .filter(Boolean)
+                        .join(" · ")}
+                    </span>
                   </span>
-                </span>
-                <span className="shrink-0 font-mono text-(length:--text-micro) text-muted-foreground">
-                  {issue.identifier ?? issue.id.slice(0, 8)}
-                </span>
-              </Link>
+                  <span className="shrink-0 font-mono text-(length:--text-micro) text-muted-foreground">
+                    {issue.identifier ?? issue.id.slice(0, 8)}
+                  </span>
+                </Link>
+              </div>
             );
           })}
           {needed.length > 8 ? (

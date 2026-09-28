@@ -11,6 +11,7 @@ import { dashboardApi } from "../api/dashboard";
 import { accessApi } from "../api/access";
 import { issuesApi } from "../api/issues";
 import { agentsApi } from "../api/agents";
+import { attentionApi } from "../api/attention";
 import { projectsApi } from "../api/projects";
 import { buildCompanyUserProfileMap } from "../lib/company-members";
 import { useCompany } from "../context/CompanyContext";
@@ -21,11 +22,13 @@ import { MetricCard } from "../components/MetricCard";
 import { EmptyState } from "../components/EmptyState";
 import { usePublishSharedQueryData, useSharedPollingQuery } from "../hooks/useSharedPolling";
 
-import { Bot, CircleCheck, CircleDot, OctagonAlert, ShieldCheck, LayoutDashboard, PauseCircle, BellRing, UserCheck } from "lucide-react";
+import { Bot, CircleCheck, CircleDot, OctagonAlert, LayoutDashboard, PauseCircle, BellRing, UserCheck } from "lucide-react";
 import { RunningByProjectPanel } from "../components/RunningByProjectPanel";
 import { HumanInterventionPanel } from "../components/HumanInterventionPanel";
+import { WaitingOnYouPanel } from "../components/WaitingOnYouPanel";
 import { ClaudeUsagePanel } from "../components/ClaudeUsagePanel";
 import { dashboardTaskMetrics } from "../lib/dashboard-task-metrics";
+import { visibleWorkTasks } from "../lib/task-visibility";
 import { heartbeatsApi } from "../api/heartbeats";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { Button } from "@/components/ui/button";
@@ -169,10 +172,36 @@ export function Dashboard() {
     enabled: !!selectedCompanyId,
   });
 
+  // Pending questions and confirmations for the "Waiting on you" panel. Same
+  // query key and cadence as the sidebar badge and the OS notifier, so the
+  // three share one cache entry instead of each polling the feed. Board-only
+  // endpoint: a non-board viewer gets no items and the panel falls back to the
+  // in-review tasks it derives from the issue list.
+  const { data: attentionFeed } = useQuery({
+    queryKey: queryKeys.attention(selectedCompanyId!),
+    queryFn: () => attentionApi.list(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+    refetchInterval: 60_000,
+  });
+
   const { data: companyMembers } = useQuery({
     queryKey: queryKeys.access.companyUserDirectory(selectedCompanyId!),
     queryFn: () => accessApi.listUserDirectory(selectedCompanyId!),
     enabled: !!selectedCompanyId,
+  });
+
+  // Inline status changes from the two panels below. Both the task list and
+  // the attention feed are invalidated: a status change can add or remove a
+  // row in either (approving a review takes it off the desk), and the panels
+  // read from both.
+  const updateIssueStatus = useMutation({
+    mutationFn: ({ issueId, data }: { issueId: string; data: { status: string } }) =>
+      issuesApi.update(issueId, data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(selectedCompanyId!) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.attention(selectedCompanyId!) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.dashboard(selectedCompanyId!) });
+    },
   });
 
   const userProfileMap = useMemo(
@@ -190,7 +219,12 @@ export function Dashboard() {
     () => new Set((liveRuns ?? []).flatMap((run) => (run.issueId ? [run.issueId] : []))),
     [liveRuns],
   );
-  const taskMetrics = useMemo(() => dashboardTaskMetrics(issues ?? []), [issues]);
+  // The task list endpoint returns hidden, harness and chat-container tasks and
+  // leaves the filtering to the caller, while every server-side count applies
+  // `executionIssueCondition`. Filter once here so no panel or metric on this
+  // page shows a task the rest of the product treats as absent.
+  const visibleIssues = useMemo(() => visibleWorkTasks(issues ?? []), [issues]);
+  const taskMetrics = useMemo(() => dashboardTaskMetrics(visibleIssues), [visibleIssues]);
 
   if (!selectedCompanyId) {
     if (companies.length === 0) {
@@ -295,26 +329,39 @@ export function Dashboard() {
             </div>
           ) : null}
 
+          {/*
+            * Where each number comes from matters. `data.tasks` and
+            * `data.humanApproved` are counted by the server over every task in
+            * the company, so they are exact; `taskMetrics` is derived from the
+            * task list this page loaded, which the API caps at 500, so it
+            * under-reports on a large board. Anything the server can count is
+            * therefore read from `data`, and only the two figures that need
+            * per-task state the summary does not carry — the 7-day window and
+            * the attention predicates — come from `taskMetrics`.
+            */}
           <div className="grid grid-cols-2 xl:grid-cols-3 gap-1 sm:gap-2">
             <MetricCard
               icon={CircleCheck}
               value={taskMetrics.doneLast7Days}
               label="Tasks Done"
-              to="/issues"
-              description={<span>last 7 days · {taskMetrics.doneTotal} all time</span>}
+              // Both finished statuses: the count uses `isCompletedIssueStatus`,
+              // so a task a person signed off is delivered work too. The list
+              // has no date filter, so it shows all of them, not just 7 days.
+              to="/issues?status=done,human_approved"
+              description={<span>last 7 days · {data.tasks.done} all time</span>}
             />
             <MetricCard
               icon={CircleDot}
-              value={taskMetrics.inProgress}
+              value={data.tasks.inProgress}
               label="Tasks In Progress"
-              to="/issues"
-              description={<span>{taskMetrics.open} open · {liveIssueIds.size} with a live agent run</span>}
+              to="/issues?status=in_progress"
+              description={<span>{data.tasks.open} open · {liveIssueIds.size} with a live agent run</span>}
             />
             <MetricCard
               icon={OctagonAlert}
-              value={taskMetrics.blocked}
+              value={data.tasks.blocked}
               label="Tasks Blocked"
-              to="/issues"
+              to="/issues?status=blocked"
               description={
                 <span>
                   {taskMetrics.blockedNeedingAttention > 0
@@ -324,23 +371,16 @@ export function Dashboard() {
               }
             />
             <MetricCard
-              icon={ShieldCheck}
-              value={data.pendingApprovals + data.budgets.pendingApprovals}
-              label="Pending Approvals"
-              to="/approvals"
-              description={
-                <span>
-                  {data.budgets.pendingApprovals > 0
-                    ? `${data.budgets.pendingApprovals} budget overrides awaiting board review`
-                    : "Awaiting board review"}
-                </span>
-              }
-            />
-            <MetricCard
               icon={BellRing}
+              // Client-side by necessity: "no live path is moving it" reads
+              // each task's blocker and review attention, which the summary
+              // does not carry. Capped with the loaded list.
               value={taskMetrics.needsAttention}
               label="Needs Attention"
-              to="/issues"
+              // No status describes this one — it is open tasks whose blocker or
+              // review has stalled — so the list takes it as an attention
+              // filter sharing the card's own predicate.
+              to="/issues?attention=needs_attention"
               description={
                 <span>
                   {taskMetrics.awaitingHuman > 0
@@ -353,7 +393,10 @@ export function Dashboard() {
               icon={UserCheck}
               value={data.humanApproved?.tasks ?? 0}
               label="Human Approved"
-              to="/approvals"
+              // The number counts tasks, so the card opens the task list on
+              // that status. `/approvals` is the queue of approvals still
+              // pending, which is the neighbouring card's job.
+              to="/issues?status=human_approved"
               description={
                 <span>
                   tasks a person signed off · {(data.humanApproved?.confirmations ?? 0) + (data.humanApproved?.approvals ?? 0)} decisions
@@ -362,12 +405,23 @@ export function Dashboard() {
             />
           </div>
 
-          <HumanInterventionPanel
+          <WaitingOnYouPanel
+            attentionItems={attentionFeed?.items ?? []}
+            // The unfiltered list on purpose: the row builder needs to tell a
+            // hidden task from one it has never heard of, so it applies the
+            // visibility rule itself.
             issues={issues ?? []}
             userName={(userId) => (userId ? userProfileMap.get(userId)?.label ?? null : null)}
+            onUpdateIssue={(issueId, data) => updateIssueStatus.mutate({ issueId, data })}
           />
 
-          <RunningByProjectPanel issues={issues ?? []} projects={projects ?? []} liveIssueIds={liveIssueIds} />
+          <HumanInterventionPanel
+            issues={visibleIssues}
+            userName={(userId) => (userId ? userProfileMap.get(userId)?.label ?? null : null)}
+            onUpdateIssue={(issueId, data) => updateIssueStatus.mutate({ issueId, data })}
+          />
+
+          <RunningByProjectPanel issues={visibleIssues} projects={projects ?? []} liveIssueIds={liveIssueIds} />
 
           <SmokeLabDashboardCard companyId={selectedCompanyId!} />
 

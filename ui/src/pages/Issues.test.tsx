@@ -4,6 +4,8 @@ import {
   ISSUES_ROW_PRESENTATION,
   ISSUES_TOOLBAR_PRESENTATION,
   buildIssuesSearchUrl,
+  parseIssueStatusParams,
+  applyIssueAttentionParam,
   getNextIssuesPageOffset,
   mergeIssuePagesStable,
   resolveIssuesPresentation,
@@ -24,6 +26,43 @@ describe("buildIssuesSearchUrl", () => {
 
   it("returns null when the URL already matches the current search", () => {
     expect(buildIssuesSearchUrl("http://localhost:3100/issues?q=bug+", "bug ")).toBeNull();
+  });
+});
+
+describe("parseIssueStatusParams", () => {
+  it("reads a single status, the shape the dashboard cards link with", () => {
+    expect(parseIssueStatusParams(["human_approved"])).toEqual(["human_approved"]);
+  });
+
+  it("accepts a comma list and the param repeated, without duplicates", () => {
+    expect(parseIssueStatusParams(["done, human_approved", "done"])).toEqual(["done", "human_approved"]);
+  });
+
+  it("drops values that are not statuses instead of emptying the list", () => {
+    expect(parseIssueStatusParams(["human_approved", "not_a_status"])).toEqual(["human_approved"]);
+    expect(parseIssueStatusParams(["nonsense"])).toEqual([]);
+  });
+
+  it("returns nothing when the param is absent", () => {
+    expect(parseIssueStatusParams([])).toEqual([]);
+  });
+});
+
+describe("applyIssueAttentionParam", () => {
+  const stalledReview = { id: "a", status: "in_review", reviewAttention: { state: "stalled" } };
+  const liveReview = { id: "b", status: "in_review", reviewAttention: { state: "covered" } };
+  const stuckBlocker = { id: "c", status: "blocked", blockerAttention: { state: "needs_attention" } };
+  const finished = { id: "d", status: "done", reviewAttention: { state: "stalled" } };
+  const all = [stalledReview, liveReview, stuckBlocker, finished] as never[];
+
+  it("keeps only tasks with no live path, matching the dashboard card's count", () => {
+    expect(applyIssueAttentionParam(all, "needs_attention").map((issue) => (issue as { id: string }).id))
+      .toEqual(["a", "c"]);
+  });
+
+  it("passes the list through when the param is absent or unknown", () => {
+    expect(applyIssueAttentionParam(all, null)).toBe(all);
+    expect(applyIssueAttentionParam(all, "something_else")).toBe(all);
   });
 });
 

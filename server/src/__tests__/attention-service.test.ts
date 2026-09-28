@@ -173,6 +173,7 @@ describeEmbeddedPostgres("attention service", () => {
     unblockDescriptor?: { owner: { userId: string } | "board"; action: string } | null;
     blockedTransitionAt?: Date | null;
     harnessKind?: string | null;
+    hiddenAt?: Date | null;
     reviewPolicy?: "anyone" | "not_creator" | "human_only" | null;
   }) {
     const id = input.id ?? randomUUID();
@@ -196,6 +197,7 @@ describeEmbeddedPostgres("attention service", () => {
       unblockDescriptor: input.unblockDescriptor ?? null,
       blockedTransitionAt: input.blockedTransitionAt ?? null,
       harnessKind: input.harnessKind ?? null,
+      hiddenAt: input.hiddenAt ?? null,
       createdAt: input.createdAt,
       updatedAt: input.updatedAt,
     });
@@ -224,6 +226,52 @@ describeEmbeddedPostgres("attention service", () => {
       currentParticipant: { type: "agent", agentId },
     };
   }
+
+  it("drops pending cards raised on a hidden task", async () => {
+    const { companyId, workerId } = await seedCompany("ATX");
+    const visibleIssueId = await insertIssue({
+      companyId,
+      identifier: "ATX-1",
+      title: "Still on the board",
+      status: "in_progress",
+      assigneeAgentId: workerId,
+    });
+    const hiddenIssueId = await insertIssue({
+      companyId,
+      identifier: "ATX-2",
+      title: "Taken off the board",
+      status: "in_progress",
+      assigneeAgentId: workerId,
+      hiddenAt: new Date("2026-07-09T12:00:00.000Z"),
+    });
+
+    const question = (issueId: string, title: string) => ({
+      id: randomUUID(),
+      companyId,
+      issueId,
+      kind: "ask_user_questions" as const,
+      status: "pending" as const,
+      continuationPolicy: "wake_assignee" as const,
+      title,
+      payload: { version: 1, questions: [] } as never,
+      createdAt: new Date("2026-07-09T12:03:00.000Z"),
+      updatedAt: new Date("2026-07-09T12:03:00.000Z"),
+    });
+    await db.insert(issueThreadInteractions).values([
+      question(visibleIssueId, "Answer me"),
+      question(hiddenIssueId, "Do not surface me"),
+    ]);
+
+    const feed = await attentionService(db).list(companyId, { userId: "board-user" });
+    const interactionTitles = feed.items
+      .filter((item) => item.sourceKind === "issue_thread_interaction")
+      .map((item) => item.subject.title);
+
+    // Hiding a task has to take its pending decision with it — otherwise the
+    // card stays in the feed, and so in every surface that reads the feed.
+    expect(interactionTitles).toContain("Answer me");
+    expect(interactionTitles).not.toContain("Do not surface me");
+  });
 
   it("excludes internal harness reviews from items, counts, and decision queues", async () => {
     const { companyId, workerId } = await seedCompany("ATH");

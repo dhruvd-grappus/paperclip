@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, notInArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -814,6 +814,33 @@ async function dismissalByKey(db: Db, companyId: string, userId: string | null |
   }]));
 }
 
+/**
+ * Task ids a person has taken off the board: hidden, or harness scaffolding.
+ *
+ * The feed's issue lookup already applies the visibility rule, so a hidden
+ * task simply resolves to no summary — and every source that tolerates a
+ * missing issue then emitted its row anyway, which put a hidden task's pending
+ * question back on the board (and in the sidebar badge, and the notifier).
+ * Sources ask this set directly so they can drop the row instead.
+ *
+ * Deliberately narrower than `executionIssueCondition`: persistent
+ * conversation containers are also absent from the summary map, but a question
+ * asked inside an agent chat is a real question, so those rows stay.
+ */
+async function hiddenIssueIdSet(db: Db, companyId: string, issueIds: Array<string | null | undefined>) {
+  const ids = [...new Set(issueIds.filter((value): value is string => Boolean(value)))];
+  if (ids.length === 0) return new Set<string>();
+  const rows = await db
+    .select({ id: issues.id })
+    .from(issues)
+    .where(and(
+      eq(issues.companyId, companyId),
+      inArray(issues.id, ids),
+      or(isNotNull(issues.hiddenAt), isNotNull(issues.harnessKind)),
+    ));
+  return new Set(rows.map((row) => row.id));
+}
+
 async function issueSummaryMap(db: Db, companyId: string, issueIds: Array<string | null | undefined>) {
   const ids = [...new Set(issueIds.filter((value): value is string => Boolean(value)))];
   if (ids.length === 0) return new Map<string, IssueSummaryRow>();
@@ -1211,7 +1238,15 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
           !evaluateAgentInvokability(companyAgentMap.get(row.addresseeAgentId), companyAgentRows).invokable)
         && (row.addresseeUserId === null || row.addresseeUserId === options.userId)
       );
-      const visibleInteractionRows = collapsePendingConfirmationsToNewest(boardInteractionRows);
+      const hiddenInteractionIssueIds = await hiddenIssueIdSet(
+        db,
+        companyId,
+        boardInteractionRows.map((row) => row.issueId),
+      );
+      const visibleInteractionRows = collapsePendingConfirmationsToNewest(boardInteractionRows)
+        // Hiding a task has to take its pending cards with it, or the decision
+        // is still on every surface that reads this feed.
+        .filter((row) => !hiddenInteractionIssueIds.has(row.issueId));
       const [interactionIssueMap, interactionImageMap, interactionPlanDocumentMap] = await Promise.all([
         issueSummaryMap(db, companyId, visibleInteractionRows.map((row) => row.issueId)),
         issueImageMap(db, companyId, visibleInteractionRows.map((row) => row.issueId)),

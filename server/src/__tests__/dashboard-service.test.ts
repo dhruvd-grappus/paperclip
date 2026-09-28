@@ -277,14 +277,13 @@ describeEmbeddedPostgres("dashboard service", () => {
       permissions: {},
     });
 
-    await db.insert(issues).values(
-      [taskA, taskB].map((id, index) => ({
-        id,
-        companyId,
-        title: `Task ${index}`,
-        status: "in_progress",
-      })),
-    );
+    // taskA is signed off; taskB had a confirmation accepted but is still
+    // running. The pair is the point: `tasks` counts the status, not the
+    // decisions, so the card agrees with the task list it links to.
+    await db.insert(issues).values([
+      { id: taskA, companyId, title: "Task 0", status: "human_approved" },
+      { id: taskB, companyId, title: "Task 1", status: "in_progress" },
+    ]);
 
     const interaction = (
       overrides: Partial<typeof issueThreadInteractions.$inferInsert>,
@@ -345,6 +344,8 @@ describeEmbeddedPostgres("dashboard service", () => {
 
     const summary = await dashboardService(db).summary(companyId);
 
-    expect(summary.humanApproved).toEqual({ tasks: 2, confirmations: 3, approvals: 1 });
+    // One task in `human_approved`, though three confirmations were accepted
+    // across two tasks — counting the decisions would report 2 here.
+    expect(summary.humanApproved).toEqual({ tasks: 1, confirmations: 3, approvals: 1 });
   });
 });
