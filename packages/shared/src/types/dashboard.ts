@@ -51,7 +51,12 @@ export interface DashboardSummary {
    * human approval.
    */
   humanApproved: {
-    /** Distinct tasks with at least one confirmation a person accepted. */
+    /**
+     * Tasks in the `human_approved` status — the status that records a person
+     * signed the work off. Not "tasks with an accepted confirmation": a person
+     * can approve a plan on a task that then keeps running, so that population
+     * is larger and does not match the list the dashboard card links to.
+     */
     tasks: number;
     /** Confirmation interactions a person accepted, across all tasks. */
     confirmations: number;

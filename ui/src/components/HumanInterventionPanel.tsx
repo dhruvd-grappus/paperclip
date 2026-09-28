@@ -13,9 +13,16 @@ import { humanInterventionNeeded } from "../lib/dashboard-task-metrics";
 export function HumanInterventionPanel({
   issues,
   userName,
+  onUpdateIssue,
 }: {
   issues: readonly Issue[];
   userName: (userId: string | null | undefined) => string | null;
+  /**
+   * Given, the row's status icon becomes a picker — a blocked task can be
+   * cancelled or pushed back to `todo` from here, which is usually the whole
+   * decision, without opening it.
+   */
+  onUpdateIssue?: (issueId: string, data: { status: string }) => void;
 }) {
   const needed = humanInterventionNeeded(issues as Array<Issue & { originKind?: string | null }>);
 
@@ -39,7 +46,23 @@ export function HumanInterventionPanel({
                 to={`/issues/${issue.identifier ?? issue.id}`}
                 className="flex items-center gap-2 px-3 py-2 text-sm no-underline text-inherit hover:bg-accent/50"
               >
-                <StatusIcon status={issue.status} blockerAttention={issue.blockerAttention} />
+                {onUpdateIssue ? (
+                  <span
+                    // The row is a link to the task; the picker inside it is not.
+                    onClick={(event) => {
+                      event.preventDefault();
+                      event.stopPropagation();
+                    }}
+                  >
+                    <StatusIcon
+                      status={issue.status}
+                      blockerAttention={issue.blockerAttention}
+                      onChange={(status) => onUpdateIssue(issue.id, { status })}
+                    />
+                  </span>
+                ) : (
+                  <StatusIcon status={issue.status} blockerAttention={issue.blockerAttention} />
+                )}
                 <span className="min-w-0 flex-1">
                   <span className="block truncate" title={issue.title}>{issue.title}</span>
                   <span className="block truncate text-xs text-muted-foreground">

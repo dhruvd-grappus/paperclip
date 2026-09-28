@@ -118,6 +118,7 @@ export function Issues() {
   const participantAgentId = searchParams.get("participantAgentId") ?? undefined;
   const initialWorkspaces = searchParams.getAll("workspace").filter((workspaceId) => workspaceId.length > 0);
   const initialStatuses = parseIssueStatusParams(searchParams.getAll("status"));
+  const statusFilterParam = initialStatuses.length > 0 ? initialStatuses.join(",") : undefined;
   const attentionParam = searchParams.get("attention");
   const workspaceIdFilter = initialWorkspaces.length === 1 ? initialWorkspaces[0] : undefined;
   const handleSearchChange = useCallback((search: string) => {
@@ -190,6 +191,8 @@ export function Issues() {
       participantAgentId ?? "__all__",
       "workspace",
       workspaceIdFilter ?? "__all__",
+      "status",
+      statusFilterParam ?? "__all__",
       "compact",
       "with-routine-executions",
       "infinite",
@@ -198,6 +201,10 @@ export function Issues() {
     queryFn: ({ pageParam, signal }) => issuesApi.listCompact(selectedCompanyId!, {
       participantAgentId,
       workspaceId: workspaceIdFilter,
+      // Asked of the server, not filtered out of the first page: a status the
+      // link names can be older than the paging window, which is how a card
+      // reading 8 opened an empty list.
+      status: statusFilterParam,
       includeRoutineExecutions: true,
       limit: issuePageSize,
       offset: pageParam,

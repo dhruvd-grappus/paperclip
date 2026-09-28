@@ -246,6 +246,20 @@ describe("waitingOnHumanRows", () => {
     expect(rows[0].ownerUserId).toBeNull();
   });
 
+  it("carries the task's own status for an inline control, null when unknown", () => {
+    const rows = waitingOnHumanRows(
+      [
+        item({ id: "known", relatedIssue: relatedIssue("i1", "GRA-80", "In the list") }),
+        item({ id: "unknown", relatedIssue: relatedIssue("off-list", "GRA-81", "Not in the list") }),
+      ],
+      [issue({ id: "i1", identifier: "GRA-80", status: "in_review" })],
+      NOW,
+    );
+    const statuses = new Map(rows.map((row) => [row.identifier, row.status]));
+    expect(statuses.get("GRA-80")).toBe("in_review");
+    expect(statuses.get("GRA-81")).toBeNull();
+  });
+
   it("folds a pending card and its review into one row, oldest wait first", () => {
     const rows = waitingOnHumanRows(
       [

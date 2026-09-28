@@ -64,6 +64,12 @@ export interface WaitingOnHumanRow {
    * list the rows were built from.
    */
   ownerUserId: string | null;
+  /**
+   * The task's own status, when the row came from a task the caller loaded —
+   * what an inline status control has to edit. Null for a pending card whose
+   * task is outside that list, where there is nothing to edit against.
+   */
+  status: string | null;
 }
 
 /**
@@ -204,6 +210,7 @@ export function waitingOnHumanRows(
     detail: string | null;
     waitingSince: string | null;
     ownerUserId: string | null;
+    status: string | null;
   }) => {
     const existing = drafts.get(input.key);
     if (!existing) {
@@ -218,6 +225,7 @@ export function waitingOnHumanRows(
         detail: input.detail,
         waitingSince: input.waitingSince,
         ownerUserId: input.ownerUserId,
+        status: input.status,
       });
       return;
     }
@@ -226,6 +234,7 @@ export function waitingOnHumanRows(
     existing.href = existing.href ?? input.href;
     existing.identifier = existing.identifier ?? input.identifier;
     existing.ownerUserId = existing.ownerUserId ?? input.ownerUserId;
+    existing.status = existing.status ?? input.status;
     existing.waitingSince = earlier(existing.waitingSince, input.waitingSince);
   };
 
@@ -252,6 +261,7 @@ export function waitingOnHumanRows(
       // A feed row carries no parentage or ownership of its own; both come
       // from the task it points at, when the list covers it.
       ownerUserId: issueId ? ownerUserIdOf(issueById.get(issueId) ?? {} as ReviewIssue) : null,
+      status: (issueId ? issueById.get(issueId)?.status : null) ?? null,
     });
   }
 
@@ -277,6 +287,7 @@ export function waitingOnHumanRows(
       detail: null,
       waitingSince: since ? new Date(since).toISOString() : null,
       ownerUserId: ownerUserIdOf(issue),
+      status: issue.status,
     });
   }
 

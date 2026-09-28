@@ -94,7 +94,11 @@ describe("WaitingOnYouPanel", () => {
   function render(
     items: AttentionItem[],
     issues: Issue[],
-    props: { showAll?: boolean; userName?: (userId: string | null | undefined) => string | null } = {},
+    props: {
+      showAll?: boolean;
+      userName?: (userId: string | null | undefined) => string | null;
+      onUpdateIssue?: (issueId: string, data: { status: string }) => void;
+    } = {},
   ) {
     flushSync(() => {
       root.render(<WaitingOnYouPanel attentionItems={items} issues={issues} {...props} />);
@@ -138,6 +142,20 @@ describe("WaitingOnYouPanel", () => {
     expect(container.textContent).toContain("Task 9");
     const hrefs = [...container.querySelectorAll("a")].map((a) => a.getAttribute("href"));
     expect(hrefs).not.toContain("/waiting-on-you");
+  });
+
+  it("offers an inline status picker only for rows with a known task status", () => {
+    const changes: Array<[string, { status: string }]> = [];
+    render(
+      // A pending card on a task outside the list: nothing to edit against.
+      [interactionItem("GRA-90", "Off-list card")],
+      [reviewIssue("GRA-20")],
+      { onUpdateIssue: (issueId, data) => changes.push([issueId, data]) },
+    );
+    // One picker trigger, for the in-review task; the off-list row keeps a glyph.
+    const triggers = [...container.querySelectorAll("[aria-haspopup], button")];
+    expect(triggers.length).toBe(1);
+    expect(changes).toEqual([]);
   });
 
   it("names the owner when the caller can resolve one, and stays quiet otherwise", () => {

@@ -3,6 +3,7 @@ import type { AttentionItem, Issue } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
 import { Card } from "@/components/ui/card";
 import { StatusGlyph } from "./StatusGlyph";
+import { StatusIcon } from "./StatusIcon";
 import { timeAgo } from "../lib/timeAgo";
 import { waitingOnHumanRows, waitingReasonLabel, type WaitingReason } from "../lib/waiting-on-human";
 
@@ -42,6 +43,7 @@ export function WaitingOnYouPanel({
   attentionItems,
   issues,
   userName,
+  onUpdateIssue,
   showAll = false,
   showHeading = true,
 }: {
@@ -49,6 +51,12 @@ export function WaitingOnYouPanel({
   issues: readonly Issue[];
   /** Resolves a row's owner id to a name; omitted, rows show no owner. */
   userName?: (userId: string | null | undefined) => string | null;
+  /**
+   * Given, each row whose task status is known becomes an inline status
+   * picker, so a review can be approved or a question closed out from the desk
+   * without opening the task. Omitted, rows keep the read-only reason glyph.
+   */
+  onUpdateIssue?: (issueId: string, data: { status: string }) => void;
   /** Render every row instead of collapsing into a "+N more" link. */
   showAll?: boolean;
   showHeading?: boolean;
@@ -79,9 +87,30 @@ export function WaitingOnYouPanel({
             const secondary = [reasons, owner ? `owner ${owner}` : null, row.detail, waiting]
               .filter(Boolean)
               .join(" · ");
+            // The picker edits the task's real status, so it only appears when
+            // the row came from a loaded task. A pending card on a task outside
+            // the list keeps the reason glyph: there is nothing to edit.
+            const editable = onUpdateIssue && row.issueId && row.status;
             const body = (
               <>
-                <StatusGlyph status={glyphStatus(row.reasons)} className="shrink-0" />
+                {editable ? (
+                  <span
+                    className="shrink-0"
+                    // The row is a link to the task; the picker inside it is not.
+                    onClick={(event) => {
+                      event.preventDefault();
+                      event.stopPropagation();
+                    }}
+                  >
+                    <StatusIcon
+                      status={row.status!}
+                      size="md"
+                      onChange={(status) => onUpdateIssue!(row.issueId!, { status })}
+                    />
+                  </span>
+                ) : (
+                  <StatusGlyph status={glyphStatus(row.reasons)} className="shrink-0" />
+                )}
                 <span className="min-w-0 flex-1">
                   <span className="block truncate" title={row.title}>{row.title}</span>
                   <span className="block truncate text-xs text-muted-foreground" title={secondary}>

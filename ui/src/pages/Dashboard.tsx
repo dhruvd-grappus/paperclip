@@ -189,6 +189,20 @@ export function Dashboard() {
     enabled: !!selectedCompanyId,
   });
 
+  // Inline status changes from the two panels below. Both the task list and
+  // the attention feed are invalidated: a status change can add or remove a
+  // row in either (approving a review takes it off the desk), and the panels
+  // read from both.
+  const updateIssueStatus = useMutation({
+    mutationFn: ({ issueId, data }: { issueId: string; data: { status: string } }) =>
+      issuesApi.update(issueId, data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(selectedCompanyId!) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.attention(selectedCompanyId!) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.dashboard(selectedCompanyId!) });
+    },
+  });
+
   const userProfileMap = useMemo(
     () => buildCompanyUserProfileMap(companyMembers?.users),
     [companyMembers?.users],
@@ -391,11 +405,13 @@ export function Dashboard() {
             attentionItems={attentionFeed?.items ?? []}
             issues={issues ?? []}
             userName={(userId) => (userId ? userProfileMap.get(userId)?.label ?? null : null)}
+            onUpdateIssue={(issueId, data) => updateIssueStatus.mutate({ issueId, data })}
           />
 
           <HumanInterventionPanel
             issues={issues ?? []}
             userName={(userId) => (userId ? userProfileMap.get(userId)?.label ?? null : null)}
+            onUpdateIssue={(issueId, data) => updateIssueStatus.mutate({ issueId, data })}
           />
 
           <RunningByProjectPanel issues={issues ?? []} projects={projects ?? []} liveIssueIds={liveIssueIds} />

@@ -1,5 +1,5 @@
 import { useEffect, useMemo } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { CircleDot } from "lucide-react";
 import { accessApi } from "../api/access";
 import { attentionApi } from "../api/attention";
@@ -24,6 +24,7 @@ import { WaitingOnYouPanel } from "../components/WaitingOnYouPanel";
 export function WaitingOnYou() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
+  const queryClient = useQueryClient();
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Waiting On You" }]);
@@ -52,6 +53,17 @@ export function WaitingOnYou() {
     [companyMembers?.users],
   );
 
+  // Same inline status editing as the dashboard widget: this page exists so a
+  // person can work the list, and working it means changing statuses.
+  const updateIssueStatus = useMutation({
+    mutationFn: ({ issueId, data }: { issueId: string; data: { status: string } }) =>
+      issuesApi.update(issueId, data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(selectedCompanyId!) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.attention(selectedCompanyId!) });
+    },
+  });
+
   if (!selectedCompanyId) {
     return <EmptyState icon={CircleDot} message="Select an organization to see what is waiting on you." />;
   }
@@ -70,6 +82,7 @@ export function WaitingOnYou() {
         attentionItems={attentionFeed?.items ?? []}
         issues={issues ?? []}
         userName={(userId) => (userId ? userProfileMap.get(userId)?.label ?? null : null)}
+        onUpdateIssue={(issueId, data) => updateIssueStatus.mutate({ issueId, data })}
         showAll
         showHeading={false}
       />
