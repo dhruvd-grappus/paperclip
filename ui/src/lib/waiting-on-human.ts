@@ -4,7 +4,7 @@ import { attentionDetailLine, attentionTaskRef } from "./attention";
 /**
  * "Waiting on you" (GRA-296): the tasks whose next move belongs to a person.
  *
- * Three things stop a task on a human, and the dashboard used to surface none
+ * Four things stop a task on a human, and the dashboard used to surface none
  * of them together — the Human Intervention panel only lists `blocked` tasks a
  * person *started*, and the metric cards only count:
  *
@@ -12,24 +12,31 @@ import { attentionDetailLine, attentionTaskRef } from "./attention";
  *   • a pending confirmation (`request_confirmation` and its checkbox / verdict
  *     / plan-approval variants)
  *   • a task parked in `in_review`
+ *   • a task an agent called `done` that no person has signed off yet, i.e.
+ *     everything short of `human_approved`
  *
  * Questions and confirmations come from the attention feed rather than from the
  * issue list: the feed is where the server already resolved *which* card is
- * pending, what it asks, and who is allowed to answer it. `in_review` comes
- * from the issue list, because a review with no pending card raises no feed row
- * at all until it stalls — and "sitting in review" is exactly the state this
- * widget is asked to show.
+ * pending, what it asks, and who is allowed to answer it. `in_review` and
+ * `done` come from the issue list, because a review with no pending card raises
+ * no feed row at all until it stalls, and a finished task raises none ever —
+ * and those are exactly the states this widget is asked to show.
+ *
+ * Parent tasks only. A subtask's question or review is a step inside work the
+ * parent already represents, so listing both turns one thing to look at into a
+ * pile; the desk stays at the granularity a person assigns work at.
  *
  * One row per task. A task in review that also has a pending confirmation is
  * one thing to go look at, not two.
  */
 
-export type WaitingReason = "question" | "confirmation" | "in_review";
+export type WaitingReason = "question" | "confirmation" | "in_review" | "done_unapproved";
 
 const REASON_LABELS: Record<WaitingReason, string> = {
   question: "question to answer",
   confirmation: "confirmation to give",
   in_review: "in review",
+  done_unapproved: "done, needs your approval",
 };
 
 export function waitingReasonLabel(reason: WaitingReason): string {
@@ -75,6 +82,9 @@ const HUMAN_REVIEW_PATH_KINDS = new Set(["human_reviewer", "interaction", "appro
 
 type ReviewIssue = Pick<Issue, "id" | "status" | "title" | "updatedAt"> & {
   identifier?: string | null;
+  parentId?: string | null;
+  completedAt?: Date | string | null;
+  archivedAt?: Date | string | null;
   reviewAttention?: { state?: string | null; paths?: ReadonlyArray<{ kind?: string | null }> } | null;
 };
 
@@ -122,7 +132,16 @@ function reviewAwaitsPerson(issue: ReviewIssue): boolean {
   return paths.some((path) => path.kind != null && HUMAN_REVIEW_PATH_KINDS.has(path.kind));
 }
 
-const REASON_ORDER: WaitingReason[] = ["question", "confirmation", "in_review"];
+/**
+ * An agent marking a task `done` is a claim, not a sign-off: `human_approved`
+ * is the status that records a person agreed. So every `done` task is still on
+ * someone's desk, and `human_approved` and `cancelled` are not.
+ */
+function doneAwaitsApproval(issue: ReviewIssue): boolean {
+  return issue.status === "done";
+}
+
+const REASON_ORDER: WaitingReason[] = ["question", "confirmation", "in_review", "done_unapproved"];
 
 function earlier(a: string | null, b: string | null): string | null {
   if (!a) return b;
@@ -145,6 +164,14 @@ export function waitingOnHumanRows(
   now = Date.now(),
 ): WaitingOnHumanRow[] {
   const drafts = new Map<string, Draft>();
+
+  // Which task ids are subtasks. A feed row carries no parentage of its own, so
+  // its task is looked up here; a card on a task the list does not cover (an
+  // older task, or one past the list's page) stays in — an unknown parent is no
+  // reason to drop a decision nobody has made.
+  const childIssueIds = new Set(
+    issues.filter((issue) => issue.parentId != null).map((issue) => issue.id),
+  );
 
   const merge = (input: {
     key: string;
@@ -186,6 +213,7 @@ export function waitingOnHumanRows(
     if (!reason) continue;
     const task = attentionTaskRef(item);
     const issueId = item.relatedIssue?.kind === "issue" ? item.relatedIssue.id : null;
+    if (issueId && childIssueIds.has(issueId)) continue;
     merge({
       // Keyed on the task where there is one, so a second card on the same task
       // folds into its row instead of listing it twice.
@@ -201,16 +229,26 @@ export function waitingOnHumanRows(
   }
 
   for (const issue of issues) {
-    if (!reviewAwaitsPerson(issue)) continue;
+    if (issue.parentId != null) continue;
+    if (issue.archivedAt) continue;
+    const reason: WaitingReason | null = reviewAwaitsPerson(issue)
+      ? "in_review"
+      : doneAwaitsApproval(issue)
+        ? "done_unapproved"
+        : null;
+    if (!reason) continue;
+    // A finished task has been waiting since it finished, not since its last
+    // edit — a comment on it does not restart the clock on the sign-off.
+    const since = reason === "done_unapproved" ? issue.completedAt ?? issue.updatedAt : issue.updatedAt;
     merge({
       key: issue.id,
       issueId: issue.id,
       identifier: issue.identifier ?? null,
       title: issue.title,
       href: `/issues/${issue.identifier ?? issue.id}`,
-      reason: "in_review",
+      reason,
       detail: null,
-      waitingSince: issue.updatedAt ? new Date(issue.updatedAt).toISOString() : null,
+      waitingSince: since ? new Date(since).toISOString() : null,
     });
   }
 

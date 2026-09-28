@@ -12,16 +12,22 @@ const VISIBLE_ROWS = 8;
 /**
  * The glyph borrows the task status a reason renders as, so the vocabulary
  * matches the task list and the decision queue (see `lib/attention.ts`):
- * a pending card is a task stopped on a decision, a review is `in_review`.
+ * a pending card is a task stopped on a decision, a review is `in_review`, a
+ * task awaiting sign-off is `done`. A row carrying a pending card shows the
+ * decision glyph even when it is also in review or finished — the card is the
+ * part that cannot move.
  */
-function glyphStatus(reasons: readonly WaitingReason[]): "in_review" | "blocked" {
-  return reasons.every((reason) => reason === "in_review") ? "in_review" : "blocked";
+function glyphStatus(reasons: readonly WaitingReason[]): "in_review" | "done" | "blocked" {
+  if (reasons.every((reason) => reason === "in_review")) return "in_review";
+  if (reasons.every((reason) => reason === "done_unapproved")) return "done";
+  return "blocked";
 }
 
 /**
- * Dashboard: "Waiting on you" — every task whose next move is a person's,
- * oldest wait first. Pending questions, pending confirmations, and tasks parked
- * in review. See `lib/waiting-on-human` for what qualifies and why.
+ * Dashboard: "Waiting on you" — every parent task whose next move is a
+ * person's, oldest wait first. Pending questions, pending confirmations, tasks
+ * parked in review, and tasks marked `done` that nobody has approved yet. See
+ * `lib/waiting-on-human` for what qualifies and why.
  *
  * Distinct from the Human Intervention panel next to it: that one lists
  * `blocked` tasks a person *started*, regardless of who unblocks them; this one
@@ -44,7 +50,8 @@ export function WaitingOnYouPanel({
       {rows.length === 0 ? (
         <Card className="block p-4">
           <p className="text-sm text-muted-foreground">
-            No task is waiting on a person — no open questions, confirmations, or reviews.
+            No task is waiting on a person — no open questions, confirmations, reviews, or
+            finished work to approve.
           </p>
         </Card>
       ) : (

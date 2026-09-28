@@ -183,6 +183,41 @@ describe("waitingOnHumanRows", () => {
     expect(rows.map((row) => row.identifier).sort()).toEqual(["GRA-30", "GRA-32"]);
   });
 
+  it("includes done tasks nobody approved, and not approved or cancelled ones", () => {
+    const rows = waitingOnHumanRows(
+      [],
+      [
+        issue({ id: "i1", identifier: "GRA-50", status: "done", completedAt: new Date(NOW - 5 * 60_000) } as Partial<Issue> & { id: string }),
+        issue({ id: "i2", identifier: "GRA-51", status: "human_approved" }),
+        issue({ id: "i3", identifier: "GRA-52", status: "cancelled" }),
+        issue({ id: "i4", identifier: "GRA-53", status: "done", archivedAt: new Date(NOW) } as Partial<Issue> & { id: string }),
+      ],
+      NOW,
+    );
+    expect(rows.map((row) => [row.identifier, row.reasons])).toEqual([
+      ["GRA-50", ["done_unapproved"]],
+    ]);
+    // Waiting since it finished, not since its last edit.
+    expect(rows[0].waitingSince).toBe(minutesAgo(5));
+  });
+
+  it("lists parent tasks only, dropping subtask reviews and subtask cards", () => {
+    const rows = waitingOnHumanRows(
+      [
+        item({ id: "child-card", relatedIssue: relatedIssue("child-1", "GRA-61", "Subtask asking") }),
+        item({ id: "parent-card", relatedIssue: relatedIssue("parent-1", "GRA-60", "Parent asking") }),
+        item({ id: "unknown-card", relatedIssue: relatedIssue("not-in-list", "GRA-62", "Task off the list") }),
+      ],
+      [
+        issue({ id: "parent-1", identifier: "GRA-60", parentId: null } as Partial<Issue> & { id: string }),
+        issue({ id: "child-1", identifier: "GRA-61", parentId: "parent-1" } as Partial<Issue> & { id: string }),
+        issue({ id: "child-2", identifier: "GRA-63", parentId: "parent-1", status: "done" } as Partial<Issue> & { id: string }),
+      ],
+      NOW,
+    );
+    expect(rows.map((row) => row.identifier).sort()).toEqual(["GRA-60", "GRA-62"]);
+  });
+
   it("folds a pending card and its review into one row, oldest wait first", () => {
     const rows = waitingOnHumanRows(
       [
