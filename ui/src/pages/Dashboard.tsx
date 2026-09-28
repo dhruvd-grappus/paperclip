@@ -11,6 +11,7 @@ import { dashboardApi } from "../api/dashboard";
 import { accessApi } from "../api/access";
 import { issuesApi } from "../api/issues";
 import { agentsApi } from "../api/agents";
+import { attentionApi } from "../api/attention";
 import { projectsApi } from "../api/projects";
 import { buildCompanyUserProfileMap } from "../lib/company-members";
 import { useCompany } from "../context/CompanyContext";
@@ -24,6 +25,7 @@ import { usePublishSharedQueryData, useSharedPollingQuery } from "../hooks/useSh
 import { Bot, CircleCheck, CircleDot, OctagonAlert, ShieldCheck, LayoutDashboard, PauseCircle, BellRing, UserCheck } from "lucide-react";
 import { RunningByProjectPanel } from "../components/RunningByProjectPanel";
 import { HumanInterventionPanel } from "../components/HumanInterventionPanel";
+import { WaitingOnYouPanel } from "../components/WaitingOnYouPanel";
 import { ClaudeUsagePanel } from "../components/ClaudeUsagePanel";
 import { dashboardTaskMetrics } from "../lib/dashboard-task-metrics";
 import { heartbeatsApi } from "../api/heartbeats";
@@ -167,6 +169,18 @@ export function Dashboard() {
     queryKey: queryKeys.projects.list(selectedCompanyId!, { includeArchived: true }),
     queryFn: () => projectsApi.list(selectedCompanyId!, { includeArchived: true }),
     enabled: !!selectedCompanyId,
+  });
+
+  // Pending questions and confirmations for the "Waiting on you" panel. Same
+  // query key and cadence as the sidebar badge and the OS notifier, so the
+  // three share one cache entry instead of each polling the feed. Board-only
+  // endpoint: a non-board viewer gets no items and the panel falls back to the
+  // in-review tasks it derives from the issue list.
+  const { data: attentionFeed } = useQuery({
+    queryKey: queryKeys.attention(selectedCompanyId!),
+    queryFn: () => attentionApi.list(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+    refetchInterval: 60_000,
   });
 
   const { data: companyMembers } = useQuery({
@@ -361,6 +375,8 @@ export function Dashboard() {
               }
             />
           </div>
+
+          <WaitingOnYouPanel attentionItems={attentionFeed?.items ?? []} issues={issues ?? []} />
 
           <HumanInterventionPanel
             issues={issues ?? []}
