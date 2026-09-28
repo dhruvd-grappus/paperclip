@@ -232,4 +232,22 @@ describe("KanbanBoard", () => {
     expect(resolveKanbanTargetStatus("issue-blocked-2", issues)).toBe("blocked");
     expect(resolveKanbanTargetStatus("missing", issues)).toBeNull();
   });
+
+  /**
+   * GRA-274: the board had no Human Approved lane, so an approved task fell out
+   * of every column — `columnIssues` only groups statuses in `boardStatuses`,
+   * meaning the card silently disappeared from the board rather than showing up
+   * somewhere wrong.
+   */
+  it("gives human_approved its own lane, and a tone distinct from done", () => {
+    const { container } = renderBoard({ issues: createIssues(1, "human_approved") });
+
+    expect(container.textContent).toContain("Human Approved");
+    expect(container.textContent).toContain("PAP-1");
+    expect(getKanbanColumnTone("human_approved")).not.toEqual(getKanbanColumnTone("done"));
+  });
+
+  it("accepts human_approved as a drop target rail", () => {
+    expect(resolveKanbanTargetStatus("human_approved", [])).toBe("human_approved");
+  });
 });

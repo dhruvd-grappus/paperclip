@@ -1,11 +1,30 @@
 import { useState } from "react";
-import type { IssueBlockerAttention } from "@paperclipai/shared";
+import { ISSUE_STATUSES, type IssueBlockerAttention } from "@paperclipai/shared";
 import { cn } from "../lib/utils";
 import { StatusGlyph, type StatusGlyphSize } from "./StatusGlyph";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Button } from "@/components/ui/button";
 
-const allStatuses = ["backlog", "todo", "in_progress", "in_review", "done", "cancelled", "blocked"];
+/**
+ * Picker order. Derived from {@link ISSUE_STATUSES} rather than hand-copied, so
+ * a status added to the shared list cannot go missing from the only control
+ * that offers it — which is exactly how `human_approved` shipped invisible.
+ */
+const pickerOrder: readonly string[] = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "human_approved", "cancelled"];
+const allStatuses = [...ISSUE_STATUSES].sort(
+  (a, b) => pickerOrder.indexOf(a) - pickerOrder.indexOf(b),
+);
+
+/**
+ * `human_approved` is a human sign-off placed on top of `done`, and the server
+ * only accepts that transition from `done`. Offering it from anywhere else would
+ * hand the user a menu entry that always 4xxs, so it appears once the task is
+ * actually done (or already approved, so the current status still renders).
+ */
+export function offeredStatuses(current: string): readonly string[] {
+  if (current === "done" || current === "human_approved") return allStatuses;
+  return allStatuses.filter((s) => s !== "human_approved");
+}
 
 function statusLabel(status: string): string {
   return status.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
@@ -125,7 +144,7 @@ export function StatusIcon({ status, blockerAttention, onChange, className, show
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>{trigger}</PopoverTrigger>
       <PopoverContent className="w-40 p-1" align="start">
-        {allStatuses.map((s) => (
+        {offeredStatuses(status).map((s) => (
           <Button
             key={s}
             variant="ghost"

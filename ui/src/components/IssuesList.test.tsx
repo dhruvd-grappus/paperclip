@@ -180,7 +180,7 @@ vi.mock("./IssueRow", () => ({
 
 vi.mock("./KanbanBoard", () => ({
   KANBAN_BOARD_HIGH_VOLUME_THRESHOLD: 100,
-  KANBAN_COLD_STATUSES: ["backlog", "done", "cancelled"],
+  KANBAN_COLD_STATUSES: ["backlog", "done", "human_approved", "cancelled"],
   KANBAN_COLUMN_DEFAULT_PAGE_SIZE: 10,
   KANBAN_COLUMN_PAGE_SIZE_OPTIONS: [10, 25, 50],
   KanbanBoard: (props: {

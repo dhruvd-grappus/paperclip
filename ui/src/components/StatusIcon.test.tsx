@@ -2,7 +2,8 @@
 
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { StatusIcon } from "./StatusIcon";
+import { ISSUE_STATUSES } from "@paperclipai/shared";
+import { StatusIcon, offeredStatuses } from "./StatusIcon";
 
 /**
  * StatusIcon renders the unified {@link StatusGlyph} (one shape per status) at
@@ -93,6 +94,34 @@ describe("StatusIcon", () => {
     expect(html).toContain('aria-label="Change status (current: Todo)"');
   });
 
+});
+
+/**
+ * GRA-274: `human_approved` shipped in ISSUE_STATUSES and rendered correctly
+ * everywhere, but the picker's status list was a hand-copied array of the old
+ * seven — so nothing in the product ever offered it and the status was
+ * unreachable by a user. These lock the list against the shared constant.
+ */
+describe("StatusIcon — offered statuses", () => {
+  it("offers every shared status when the task is done", () => {
+    expect([...offeredStatuses("done")].sort()).toEqual([...ISSUE_STATUSES].sort());
+  });
+
+  it("offers human_approved from done, and from human_approved itself", () => {
+    expect(offeredStatuses("done")).toContain("human_approved");
+    expect(offeredStatuses("human_approved")).toContain("human_approved");
+  });
+
+  it("withholds human_approved elsewhere — the server only accepts it from done", () => {
+    for (const status of ["backlog", "todo", "in_progress", "in_review", "blocked", "cancelled"]) {
+      expect(offeredStatuses(status)).not.toContain("human_approved");
+    }
+  });
+
+  it("keeps human_approved next to done in the picker order", () => {
+    const order = offeredStatuses("done");
+    expect(order.indexOf("human_approved")).toBe(order.indexOf("done") + 1);
+  });
 });
 
 describe("StatusIcon — glyph size (PAP-243a)", () => {
