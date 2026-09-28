@@ -314,21 +314,24 @@ export function Dashboard() {
               icon={CircleCheck}
               value={taskMetrics.doneLast7Days}
               label="Tasks Done"
-              to="/issues"
+              // Both finished statuses: the count uses `isCompletedIssueStatus`,
+              // so a task a person signed off is delivered work too. The list
+              // has no date filter, so it shows all of them, not just 7 days.
+              to="/issues?status=done,human_approved"
               description={<span>last 7 days · {taskMetrics.doneTotal} all time</span>}
             />
             <MetricCard
               icon={CircleDot}
               value={taskMetrics.inProgress}
               label="Tasks In Progress"
-              to="/issues"
+              to="/issues?status=in_progress"
               description={<span>{taskMetrics.open} open · {liveIssueIds.size} with a live agent run</span>}
             />
             <MetricCard
               icon={OctagonAlert}
               value={taskMetrics.blocked}
               label="Tasks Blocked"
-              to="/issues"
+              to="/issues?status=blocked"
               description={
                 <span>
                   {taskMetrics.blockedNeedingAttention > 0
@@ -341,6 +344,8 @@ export function Dashboard() {
               icon={ShieldCheck}
               value={data.pendingApprovals + data.budgets.pendingApprovals}
               label="Pending Approvals"
+              // Stays on /approvals: this counts approval records, not tasks,
+              // and several of them are budget overrides with no task at all.
               to="/approvals"
               description={
                 <span>
@@ -354,7 +359,10 @@ export function Dashboard() {
               icon={BellRing}
               value={taskMetrics.needsAttention}
               label="Needs Attention"
-              to="/issues"
+              // No status describes this one — it is open tasks whose blocker or
+              // review has stalled — so the list takes it as an attention
+              // filter sharing the card's own predicate.
+              to="/issues?attention=needs_attention"
               description={
                 <span>
                   {taskMetrics.awaitingHuman > 0
@@ -379,7 +387,11 @@ export function Dashboard() {
             />
           </div>
 
-          <WaitingOnYouPanel attentionItems={attentionFeed?.items ?? []} issues={issues ?? []} />
+          <WaitingOnYouPanel
+            attentionItems={attentionFeed?.items ?? []}
+            issues={issues ?? []}
+            userName={(userId) => (userId ? userProfileMap.get(userId)?.label ?? null : null)}
+          />
 
           <HumanInterventionPanel
             issues={issues ?? []}

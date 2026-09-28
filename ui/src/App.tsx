@@ -27,6 +27,7 @@ import { Dashboard } from "./pages/Dashboard";
 import { DashboardLive } from "./pages/DashboardLive";
 import { Timeline } from "./pages/Timeline";
 import { Stats } from "./pages/Stats";
+import { WaitingOnYou } from "./pages/WaitingOnYou";
 import { Companies } from "./pages/Companies";
 import { AGENT_FILTER_TABS, Agents } from "./pages/Agents";
 import { AgentDetail } from "./pages/AgentDetail";
@@ -305,6 +306,8 @@ function boardRoutes(streamlinedUiEnabled: boolean) {
         <Route path="workspaces" element={<Workspaces />} />
       </Route>
       <Route path="issues" element={<Issues />} />
+      {/* The dashboard Waiting On You widget links here for its full list. */}
+      <Route path="waiting-on-you" element={<WaitingOnYou />} />
       <Route path="tasks" element={<Navigate to="/issues" replace />} />
       <Route path="search" element={<Search />} />
       <Route path="issues/all" element={<Navigate to="/issues" replace />} />

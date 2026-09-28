@@ -29,6 +29,11 @@ function glyphStatus(reasons: readonly WaitingReason[]): "in_review" | "done" | 
  * parked in review, and tasks marked `done` that nobody has approved yet. See
  * `lib/waiting-on-human` for what qualifies and why.
  *
+ * The dashboard shows the first {@link VISIBLE_ROWS} and links the rest to
+ * `/waiting-on-you`, which renders this same component with `showAll` — one
+ * definition of the list, two lengths, so the page can never disagree with the
+ * card that sent you there.
+ *
  * Distinct from the Human Intervention panel next to it: that one lists
  * `blocked` tasks a person *started*, regardless of who unblocks them; this one
  * lists tasks of any origin that cannot move until a human answers.
@@ -36,17 +41,28 @@ function glyphStatus(reasons: readonly WaitingReason[]): "in_review" | "done" | 
 export function WaitingOnYouPanel({
   attentionItems,
   issues,
+  userName,
+  showAll = false,
+  showHeading = true,
 }: {
   attentionItems: readonly AttentionItem[];
   issues: readonly Issue[];
+  /** Resolves a row's owner id to a name; omitted, rows show no owner. */
+  userName?: (userId: string | null | undefined) => string | null;
+  /** Render every row instead of collapsing into a "+N more" link. */
+  showAll?: boolean;
+  showHeading?: boolean;
 }) {
   const rows = useMemo(() => waitingOnHumanRows(attentionItems, issues), [attentionItems, issues]);
+  const visibleRows = showAll ? rows : rows.slice(0, VISIBLE_ROWS);
 
   return (
     <div className="min-w-0" data-testid="dashboard-waiting-on-you">
-      <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-3">
-        Waiting On You{rows.length > 0 ? ` · ${rows.length}` : ""}
-      </h3>
+      {showHeading ? (
+        <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-3">
+          Waiting On You{rows.length > 0 ? ` · ${rows.length}` : ""}
+        </h3>
+      ) : null}
       {rows.length === 0 ? (
         <Card className="block p-4">
           <p className="text-sm text-muted-foreground">
@@ -56,10 +72,13 @@ export function WaitingOnYouPanel({
         </Card>
       ) : (
         <Card className="@container block py-0 divide-y divide-border overflow-hidden border-violet-500/30">
-          {rows.slice(0, VISIBLE_ROWS).map((row) => {
+          {visibleRows.map((row) => {
             const reasons = row.reasons.map(waitingReasonLabel).join(" · ");
             const waiting = row.waitingSince ? `waiting ${timeAgo(row.waitingSince)}` : null;
-            const secondary = [reasons, row.detail, waiting].filter(Boolean).join(" · ");
+            const owner = userName?.(row.ownerUserId) ?? null;
+            const secondary = [reasons, owner ? `owner ${owner}` : null, row.detail, waiting]
+              .filter(Boolean)
+              .join(" · ");
             const body = (
               <>
                 <StatusGlyph status={glyphStatus(row.reasons)} className="shrink-0" />
@@ -87,11 +106,11 @@ export function WaitingOnYouPanel({
               </div>
             );
           })}
-          {rows.length > VISIBLE_ROWS ? (
+          {!showAll && rows.length > VISIBLE_ROWS ? (
             <Link
-              // Not `/decisions`: that surface is behind an experimental flag,
-              // so the task list is the link every board user can follow.
-              to="/issues"
+              // The full list, not `/issues`: half of these rows are pending
+              // cards that no task-list filter can express.
+              to="/waiting-on-you"
               className="block px-3 py-1.5 text-xs text-muted-foreground no-underline hover:bg-accent/50"
             >
               +{rows.length - VISIBLE_ROWS} more

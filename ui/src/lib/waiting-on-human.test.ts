@@ -218,6 +218,34 @@ describe("waitingOnHumanRows", () => {
     expect(rows.map((row) => row.identifier).sort()).toEqual(["GRA-60", "GRA-62"]);
   });
 
+  it("carries the task owner: originator first, then responsible, then assignee", () => {
+    const rows = waitingOnHumanRows(
+      [item({ id: "q", relatedIssue: relatedIssue("i-feed", "GRA-70", "Asking") })],
+      [
+        issue({ id: "i-feed", identifier: "GRA-70", createdByUserId: "user-creator" } as Partial<Issue> & { id: string }),
+        issue({ id: "i-resp", identifier: "GRA-71", createdByUserId: null, responsibleUserId: "user-resp" } as Partial<Issue> & { id: string }),
+        issue({ id: "i-assignee", identifier: "GRA-72", createdByUserId: null, assigneeUserId: "user-assignee" } as Partial<Issue> & { id: string }),
+        issue({ id: "i-agent", identifier: "GRA-73", createdByUserId: null } as Partial<Issue> & { id: string }),
+      ],
+      NOW,
+    );
+    const owners = new Map(rows.map((row) => [row.identifier, row.ownerUserId]));
+    // A feed row has no owner of its own; it takes the task's.
+    expect(owners.get("GRA-70")).toBe("user-creator");
+    expect(owners.get("GRA-71")).toBe("user-resp");
+    expect(owners.get("GRA-72")).toBe("user-assignee");
+    expect(owners.get("GRA-73")).toBeNull();
+  });
+
+  it("leaves the owner null for a card on a task the list does not cover", () => {
+    const rows = waitingOnHumanRows(
+      [item({ id: "q", relatedIssue: relatedIssue("not-in-list", "GRA-74", "Asking") })],
+      [],
+      NOW,
+    );
+    expect(rows[0].ownerUserId).toBeNull();
+  });
+
   it("folds a pending card and its review into one row, oldest wait first", () => {
     const rows = waitingOnHumanRows(
       [

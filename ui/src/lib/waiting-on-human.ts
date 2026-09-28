@@ -57,6 +57,22 @@ export interface WaitingOnHumanRow {
   detail: string | null;
   /** ISO timestamp this task has been waiting since (oldest signal wins). */
   waitingSince: string | null;
+  /**
+   * The person the task belongs to, for a caller to turn into a name: whoever
+   * raised it, else whoever is answerable for it, else its assignee. Null when
+   * no person is on it (an agent-raised task) or when the task is not in the
+   * list the rows were built from.
+   */
+  ownerUserId: string | null;
+}
+
+/**
+ * Who owns the task. The originator first: on a desk of things waiting on a
+ * person, "whose ask is this?" is the question a name answers. `responsibleUserId`
+ * and the assignee are fallbacks for work an agent raised but a person owns.
+ */
+function ownerUserIdOf(issue: ReviewIssue): string | null {
+  return issue.createdByUserId ?? issue.responsibleUserId ?? issue.assigneeUserId ?? null;
 }
 
 /** Interaction detail kinds that ask a person a question. */
@@ -83,6 +99,9 @@ const HUMAN_REVIEW_PATH_KINDS = new Set(["human_reviewer", "interaction", "appro
 type ReviewIssue = Pick<Issue, "id" | "status" | "title" | "updatedAt"> & {
   identifier?: string | null;
   parentId?: string | null;
+  createdByUserId?: string | null;
+  responsibleUserId?: string | null;
+  assigneeUserId?: string | null;
   completedAt?: Date | string | null;
   archivedAt?: Date | string | null;
   reviewAttention?: { state?: string | null; paths?: ReadonlyArray<{ kind?: string | null }> } | null;
@@ -173,6 +192,8 @@ export function waitingOnHumanRows(
     issues.filter((issue) => issue.parentId != null).map((issue) => issue.id),
   );
 
+  const issueById = new Map(issues.map((issue) => [issue.id, issue]));
+
   const merge = (input: {
     key: string;
     issueId: string | null;
@@ -182,6 +203,7 @@ export function waitingOnHumanRows(
     reason: WaitingReason;
     detail: string | null;
     waitingSince: string | null;
+    ownerUserId: string | null;
   }) => {
     const existing = drafts.get(input.key);
     if (!existing) {
@@ -195,6 +217,7 @@ export function waitingOnHumanRows(
         reasonSet: new Set([input.reason]),
         detail: input.detail,
         waitingSince: input.waitingSince,
+        ownerUserId: input.ownerUserId,
       });
       return;
     }
@@ -202,6 +225,7 @@ export function waitingOnHumanRows(
     existing.detail = existing.detail ?? input.detail;
     existing.href = existing.href ?? input.href;
     existing.identifier = existing.identifier ?? input.identifier;
+    existing.ownerUserId = existing.ownerUserId ?? input.ownerUserId;
     existing.waitingSince = earlier(existing.waitingSince, input.waitingSince);
   };
 
@@ -225,6 +249,9 @@ export function waitingOnHumanRows(
       reason,
       detail: attentionDetailLine(item),
       waitingSince: item.activityAt ?? item.createdAt ?? null,
+      // A feed row carries no parentage or ownership of its own; both come
+      // from the task it points at, when the list covers it.
+      ownerUserId: issueId ? ownerUserIdOf(issueById.get(issueId) ?? {} as ReviewIssue) : null,
     });
   }
 
@@ -249,6 +276,7 @@ export function waitingOnHumanRows(
       reason,
       detail: null,
       waitingSince: since ? new Date(since).toISOString() : null,
+      ownerUserId: ownerUserIdOf(issue),
     });
   }
 

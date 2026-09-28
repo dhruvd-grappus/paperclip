@@ -8,6 +8,7 @@ import { heartbeatsApi } from "../api/heartbeats";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { collectLiveIssueIds } from "../lib/liveIssueIds";
+import { issueNeedsAttention } from "../lib/dashboard-task-metrics";
 import { usePublishSharedQueryData, useSharedPollingQuery } from "@/hooks/useSharedPolling";
 import { queryKeys } from "../lib/queryKeys";
 import { createIssueDetailLocationState } from "../lib/issueDetailBreadcrumb";
@@ -68,6 +69,20 @@ export function parseIssueStatusParams(values: readonly string[]): string[] {
   return [...seen];
 }
 
+/**
+ * `?attention=needs_attention` narrows the list to open tasks whose blocker or
+ * review has stalled. It is a param rather than a status filter because no
+ * status describes it, and it reuses the dashboard card's own predicate so a
+ * count of 7 on the card opens 7 rows here.
+ */
+export function applyIssueAttentionParam<T extends Parameters<typeof issueNeedsAttention>[0]>(
+  issues: readonly T[],
+  attention: string | null,
+): readonly T[] {
+  if (attention !== "needs_attention") return issues;
+  return issues.filter((issue) => issueNeedsAttention(issue));
+}
+
 export function buildIssuesSearchUrl(currentHref: string, search: string): string | null {
   const url = new URL(currentHref);
   const currentSearch = url.searchParams.get("q") ?? "";
@@ -103,6 +118,7 @@ export function Issues() {
   const participantAgentId = searchParams.get("participantAgentId") ?? undefined;
   const initialWorkspaces = searchParams.getAll("workspace").filter((workspaceId) => workspaceId.length > 0);
   const initialStatuses = parseIssueStatusParams(searchParams.getAll("status"));
+  const attentionParam = searchParams.get("attention");
   const workspaceIdFilter = initialWorkspaces.length === 1 ? initialWorkspaces[0] : undefined;
   const handleSearchChange = useCallback((search: string) => {
     const nextUrl = buildIssuesSearchUrl(window.location.href, search);
@@ -195,7 +211,11 @@ export function Issues() {
     placeholderData: (previousData) => previousData,
   });
 
-  const issues = useMemo(() => mergeIssuePagesStable(issuePages?.pages ?? []) as Issue[], [issuePages]);
+  const loadedIssues = useMemo(() => mergeIssuePagesStable(issuePages?.pages ?? []) as Issue[], [issuePages]);
+  const issues = useMemo(
+    () => applyIssueAttentionParam(loadedIssues, attentionParam) as Issue[],
+    [loadedIssues, attentionParam],
+  );
   const liveIssueIds = useMemo(() => collectLiveIssueIds(liveRuns, issues), [issues, liveRuns]);
   const hasMoreServerIssues = syncedSearch.trim().length === 0
     && hasNextPage === true;

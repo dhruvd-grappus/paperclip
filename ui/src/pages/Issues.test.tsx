@@ -5,6 +5,7 @@ import {
   ISSUES_TOOLBAR_PRESENTATION,
   buildIssuesSearchUrl,
   parseIssueStatusParams,
+  applyIssueAttentionParam,
   getNextIssuesPageOffset,
   mergeIssuePagesStable,
   resolveIssuesPresentation,
@@ -44,6 +45,24 @@ describe("parseIssueStatusParams", () => {
 
   it("returns nothing when the param is absent", () => {
     expect(parseIssueStatusParams([])).toEqual([]);
+  });
+});
+
+describe("applyIssueAttentionParam", () => {
+  const stalledReview = { id: "a", status: "in_review", reviewAttention: { state: "stalled" } };
+  const liveReview = { id: "b", status: "in_review", reviewAttention: { state: "covered" } };
+  const stuckBlocker = { id: "c", status: "blocked", blockerAttention: { state: "needs_attention" } };
+  const finished = { id: "d", status: "done", reviewAttention: { state: "stalled" } };
+  const all = [stalledReview, liveReview, stuckBlocker, finished] as never[];
+
+  it("keeps only tasks with no live path, matching the dashboard card's count", () => {
+    expect(applyIssueAttentionParam(all, "needs_attention").map((issue) => (issue as { id: string }).id))
+      .toEqual(["a", "c"]);
+  });
+
+  it("passes the list through when the param is absent or unknown", () => {
+    expect(applyIssueAttentionParam(all, null)).toBe(all);
+    expect(applyIssueAttentionParam(all, "something_else")).toBe(all);
   });
 });
 

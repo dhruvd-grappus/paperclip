@@ -91,9 +91,13 @@ describe("WaitingOnYouPanel", () => {
     container.remove();
   });
 
-  function render(items: AttentionItem[], issues: Issue[]) {
+  function render(
+    items: AttentionItem[],
+    issues: Issue[],
+    props: { showAll?: boolean; userName?: (userId: string | null | undefined) => string | null } = {},
+  ) {
     flushSync(() => {
-      root.render(<WaitingOnYouPanel attentionItems={items} issues={issues} />);
+      root.render(<WaitingOnYouPanel attentionItems={items} issues={issues} {...props} />);
     });
   }
 
@@ -114,13 +118,34 @@ describe("WaitingOnYouPanel", () => {
     expect(hrefs).toContain("/issues/GRA-20");
   });
 
-  it("collapses a long list behind a link to the task list", () => {
+  it("collapses a long list behind a link to the full waiting-on-you page", () => {
     render(
       Array.from({ length: 10 }, (_, i) => interactionItem(`GRA-${i}`, `Task ${i}`)),
       [],
     );
     expect(container.textContent).toContain("+2 more");
     const hrefs = [...container.querySelectorAll("a")].map((a) => a.getAttribute("href"));
-    expect(hrefs).toContain("/issues");
+    expect(hrefs).toContain("/waiting-on-you");
+  });
+
+  it("renders every row and drops the more link when showing all", () => {
+    render(
+      Array.from({ length: 10 }, (_, i) => interactionItem(`GRA-${i}`, `Task ${i}`)),
+      [],
+      { showAll: true },
+    );
+    expect(container.textContent).not.toContain("more");
+    expect(container.textContent).toContain("Task 9");
+    const hrefs = [...container.querySelectorAll("a")].map((a) => a.getAttribute("href"));
+    expect(hrefs).not.toContain("/waiting-on-you");
+  });
+
+  it("names the owner when the caller can resolve one, and stays quiet otherwise", () => {
+    const issues = [{ ...reviewIssue("GRA-20"), createdByUserId: "user-1" } as Issue];
+    render([], issues, { userName: (id) => (id === "user-1" ? "Ada" : null) });
+    expect(container.textContent).toContain("owner Ada");
+
+    render([], issues);
+    expect(container.textContent).not.toContain("owner");
   });
 });

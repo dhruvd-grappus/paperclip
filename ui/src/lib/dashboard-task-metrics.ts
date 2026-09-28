@@ -50,7 +50,17 @@ function isOpen(issue: IssueLike): boolean {
   return !isTerminalIssueStatus(issue.status);
 }
 
-/** A task is "needs attention" when no live path is moving it. */
+/**
+ * A task is "needs attention" when no live path is moving it.
+ *
+ * Exported so the dashboard metric card and the task list it links to share
+ * one definition: clicking a count of 7 has to show those 7 rows, and a
+ * second copy of this predicate would drift the moment either side changed.
+ */
+export function issueNeedsAttention(issue: IssueLike): boolean {
+  return needsAttention(issue);
+}
+
 function needsAttention(issue: IssueLike): boolean {
   if (!isOpen(issue)) return false;
   const blocker = issue.blockerAttention?.state;
