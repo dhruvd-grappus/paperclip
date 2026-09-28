@@ -115,10 +115,69 @@ describe("instance self-update routes", () => {
   });
 
   it("surfaces GitHub being unreachable without failing the request", async () => {
-    fetchImpl.mockResolvedValue(new Response("rate limited", { status: 403 }));
+    fetchImpl.mockResolvedValue(new Response("upstream exploded", { status: 500 }));
     const res = await request(createApp(member)).get("/api/instance/build/update");
     expect(res.status).toBe(200);
-    expect(res.body).toMatchObject({ enabled: true, latest: null, updateAvailable: false, error: "GitHub answered 403" });
+    expect(res.body).toMatchObject({ enabled: true, latest: null, updateAvailable: false, error: "GitHub answered 500" });
+  });
+
+  it("authenticates GitHub release checks when a token is configured", async () => {
+    const authed = vi.fn(async () => new Response(JSON.stringify(LATEST), { status: 200 }));
+    const svc = instanceUpdateService({
+      repo: "dhruvd-grappus/paperclip", dir, fetchImpl: authed as any, token: "ghp_test",
+    });
+    await svc.latestRelease(true);
+    expect(authed).toHaveBeenCalledWith(
+      expect.stringContaining("/releases/latest"),
+      expect.objectContaining({ headers: expect.objectContaining({ authorization: "Bearer ghp_test" }) }),
+    );
+  });
+
+  it("reads the GitHub token from the environment when no token is passed", async () => {
+    process.env.PAPERCLIP_GRAPPUS_GITHUB_TOKEN = "ghp_env";
+    try {
+      const authed = vi.fn(async () => new Response(JSON.stringify(LATEST), { status: 200 }));
+      const svc = instanceUpdateService({ repo: "dhruvd-grappus/paperclip", dir, fetchImpl: authed as any });
+      await svc.latestRelease(true);
+      expect(authed).toHaveBeenCalledWith(
+        expect.stringContaining("/releases/latest"),
+        expect.objectContaining({ headers: expect.objectContaining({ authorization: "Bearer ghp_env" }) }),
+      );
+    } finally {
+      delete process.env.PAPERCLIP_GRAPPUS_GITHUB_TOKEN;
+    }
+  });
+
+  it("names the rate-limit reset instead of a bare 403", async () => {
+    const reset = Math.floor(new Date("2026-09-28T11:26:34Z").getTime() / 1000);
+    fetchImpl.mockResolvedValue(new Response(JSON.stringify({ message: "API rate limit exceeded" }), {
+      status: 403,
+      headers: { "x-ratelimit-remaining": "0", "x-ratelimit-reset": String(reset) },
+    }));
+    const svc = instanceUpdateService({ repo: "dhruvd-grappus/paperclip", dir, fetchImpl: fetchImpl as any });
+    await expect(svc.latestRelease(true)).rejects.toThrow("GitHub rate limit exceeded, retry after 11:26 UTC");
+  });
+
+  it("serves the last-known release when a refresh hits the rate limit", async () => {
+    const { errorHandler, instanceSettingsRoutes } = routeModules.value;
+    const updates = instanceUpdateService({ repo: "dhruvd-grappus/paperclip", dir, fetchImpl: fetchImpl as any });
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => { req.actor = member; next(); });
+    app.use("/api", instanceSettingsRoutes({} as any, { updates }));
+    app.use(errorHandler);
+
+    const ok = await request(app).get("/api/instance/build/update");
+    expect(ok.body.latest?.tag).toBe("overlay-2138d93848bd");
+
+    fetchImpl.mockResolvedValue(new Response("API rate limit exceeded", {
+      status: 403,
+      headers: { "x-ratelimit-remaining": "0" },
+    }));
+    const limited = await request(app).get("/api/instance/build/update?refresh=1");
+    expect(limited.status).toBe(200);
+    expect(limited.body.latest?.tag).toBe("overlay-2138d93848bd");
+    expect(limited.body.error).toMatch(/rate limit/i);
   });
 });
 

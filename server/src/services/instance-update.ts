@@ -89,21 +89,62 @@ export function parseRelease(raw: unknown): InstanceUpdateRelease | null {
   };
 }
 
+/** Token for authenticated release checks (5000/hr vs 60/hr anonymous). */
+export function instanceUpdateGitHubToken(opts: { token?: string }): string | null {
+  return (
+    opts.token ??
+    process.env.PAPERCLIP_GRAPPUS_GITHUB_TOKEN ??
+    process.env.GITHUB_TOKEN ??
+    null
+  );
+}
+
+/** Friendly message for GitHub failures; names the rate-limit reset when known. */
+async function githubErrorMessage(response: Response): Promise<string> {
+  const remaining = response.headers.get("x-ratelimit-remaining");
+  const reset = response.headers.get("x-ratelimit-reset");
+  const retryAfter = response.headers.get("retry-after");
+  let body = "";
+  try {
+    body = await response.text();
+  } catch {
+    body = "";
+  }
+  const rateLimited =
+    response.status === 429 || remaining === "0" || /rate limit/i.test(body);
+  if (rateLimited) {
+    const resetAt = reset ? new Date(Number(reset) * 1000) : null;
+    if (resetAt && !Number.isNaN(resetAt.getTime())) {
+      return `GitHub rate limit exceeded, retry after ${resetAt.toISOString().slice(11, 16)} UTC`;
+    }
+    if (retryAfter) return `GitHub rate limit exceeded, retry in ${retryAfter}s`;
+    return "GitHub rate limit exceeded, try again later";
+  }
+  return `GitHub answered ${response.status}`;
+}
+
 export function instanceUpdateService(opts: {
   repo: string;
   dir?: string;
   fetchImpl?: typeof fetch;
   now?: () => number;
+  token?: string;
 }) {
   const dir = opts.dir ?? defaultInstanceUpdateDir();
   const fetchImpl = opts.fetchImpl ?? fetch;
   const now = opts.now ?? Date.now;
+  const token = instanceUpdateGitHubToken(opts);
   let cache: { at: number; release: InstanceUpdateRelease | null } | null = null;
 
   async function latestRelease(force = false): Promise<InstanceUpdateRelease | null> {
     if (!force && cache && now() - cache.at < RELEASE_CACHE_MS) return cache.release;
+    const headers: Record<string, string> = {
+      accept: "application/vnd.github+json",
+      "user-agent": "paperclip-grappus-updater",
+    };
+    if (token) headers.authorization = `Bearer ${token}`;
     const response = await fetchImpl(`https://api.github.com/repos/${opts.repo}/releases/latest`, {
-      headers: { accept: "application/vnd.github+json", "user-agent": "paperclip-grappus-updater" },
+      headers,
       signal: AbortSignal.timeout(10_000),
     });
     if (response.status === 404) {
@@ -111,11 +152,16 @@ export function instanceUpdateService(opts: {
       return null;
     }
     if (!response.ok) {
-      throw new InstanceUpdateError("update_unavailable", `GitHub answered ${response.status}`);
+      throw new InstanceUpdateError("update_unavailable", await githubErrorMessage(response));
     }
     const release = parseRelease(await response.json());
     cache = { at: now(), release };
     return release;
+  }
+
+  /** Last-known release (even past the cache window); served when GitHub fails. */
+  function cached(): InstanceUpdateRelease | null {
+    return cache?.release ?? null;
   }
 
   function status(): InstanceUpdateStatus | null {
@@ -173,7 +219,7 @@ export function instanceUpdateService(opts: {
     return queued;
   }
 
-  return { latestRelease, status, request, inFlight: () => inFlight(status()) };
+  return { latestRelease, cached, status, request, inFlight: () => inFlight(status()) };
 }
 
 export type InstanceUpdateService = ReturnType<typeof instanceUpdateService>;
