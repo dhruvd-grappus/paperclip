@@ -1,0 +1,10 @@
+# In-app Providers panel: Paperclip writes request.json here, this runs paperclip-providers apply-request as root.
+[Unit]
+Description=Paperclip providers request watcher
+
+[Path]
+PathExists=/home/paperclip/.paperclip/grappus-providers/request.json
+Unit=paperclip-providers.service
+
+[Install]
+WantedBy=multi-user.target

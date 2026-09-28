@@ -64,10 +64,22 @@ install-updater:
 	  systemctl daemon-reload; systemctl enable --now paperclip-update.path; \
 	  systemctl is-active paperclip-update.path; rm -f /tmp/paperclip-overlay /tmp/paperclip-update.path /tmp/paperclip-update.service'
 
+# make install-providers: host side of the in-app Providers panel (paperclip-providers + its root path
+# unit) and the managed-settings guard drop-in (deny list from vps/clarifier-settings.json), which reaches
+# every agent run whatever its working directory.
+install-providers:
+	@scp -q vps/paperclip-providers vps/paperclip-providers.path vps/paperclip-providers.service vps/clarifier-settings.json $(VPS):/tmp/
+	@ssh $(VPS) 'set -e; install -m 755 -o root -g root /tmp/paperclip-providers /usr/local/bin/paperclip-providers; \
+	  install -m 644 /tmp/paperclip-providers.path /tmp/paperclip-providers.service /etc/systemd/system/; \
+	  install -d -m 700 -o paperclip -g paperclip /home/paperclip/.paperclip/grappus-providers; \
+	  paperclip-providers install-guards /tmp/clarifier-settings.json; \
+	  systemctl daemon-reload; systemctl enable --now paperclip-providers.path; systemctl is-active paperclip-providers.path; \
+	  rm -f /tmp/paperclip-providers /tmp/paperclip-providers.path /tmp/paperclip-providers.service /tmp/clarifier-settings.json'
+
 paperclip-rollback:
 	@ssh $(VPS) 'paperclip-overlay rollback'
 
 paperclip-status:
 	@ssh $(VPS) 'paperclip-overlay status'
 
-.PHONY: deploy install-backup install-heal install-preview backup reasoning install-updater paperclip-rollback paperclip-status
+.PHONY: deploy install-backup install-heal install-preview install-providers backup reasoning install-updater paperclip-rollback paperclip-status

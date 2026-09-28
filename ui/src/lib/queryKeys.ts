@@ -614,6 +614,7 @@ export const queryKeys = {
     settings: ["instance", "settings"] as const,
     build: ["instance", "build"] as const,
     buildUpdate: ["instance", "build", "update"] as const,
+    providers: ["instance", "providers"] as const,
     generalSettings: ["instance", "general-settings"] as const,
     experimentalSettings: ["instance", "experimental-settings"] as const,
   },
