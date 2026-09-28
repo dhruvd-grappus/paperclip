@@ -1,0 +1,23 @@
+{
+  "cmd": "node server.js",
+  "ready": "http:/health",
+  "devUrl": "https://ats-ai-dev.unberry.com",
+  "notes": "Unberry ATS backend (Express). NODE_ENV=localhost is required: any other value makes app.js fetch the shared dev Atlas URI from AWS Secrets Manager and ignore MONGO_URI. Needs members mongo + redis (recipes mongo, redis). Deployed ElastiCache is VPC-only, unreachable from the VPS. Empty local DB: seed or sign up before QA.",
+  "env": {
+    "MONGO_URI": "mongodb://127.0.0.1:{{port:mongo}}/ats-preview",
+    "MUMBAI_MONGO_URI": "mongodb://127.0.0.1:{{port:mongo}}/ats-preview",
+    "DAMMAM_MONGO_URI": "mongodb://127.0.0.1:{{port:mongo}}/ats-preview",
+    "REDIS_HOST": "127.0.0.1",
+    "REDIS_PORT": "{{port:redis}}",
+    "REDIS_TLS_ENABLED": "false",
+    "REDIS_AUTH_TOKEN": "",
+    "CORS_ALLOWED_ORIGINS": "https://*.187-126-114-172.sslip.io",
+    "NODE_ENV": "localhost",
+    "SYNC_INDEXES_ON_STARTUP": "true"
+  },
+  "after": [
+    "mongo",
+    "redis"
+  ],
+  "kind": "app"
+}
