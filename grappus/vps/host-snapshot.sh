@@ -38,7 +38,7 @@ EXCL=(--exclude='__pycache__' --exclude='*.log' --exclude='node_modules' --exclu
 for p in pc native-token.sh native-token.log recreate.sh runner-shim.sh acpx-thinking-patch.sh \
          agents skills slack-bridge preview-router deploy workspace workspace-b \
          .gitconfig .bashrc .profile .typesafe_key .github_pat .gitlab_pat .native-token.sha \
-         .ssh; do
+         .ssh .git-identities; do
   [ -e "/home/paperclip/$p" ] || continue
   tar -C /home/paperclip "${EXCL[@]}" -cf - "$p" 2>/dev/null | tar -C "$L/home/paperclip" -xf - 2>/dev/null || true
 done

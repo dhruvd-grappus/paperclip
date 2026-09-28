@@ -92,6 +92,18 @@ install-providers:
 	  systemctl daemon-reload; systemctl enable --now paperclip-providers.path; systemctl is-active paperclip-providers.path; \
 	  rm -f /tmp/paperclip-providers /tmp/paperclip-providers.path /tmp/paperclip-providers.service /tmp/clarifier-settings.json'
 
+# Per-person git identities (vault-rules projects such as identity-gated Bitbucket repos): credential helper that
+# reads ~/.git-identities/<host>/<identity> ("username:token", chosen by $GIT_IDENTITY, else the "default" link),
+# gitconfig wiring for bitbucket.org, and the managed-settings drop-in that stops Claude Code from adding
+# Co-Authored-By trailers host-wide (45-paperclip-git.json). Token files are written by the agent, never by make.
+install-identities:
+	@scp -q vps/git-credential-identity vps/managed-git.json $(VPS):/tmp/
+	@ssh $(VPS) 'set -e; install -m 755 -o paperclip -g paperclip /tmp/git-credential-identity /home/paperclip/.local/bin/git-credential-identity; \
+	  install -d -m 700 -o paperclip -g paperclip /home/paperclip/.git-identities /home/paperclip/.git-identities/bitbucket.org; \
+	  su - paperclip -c "git config --global credential.https://bitbucket.org.helper /home/paperclip/.local/bin/git-credential-identity; git config --global credential.https://bitbucket.org.useHttpPath false"; \
+	  install -m 644 -o root -g root /tmp/managed-git.json /etc/claude-code/managed-settings.d/45-paperclip-git.json; \
+	  rm -f /tmp/git-credential-identity /tmp/managed-git.json; echo installed'
+
 paperclip-rollback:
 	@ssh $(VPS) 'paperclip-overlay rollback'
 
