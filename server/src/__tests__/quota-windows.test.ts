@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import os from "node:os";
+import fsp from "node:fs/promises";
 import path from "node:path";
 import type { QuotaWindow } from "@paperclipai/adapter-utils";
 
@@ -11,6 +12,9 @@ import {
   parseClaudeCliUsageText,
   readClaudeToken,
   claudeConfigDir,
+  parseRetryAfterMs,
+  getQuotaWindows,
+  resetClaudeQuotaCacheForTests,
 } from "@paperclipai/adapter-claude-local/server";
 
 import {
@@ -851,5 +855,97 @@ describe("fetchWithTimeout", () => {
     const promise = fetchWithTimeout("https://example.com", {}, 1000);
     vi.advanceTimersByTime(1001);
     await expect(promise).rejects.toThrow("aborted");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Claude quota caching / 429 backoff
+// ---------------------------------------------------------------------------
+
+describe("parseRetryAfterMs", () => {
+  it("reads delta-seconds", () => {
+    expect(parseRetryAfterMs("30")).toBe(30_000);
+  });
+
+  it("reads an HTTP date relative to now", () => {
+    const now = Date.parse("2026-01-01T00:00:00Z");
+    expect(parseRetryAfterMs("Thu, 01 Jan 2026 00:01:00 GMT", now)).toBe(60_000);
+  });
+
+  it("returns null for a missing or unparseable header", () => {
+    expect(parseRetryAfterMs(null)).toBe(null);
+    expect(parseRetryAfterMs("soon")).toBe(null);
+  });
+});
+
+describe("getQuotaWindows caching", () => {
+  let tokenDir: string;
+  const savedConfigDir = process.env.CLAUDE_CONFIG_DIR;
+
+  beforeEach(async () => {
+    tokenDir = await fsp.mkdtemp(path.join(os.tmpdir(), "paperclip-quota-"));
+    await fsp.writeFile(
+      path.join(tokenDir, ".credentials.json"),
+      JSON.stringify({ claudeAiOauth: { accessToken: "tok", expiresAt: Date.now() + 3_600_000 } }),
+    );
+    process.env.CLAUDE_CONFIG_DIR = tokenDir;
+    resetClaudeQuotaCacheForTests();
+  });
+
+  afterEach(async () => {
+    if (savedConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+    else process.env.CLAUDE_CONFIG_DIR = savedConfigDir;
+    resetClaudeQuotaCacheForTests();
+    vi.unstubAllGlobals();
+    await fsp.rm(tokenDir, { recursive: true, force: true });
+  });
+
+  function stubUsageFetch(responses: Array<{ status: number; body?: unknown; retryAfter?: string }>) {
+    const fetchMock = vi.fn().mockImplementation(async () => {
+      const next = responses.shift() ?? responses[responses.length - 1]!;
+      return {
+        ok: next.status === 200,
+        status: next.status,
+        headers: { get: (name: string) => (name === "retry-after" ? next.retryAfter ?? null : null) },
+        json: async () => next.body ?? {},
+      } as unknown as Response;
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    return fetchMock;
+  }
+
+  it("serves one upstream poll to concurrent and repeat callers", async () => {
+    const fetchMock = stubUsageFetch([{ status: 200, body: { five_hour: { utilization: 12 } } }]);
+    const [a, b] = await Promise.all([getQuotaWindows(), getQuotaWindows()]);
+    const c = await getQuotaWindows();
+    expect(a.ok).toBe(true);
+    expect(b).toEqual(a);
+    expect(c).toEqual(a);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps serving the last good windows while a 429 backoff is active", async () => {
+    let now = 1_000_000;
+    const fetchMock = stubUsageFetch([
+      { status: 200, body: { five_hour: { utilization: 12 } } },
+      { status: 429, retryAfter: "60" },
+    ]);
+    const first = await getQuotaWindows(() => now);
+    now += 200_000; // past the cache window
+    const second = await getQuotaWindows(() => now);
+    expect(second).toEqual(first);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    now += 10_000; // still inside the 60s backoff
+    const third = await getQuotaWindows(() => now);
+    expect(third).toEqual(first);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("reports the rate limit when there is no cached result to fall back on", async () => {
+    stubUsageFetch([{ status: 429 }]);
+    const result = await getQuotaWindows();
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatch(/rate limited/i);
   });
 });

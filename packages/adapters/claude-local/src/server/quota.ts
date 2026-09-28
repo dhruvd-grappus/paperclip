@@ -239,6 +239,32 @@ export async function fetchWithTimeout(url: string, init: RequestInit, ms = 8000
   }
 }
 
+/** The usage endpoint rate limited us; carries the server's retry hint when it sent one. */
+export class ClaudeQuotaRateLimitError extends Error {
+  readonly retryAfterMs: number | null;
+  constructor(retryAfterMs: number | null) {
+    super(
+      retryAfterMs != null
+        ? `Anthropic usage api rate limited (429); retry in ${Math.round(retryAfterMs / 1000)}s`
+        : "Anthropic usage api rate limited (429)",
+    );
+    this.name = "ClaudeQuotaRateLimitError";
+    this.retryAfterMs = retryAfterMs;
+  }
+}
+
+/** `retry-after` is either delta-seconds or an HTTP date; both become milliseconds from now. */
+export function parseRetryAfterMs(header: string | null, now: number = Date.now()): number | null {
+  if (!header) return null;
+  const trimmed = header.trim();
+  if (trimmed.length === 0) return null;
+  const seconds = Number(trimmed);
+  if (Number.isFinite(seconds)) return Math.max(0, Math.round(seconds * 1000));
+  const date = Date.parse(trimmed);
+  if (Number.isFinite(date)) return Math.max(0, date - now);
+  return null;
+}
+
 export async function fetchClaudeQuota(token: string): Promise<QuotaWindow[]> {
   const resp = await fetchWithTimeout("https://api.anthropic.com/api/oauth/usage", {
     headers: {
@@ -246,6 +272,9 @@ export async function fetchClaudeQuota(token: string): Promise<QuotaWindow[]> {
       "anthropic-beta": "oauth-2025-04-20",
     },
   });
+  if (resp.status === 429) {
+    throw new ClaudeQuotaRateLimitError(parseRetryAfterMs(resp.headers?.get("retry-after") ?? null));
+  }
   if (!resp.ok) throw new Error(`anthropic usage api returned ${resp.status}`);
   const body = (await resp.json()) as AnthropicUsageResponse;
   const windows: QuotaWindow[] = [];
@@ -417,7 +446,10 @@ function formatClaudeCliDetail(label: string, lines: string[]): string | null {
 export function parseClaudeCliUsageText(text: string): QuotaWindow[] {
   const cleaned = trimToLatestUsagePanel(cleanTerminalText(text)) ?? cleanTerminalText(text);
   const usageError = extractUsageError(cleaned);
-  if (usageError) throw new Error(usageError);
+  if (usageError) {
+    if (/rate limited/i.test(usageError)) throw new ClaudeQuotaRateLimitError(null);
+    throw new Error(usageError);
+  }
 
   const lines = cleaned
     .split("\n")
@@ -508,7 +540,72 @@ function formatProviderError(source: string, error: unknown): string {
   return `${source}: ${message}`;
 }
 
-export async function getQuotaWindows(): Promise<ProviderQuotaResult> {
+/** How long one poll of the provider is reused for every caller. */
+const QUOTA_CACHE_MS = 120_000;
+/** Default pause after a 429 when the response carries no `retry-after`. */
+const QUOTA_RATE_LIMIT_BACKOFF_MS = 600_000;
+/** Never trust a `retry-after` longer than this, so one bad header can't wedge the panel. */
+const QUOTA_RATE_LIMIT_BACKOFF_MAX_MS = 3_600_000;
+
+let quotaCache: { at: number; result: ProviderQuotaResult } | null = null;
+let quotaInFlight: Promise<ProviderQuotaResult> | null = null;
+let rateLimitedUntil = 0;
+
+export function resetClaudeQuotaCacheForTests(): void {
+  quotaCache = null;
+  quotaInFlight = null;
+  rateLimitedUntil = 0;
+}
+
+function isRateLimitError(error: unknown): error is ClaudeQuotaRateLimitError {
+  return error instanceof ClaudeQuotaRateLimitError;
+}
+
+/**
+ * Every dashboard and Costs tab polls this, and the usage endpoint is stingy: one
+ * uncached poll per viewer is what earns the 429s. Serve a short cache, collapse
+ * concurrent callers onto one request, and after a 429 keep serving the last good
+ * windows until the backoff expires instead of hammering the endpoint.
+ */
+export async function getQuotaWindows(now: () => number = Date.now): Promise<ProviderQuotaResult> {
+  const cached = quotaCache;
+  if (cached && now() - cached.at < QUOTA_CACHE_MS) return cached.result;
+  if (now() < rateLimitedUntil) {
+    if (cached) return cached.result;
+    return {
+      provider: "anthropic",
+      ok: false,
+      error: `Anthropic usage api rate limited; retrying in ${Math.max(1, Math.round((rateLimitedUntil - now()) / 1000))}s`,
+      windows: [],
+    };
+  }
+  if (quotaInFlight) return quotaInFlight;
+
+  quotaInFlight = (async () => {
+    try {
+      const result = await loadQuotaWindows();
+      quotaCache = { at: now(), result };
+      rateLimitedUntil = 0;
+      return result;
+    } catch (error) {
+      if (isRateLimitError(error)) {
+        const backoff = Math.min(
+          QUOTA_RATE_LIMIT_BACKOFF_MAX_MS,
+          error.retryAfterMs ?? QUOTA_RATE_LIMIT_BACKOFF_MS,
+        );
+        rateLimitedUntil = now() + backoff;
+        if (quotaCache) return quotaCache.result;
+        return { provider: "anthropic", ok: false, error: error.message, windows: [] };
+      }
+      throw error;
+    } finally {
+      quotaInFlight = null;
+    }
+  })();
+  return quotaInFlight;
+}
+
+async function loadQuotaWindows(): Promise<ProviderQuotaResult> {
   if (
     process.env.CLAUDE_CODE_USE_BEDROCK === "1" ||
     process.env.CLAUDE_CODE_USE_BEDROCK === "true" ||
@@ -528,6 +625,9 @@ export async function getQuotaWindows(): Promise<ProviderQuotaResult> {
       const windows = await fetchClaudeQuota(token);
       return { provider: "anthropic", source: CLAUDE_USAGE_SOURCE_OAUTH, ok: true, windows };
     } catch (error) {
+      // The CLI fallback calls the same endpoint, so retrying it now only deepens
+      // the rate limit. Let the caller start its backoff instead.
+      if (isRateLimitError(error)) throw error;
       errors.push(formatProviderError("Anthropic OAuth usage", error));
     }
   }
@@ -536,6 +636,7 @@ export async function getQuotaWindows(): Promise<ProviderQuotaResult> {
     const windows = await fetchClaudeCliQuota();
     return { provider: "anthropic", source: CLAUDE_USAGE_SOURCE_CLI, ok: true, windows };
   } catch (error) {
+    if (isRateLimitError(error)) throw error;
     errors.push(formatProviderError("Claude CLI /usage", error));
   }
 

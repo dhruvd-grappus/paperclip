@@ -13,8 +13,10 @@ export function ClaudeUsagePanel({ companyId }: { companyId: string }) {
   const { data, isLoading } = useQuery({
     queryKey: queryKeys.usageQuotaWindows(companyId),
     queryFn: () => costsApi.quotaWindows(companyId),
-    refetchInterval: 300_000,
-    staleTime: 60_000,
+    // the provider's usage endpoint rate limits hard; poll it sparingly
+    refetchInterval: 900_000,
+    staleTime: 600_000,
+    refetchOnWindowFocus: false,
   });
   const anthropic = data?.find((result) => result.provider === "anthropic");
   const account = anthropic?.account ?? null;
