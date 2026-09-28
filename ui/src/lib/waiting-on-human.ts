@@ -23,9 +23,11 @@ import { isVisibleWorkTask } from "./task-visibility";
  * no feed row at all until it stalls, and a finished task raises none ever —
  * and those are exactly the states this widget is asked to show.
  *
- * Hidden, harness and chat-container tasks never appear — `isVisibleWorkTask`
- * is the same rule the server applies to every queue it builds. The task list
- * endpoint does not apply it, so this list has to.
+ * Hidden, harness and chat-container tasks never appear. The task list endpoint
+ * already applies the server's visibility rule, and the attention feed drops
+ * cards raised on a hidden task, so in practice neither source offers one; the
+ * check here is the last line of defence for a caller that passes a list from
+ * somewhere else.
  *
  * Parent tasks only. A subtask's question or review is a step inside work the
  * parent already represents, so listing both turns one thing to look at into a
@@ -202,8 +204,9 @@ export function waitingOnHumanRows(
   // row carries neither fact of its own, so its task is looked up here; a card
   // on a task the list does not cover (an older task, or one past the list's
   // page) stays in — an unknown parent is no reason to drop a decision nobody
-  // has made. A task the list *does* cover and marks hidden is dropped, since
-  // then it is known to be off the board.
+  // has made. Note that an absent task cannot be assumed hidden: the list
+  // endpoint omits hidden tasks entirely, which is why the feed itself has to
+  // drop their cards rather than this filter inferring it.
   const childIssueIds = new Set(
     issues.filter((issue) => issue.parentId != null).map((issue) => issue.id),
   );
