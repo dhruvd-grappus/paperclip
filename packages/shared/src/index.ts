@@ -1795,8 +1795,11 @@ export {
 } from "./execution-workspace-guards.js";
 
 export {
+  COMPLETION_EVIDENCE_REQUIREMENTS,
+  COMPLETION_EVIDENCE_SCOPES,
   COMPLETION_EVIDENCE_WORK_PRODUCT_TYPES,
   DEFAULT_COMPLETION_EVIDENCE_POLICY,
+  describeCompletionGateFailure,
   evaluateCompletionEvidence,
   evaluateCompletionGate,
   hasCompletionEvidence,
@@ -1811,6 +1814,7 @@ export type {
   CompletionGateFailureReason,
   CompletionGateResult,
   CompletionGateSubject,
+  WorkProductLike,
 } from "./completion-evidence.js";
 
 export {
@@ -1854,6 +1858,8 @@ export {
 
 export {
   createCompanySchema,
+  completionEvidencePolicyFromStorage,
+  completionEvidencePolicySchema,
   interactionResolverGovernanceSchema,
   updateCompanySchema,
   updateCompanyBrandingSchema,

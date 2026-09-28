@@ -1,6 +1,8 @@
 import { ChangeEvent, useEffect, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
+  DEFAULT_COMPLETION_EVIDENCE_POLICY,
+  type CompletionEvidencePolicy,
   type InteractionResolverGovernance,
   type IssueThreadInteractionKind,
 } from "@paperclipai/shared";
@@ -18,6 +20,7 @@ import {
   type GovernanceField,
   type GovernanceSelectValue,
 } from "../components/InteractionGovernancePanel";
+import { CompletionGatePanel } from "../components/CompletionGatePanel";
 import { CompanyPatternIcon } from "../components/CompanyPatternIcon";
 import {
   Field,
@@ -43,6 +46,9 @@ export function CompanySettings() {
   const [logoUrl, setLogoUrl] = useState("");
   const [logoUploadError, setLogoUploadError] = useState<string | null>(null);
   const [governance, setGovernance] = useState<InteractionResolverGovernance>({});
+  const [completionPolicy, setCompletionPolicy] = useState<CompletionEvidencePolicy>(
+    DEFAULT_COMPLETION_EVIDENCE_POLICY,
+  );
 
   // Sync local state from selected company
   useEffect(() => {
@@ -51,6 +57,9 @@ export function CompanySettings() {
     setDescription(selectedCompany.description ?? "");
     setLogoUrl(selectedCompany.logoUrl ?? "");
     setGovernance(selectedCompany.interactionResolverGovernance ?? {});
+    setCompletionPolicy(
+      selectedCompany.completionEvidencePolicy ?? DEFAULT_COMPLETION_EVIDENCE_POLICY,
+    );
   }, [selectedCompany]);
 
   const generalDirty =
@@ -86,6 +95,25 @@ export function CompanySettings() {
       queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
     }
   });
+
+  const completionPolicyMutation = useMutation({
+    mutationFn: (next: CompletionEvidencePolicy) =>
+      companiesApi.update(selectedCompanyId!, { completionEvidencePolicy: next }),
+    onSuccess: (company) => {
+      setCompletionPolicy(
+        company.completionEvidencePolicy ?? DEFAULT_COMPLETION_EVIDENCE_POLICY,
+      );
+      queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
+    }
+  });
+
+  // Optimistic on purpose: the switch and the three selects are one rule, and a
+  // control that snaps back to its old value while the request is in flight
+  // reads as a rejected change rather than a pending one.
+  function handleCompletionPolicyChange(next: CompletionEvidencePolicy) {
+    setCompletionPolicy(next);
+    completionPolicyMutation.mutate(next);
+  }
 
   function handleGovernanceChange(
     kind: IssueThreadInteractionKind,
@@ -328,6 +356,19 @@ export function CompanySettings() {
             ? governanceMutation.error instanceof Error
               ? governanceMutation.error.message
               : "Failed to save interaction governance"
+            : null
+        }
+      />
+
+      <CompletionGatePanel
+        policy={completionPolicy}
+        onChange={handleCompletionPolicyChange}
+        isPending={completionPolicyMutation.isPending}
+        errorMessage={
+          completionPolicyMutation.isError
+            ? completionPolicyMutation.error instanceof Error
+              ? completionPolicyMutation.error.message
+              : "Failed to save the completion gate"
             : null
         }
       />

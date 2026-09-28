@@ -92,6 +92,7 @@ import { ProfileSettings } from "./pages/ProfileSettings";
 import { PluginManager } from "./pages/PluginManager";
 import { PluginSettings } from "./pages/PluginSettings";
 import { AdapterManager } from "./pages/AdapterManager";
+import { InstanceUpdates } from "./pages/InstanceUpdates";
 import { PluginPage } from "./pages/PluginPage";
 import { NewAgent } from "./pages/NewAgent";
 import { AuthPage } from "./pages/Auth";
@@ -257,6 +258,9 @@ function boardRoutes(streamlinedUiEnabled: boolean) {
       </Route>
       <Route element={<HiddenSettingsPageGate pageKey="instance.adapters" />}>
         <Route path="company/settings/instance/adapters" element={<AdapterManager />} />
+      </Route>
+      <Route element={<HiddenSettingsPageGate pageKey="instance.updates" />}>
+        <Route path="company/settings/instance/updates" element={<InstanceUpdates />} />
       </Route>
       <Route path="company/settings/:settingsRoutePath/*" element={<CompanySettingsPluginPage />} />
       <Route path="skills/studio" element={<SkillStudio />} />

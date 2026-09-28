@@ -22,8 +22,9 @@ const STATE_LABEL: Record<InstanceUpdateState, string> = {
 };
 
 /**
- * "Check for updates" in the build dialog. The server only queues a request;
- * the host's updater installs the latest CI build of grappus/stable, restarts
+ * "Check for updates" on Settings → Instance settings → Updates. The server
+ * only queues a request; the host's updater installs the latest CI build of
+ * grappus/stable, restarts
  * Paperclip and reports back. While that runs the API is briefly down, so the
  * panel keeps polling and offers a reload once the running commit changes.
  */

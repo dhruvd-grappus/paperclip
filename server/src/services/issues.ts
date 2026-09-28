@@ -90,6 +90,7 @@ import {
   clampIssueRequestDepth,
   extractAgentMentionIds,
   extractProjectMentionIds,
+  ISSUE_STATUSES,
   issueCommentAuthorTypeSchema,
   issueCommentMetadataSchema,
   issueCommentPresentationSchema,
@@ -190,15 +191,10 @@ import { buildIssueChanges } from "./issue-change-receipt.js";
 import { projectSafeChatPublication } from "./chat-publication-projection.js";
 import { issueThreadInteractionAttentionAgentAllowed } from "./issue-thread-interaction-resolution.js";
 
-const ALL_ISSUE_STATUSES = [
-  "backlog",
-  "todo",
-  "in_progress",
-  "in_review",
-  "blocked",
-  "done",
-  "cancelled",
-];
+// Derived, not copied. This list had drifted from `ISSUE_STATUSES` the moment
+// `human_approved` was added: every transition into the new status was rejected
+// as an unknown status, by a guard whose whole job is to know the statuses.
+const ALL_ISSUE_STATUSES: readonly string[] = ISSUE_STATUSES;
 const MAX_ISSUE_COMMENT_PAGE_LIMIT = 500;
 const MAX_CHAT_PRESENTATION_ATTACHMENTS = 20;
 export const ISSUE_LIST_DEFAULT_LIMIT = 500;

@@ -17,6 +17,7 @@ const items = [
   { value: "instance-experimental", label: "Experimental", href: `${INSTANCE_SETTINGS_PATH_PREFIX}/experimental` },
   { value: "instance-plugins", label: "Plugins", href: `${INSTANCE_SETTINGS_PATH_PREFIX}/plugins` },
   { value: "instance-adapters", label: "Adapters", href: `${INSTANCE_SETTINGS_PATH_PREFIX}/adapters` },
+  { value: "instance-updates", label: "Updates", href: `${INSTANCE_SETTINGS_PATH_PREFIX}/updates` },
 ] as const;
 
 type CompanySettingsTab = (typeof items)[number]["value"];
@@ -33,6 +34,7 @@ const hiddenSettingKeyByTab: Partial<Record<CompanySettingsTab, string>> = {
   "instance-experimental": "instance.experimental",
   "instance-plugins": "instance.plugins",
   "instance-adapters": "instance.adapters",
+  "instance-updates": "instance.updates",
 };
 
 export function getCompanySettingsTab(pathname: string): CompanySettingsTab {
@@ -58,6 +60,10 @@ export function getCompanySettingsTab(pathname: string): CompanySettingsTab {
 
   if (pathname.includes(`${INSTANCE_SETTINGS_PATH_PREFIX}/adapters`)) {
     return "instance-adapters";
+  }
+
+  if (pathname.includes(`${INSTANCE_SETTINGS_PATH_PREFIX}/updates`)) {
+    return "instance-updates";
   }
 
   if (pathname.includes(`${INSTANCE_SETTINGS_PATH_PREFIX}/general`)) {

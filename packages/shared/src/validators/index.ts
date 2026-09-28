@@ -75,6 +75,8 @@ export {
 
 export {
   createCompanySchema,
+  completionEvidencePolicyFromStorage,
+  completionEvidencePolicySchema,
   interactionResolverGovernanceSchema,
   updateCompanySchema,
   updateCompanyBrandingSchema,
