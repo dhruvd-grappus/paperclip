@@ -1,0 +1,7 @@
+{
+  "kind": "service",
+  "cmd": "/home/paperclip/services/bin/mongod --dbpath {{data:mongo}} --port {{port:mongo}} --bind_ip 127.0.0.1 --wiredTigerCacheSizeGB 0.25",
+  "env": {},
+  "after": [],
+  "notes": "Local mongod 8.0 (user-space tarball in ~/services), per-stack data dir, 0.25 GB cache."
+}

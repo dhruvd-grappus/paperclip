@@ -3,7 +3,7 @@
 # Usage: build-start --ident GRA-121 --slug number-validation --project <projectId> [--workspace <name>] [--base <branch>] [--primary <path>]
 # Resolves the primary clone from Paperclip (board token) unless --primary is given, fetches, picks the base
 # (--base > workspace repoRef > origin/develop > origin/dev > remote default), creates the worktree from origin/<base>,
-# runs provision-worktree (node_modules + .next/cache hard links, .env.local copy), installs husky hooks when present,
+# runs provision-worktree (node_modules + .next/cache hard links, .env.local copy, gitignored .env copy), installs husky hooks when present,
 # and prints ONE json line. Idempotent: an existing worktree on the same branch is reused.
 set -euo pipefail
 export HOME=/home/paperclip
@@ -61,7 +61,9 @@ fi
 ( cd "$DIR" && /usr/local/bin/provision-worktree >/tmp/provision-$IDENT.log 2>&1 ) || true
 ENVCOPIED=false
 if [ -f "$PRIMARY/.env.local" ] && [ ! -f "$DIR/.env.local" ]; then cp -n "$PRIMARY/.env.local" "$DIR/.env.local"; fi
-[ -f "$DIR/.env.local" ] && ENVCOPIED=true
+# Backends often keep their config in a gitignored .env instead (Unberry ATS backend); copy it only when git ignores it.
+if [ -f "$PRIMARY/.env" ] && [ ! -e "$DIR/.env" ] && git -C "$DIR" check-ignore -q .env; then cp -n "$PRIMARY/.env" "$DIR/.env"; fi
+{ [ -f "$DIR/.env.local" ] || [ -f "$DIR/.env" ]; } && ENVCOPIED=true
 if [ -d "$DIR/.husky" ] && [ -f "$DIR/package.json" ]; then ( cd "$DIR" && git config core.hooksPath .husky ) || true; fi
 HOST=$(git -C "$PRIMARY" remote get-url origin 2>/dev/null | sed -E 's#^(ssh://)?(git@|https://)##; s#[:/].*##')
 BASECOMMIT=$(git -C "$PRIMARY" rev-parse --short "origin/$BASE")

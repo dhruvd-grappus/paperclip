@@ -1,0 +1,7 @@
+{
+  "kind": "service",
+  "cmd": "/home/paperclip/services/bin/redis-server --port {{port:redis}} --bind 127.0.0.1 --save \"\" --appendonly no --dir {{data:redis}}",
+  "env": {},
+  "after": [],
+  "notes": "Local redis-server 7.4 (built from source in ~/services), no persistence."
+}

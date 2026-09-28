@@ -33,12 +33,20 @@ install-heal:
 	  install -m 755 -o paperclip -g paperclip $$D/vps/native-token.sh /home/paperclip/native-token.sh; \
 	  rm -rf $$D; su - paperclip -c "crontab -l" | grep -E "heal|native-token"'
 
-# make install-preview: preview-url (production build + serve, dev fallback) and the preview router.
+# make install-preview: preview-url (production build + serve, dev fallback), preview-stack (multi-repo
+# previews, recipes in ~/preview-stack.d), preview-reap and the preview router. Seed recipes never overwrite
+# one the agent already saved.
 install-preview:
-	@scp -q vps/preview-url vps/preview-router.js $(VPS):/tmp/
-	@ssh $(VPS) 'set -e; install -m 755 -o root -g root /tmp/preview-url /usr/local/bin/preview-url; \
-	  install -m 644 -o paperclip -g paperclip /tmp/preview-router.js /home/paperclip/preview-router/index.js; \
-	  systemctl restart preview-router; systemctl is-active preview-router; rm -f /tmp/preview-url /tmp/preview-router.js'
+	@COPYFILE_DISABLE=1 tar cf - vps/preview-url vps/preview-stack vps/preview-reap.sh vps/preview-router.js vps/preview-stack.d | ssh $(VPS) 'set -e; \
+	  D=/tmp/grappus-preview; rm -rf $$D; mkdir -p $$D; tar xf - -C $$D; \
+	  install -m 755 -o root -g root $$D/vps/preview-url /usr/local/bin/preview-url; \
+	  install -m 755 -o root -g root $$D/vps/preview-stack /usr/local/bin/preview-stack; \
+	  install -m 755 -o root -g root $$D/vps/preview-reap.sh /usr/local/bin/preview-reap; \
+	  install -m 644 -o paperclip -g paperclip $$D/vps/preview-router.js /home/paperclip/preview-router/index.js; \
+	  install -d -o paperclip -g paperclip /home/paperclip/preview-stack.d /home/paperclip/preview-stacks /home/paperclip/services /home/paperclip/services/bin; \
+	  for f in $$D/vps/preview-stack.d/*.json; do [ -e "$$f" ] || continue; t=/home/paperclip/preview-stack.d/$$(basename $$f); \
+	    [ -e "$$t" ] || install -m 644 -o paperclip -g paperclip "$$f" "$$t"; done; \
+	  rm -rf $$D; systemctl restart preview-router; systemctl is-active preview-router; preview-stack help | head -1'
 
 # make backup: run all backups on the host, then pull them down here.
 backup:

@@ -1,0 +1,877 @@
+#!/usr/bin/env python3
+"""preview-stack: one integrated preview for a task that spans several repos (-> /usr/local/bin/preview-stack).
+
+A stack = named members, each a running process:
+  app      public web app or API, served through preview-url (production build, router, TLS) at
+           https://<task>[-<name>].187-126-114-172.sslip.io  (the primary app gets the bare https://<task>.…)
+  service  anything else long-running (mongod, redis-server, a worker): local port only, never public.
+Members wire together through placeholders in env and cmd: {{url:api}} {{port:mongo}} {{host}} {{data:mongo}}
+{{dir:web}} {{task}}. Env reaches the build and the server and beats .env* files (Next, CRA, Vite).
+
+Run `preview-stack guide` for the agent manual, `preview-stack help` for the command list.
+"""
+import fcntl, hashlib, json, os, re, shlex, signal, socket, subprocess, sys, time
+from contextlib import contextmanager
+from datetime import datetime, timezone
+
+ROOT = os.environ.get("PREVIEW_STACK_ROOT", "/home/paperclip/preview-stacks")
+RECIPES = os.environ.get("PREVIEW_STACK_RECIPES", "/home/paperclip/preview-stack.d")
+PREVIEW_URL = os.environ.get("PREVIEW_URL_BIN", "/usr/local/bin/preview-url")
+BASE = os.environ.get("PREVIEW_BASE_HOST", "187-126-114-172.sslip.io")
+ENV_FILES = [".env", ".env.local", ".env.development", ".env.development.local", ".env.production", ".env.production.local"]
+MEMBER_KEYS = {"dir", "cmd", "kind", "primary", "env", "after", "ready", "workspace", "devUrl", "notes"}
+SECRETISH = re.compile(r"secret|token|pass|pwd|key|auth|private|credential|dsn", re.I)
+PH = re.compile(r"\{\{(url|port|data|dir|host|task)(?::([a-zA-Z0-9_-]+))?\}\}")
+
+HELP = """usage: preview-stack <command> ...
+
+  init <TASK>                                   create an empty stack (GRA-300)
+  add <TASK> <name> [options]                   add or replace a member (recipe for its workspace merged first)
+      --dir PATH        worktree / working dir (apps: required; services: default = its data dir)
+      --cmd CMD         serve command (apps: omit = preview-url auto-detect, production build)
+      --service         local-only process (mongod, redis-server, worker); default kind is app
+      --primary         this app gets https://<task>.<host>
+      --env K=V         repeatable; placeholders allowed
+      --after NAME      repeatable; start after NAME is ready
+      --ready SPEC      tcp | http:/path | cmd:<shell> | preview (apps default: preview-url ready + port answers)
+      --workspace NAME  recipe to merge (default: repo name of --dir)
+      --dev-url URL     deployed URL this member replaces: other members' env values pointing at it are rewritten
+      --no-recipe       do not merge the workspace recipe
+  set <TASK> <name> KEY=VALUE ...               edit fields (env.X=..., after=a,b, cmd=..., ready=..., primary=true)
+  rm <TASK> <name>                              stop and remove a member
+  plan <TASK>                                   resolved members, order, ports, URLs, rewrites (no start)
+  up <TASK> [name...] [--wait SECS]             start or refresh (default wait 100 s; idempotent, run again to go on)
+  wait <TASK> [SECS]                            up until every member is ready (default 540 s)
+  status <TASK> [--json]                        state of each member
+  logs <TASK> <name> [LINES]                    tail the member's log
+  restart <TASK> <name>                         stop the member, then up
+  env <TASK> <name>                             resolved env of a member (secret-looking values masked)
+  down <TASK>                                   stop everything, keep manifest and data
+  destroy <TASK>                                down + delete manifest, data and logs
+  list                                          all stacks
+  recipe list | show WS | save <TASK> <name> [WS] | set WS KEY=VALUE ... | rm WS
+                                                per-workspace defaults in """ + RECIPES + """
+  guide                                         agent manual
+"""
+
+GUIDE = r"""# preview-stack: agent manual
+
+Use when a task changes 2+ repos (frontend + backend, several services). QA of such a task tests the
+stack, end to end, never one repo alone: the frontend must call the new backend, not the deployed dev one.
+
+## Minimal flow (Unberry ATS dashboard + backend: ~1 min, all from recipes)
+    export HOME=/home/paperclip
+    preview-stack recipe list           # what is already known; read a recipe's notes before using it
+    preview-stack init GRA-300
+    preview-stack add GRA-300 mongo --workspace mongo      # service recipes are named by --workspace
+    preview-stack add GRA-300 redis --workspace redis
+    preview-stack add GRA-300 api --dir /home/paperclip/worktrees/GRA-301-stats-api        # recipe fills cmd/env
+    preview-stack add GRA-300 web --dir /home/paperclip/worktrees/GRA-302-stats-page --primary
+    preview-stack plan GRA-300          # check: order, ports, which frontend keys get rewritten to the new API
+    preview-stack wait GRA-300 540      # Bash timeout 600000; run again if it prints "not ready yet"
+    preview-stack status GRA-300        # URLs; the primary one is what QA opens
+
+`--dev-url` (or the recipe's `devUrl`) on the backend makes every other member whose .env* value points at
+that deployed URL get it rewritten to the backend's preview URL. Anything else: explicit env,
+`--env NEXT_PUBLIC_APP_API={{url:api}}`. Explicit env always wins; `plan` shows every rewrite.
+
+## Members are yours to define
+Any number of apps and services, any commands. Order with `--after`. Examples:
+    preview-stack add GRA-300 mongo --service --cmd 'mongod --dbpath {{data:mongo}} --port {{port:mongo}} --bind_ip 127.0.0.1 --wiredTigerCacheSizeGB 0.25'
+    preview-stack add GRA-300 redis --service --cmd 'redis-server --port {{port:redis}} --bind 127.0.0.1 --save "" --dir {{data:redis}}'
+    preview-stack add GRA-300 api --dir <wt> --cmd 'node server.js' --after mongo --after redis \
+        --env MONGO_URI='mongodb://127.0.0.1:{{port:mongo}}/ats' --env REDIS_HOST=127.0.0.1 --env REDIS_PORT={{port:redis}} \
+        --env REDIS_TLS_ENABLED=false --env CORS_ALLOWED_ORIGINS='https://*.187-126-114-172.sslip.io' --ready http:/
+    preview-stack add GRA-300 seed --service --dir <wt> --cmd 'node scripts/seed.js && sleep infinity' --after api
+Apps get PORT set; a custom --cmd must listen on $PORT (or use {{port:<self>}}). Services get PORT too.
+Commands run with the stack's PATH, not your shell's: give binaries by full path (/home/paperclip/services/bin/mongod).
+
+## Prove the wiring before QA (every new backend or recipe)
+  - `preview-stack logs <TASK> api`: the backend must connect to YOUR local services. Apps may ignore the env you
+    set: the Unberry backend reads MONGO_URI only when NODE_ENV=localhost and otherwise pulls the shared dev Atlas
+    URI from AWS Secrets Manager. grep the log for the deployed hostnames; any hit = fix the env, `restart`.
+  - The frontend bundle must call the new API: `curl -s <web url>` + its JS chunks, grep for {{url:api}} and for the
+    deployed dev URL (the latter must be gone).
+  - CORS: `curl -s -D - -o /dev/null -X OPTIONS -H "Origin: <web url>" -H "Access-Control-Request-Method: GET" <api url>/`
+    must echo the web origin.
+
+## Local infrastructure (Mongo, Redis, Postgres, ...): install it yourself, no root
+No docker, no apt, no sudo. Install user-space binaries under /home/paperclip/services/<name>/<version>/
+and symlink the binary into /home/paperclip/services/bin (put it on PATH in --cmd or use the full path):
+  - MongoDB: official Linux tarball (fastdl.mongodb.org, ubuntu2404 x86_64 build works on this host), bin/mongod.
+    Tools (mongodump/mongorestore) = the separate database-tools tarball.
+  - Redis: source tarball from download.redis.io, `make -j4`, src/redis-server.
+  - Postgres: EDB/`postgresql` binaries or build; initdb into {{data:pg}}.
+Check first (`ls /home/paperclip/services/bin`): mongod 8.0 and redis-server 7.4 are already there. Data lives only in
+{{data:<member>}}; bind 127.0.0.1 only; small memory settings (the host has ~11 GB free for everything).
+Pick the data source per task and say which in the handoff/QA description:
+  empty DB + the repo's seed script | a dump restored from the dev DB (read access only, never write back) |
+  the shared dev DB itself when the change only reads. Never production.
+Deployed dependencies the VPS cannot reach (VPC-only Redis/ElastiCache, private hosts) -> run a local one.
+
+## Recipes: write down what you learned
+Once a member works, save it: `preview-stack recipe save GRA-300 api unberry-ats-backend`. Next time
+`add --dir <worktree of that repo>` pre-fills cmd, env, ready, after, devUrl. Edit with `recipe set`.
+Recipes live in /home/paperclip/preview-stack.d/<workspace>.json. Never put secret values in a recipe:
+secrets come from the worktree's own .env files (build-start copies them from the primary clone).
+Add a `Vault candidate:` line for the Memory issue when a recipe is new.
+
+## Gotchas
+  - Process env beats .env* for Next, CRA and Vite. `env-cmd -f .env.local` (some CRA scripts) overrides it:
+    use --cmd with the bare tool (`npx react-scripts build && node …`) or keep the default auto-detect.
+  - NEXT_PUBLIC_*/REACT_APP_*/VITE_* are baked at build time: a changed URL rebuilds automatically on `up`.
+  - A browser app calls APIs from the user's browser: point it at public URLs ({{url:api}}), never localhost.
+    Server-side code may use http://127.0.0.1:{{port:api}}.
+  - Backends with a CORS allowlist need the preview origin: https://*.187-126-114-172.sslip.io.
+  - `up` is idempotent and cheap: unchanged members are skipped, changed ones (new commit, new env) rebuilt.
+  - `logs <name>` first when something is not ready. `restart <name>` after fixing its env.
+  - Cleanup after acceptance: `preview-stack destroy <TASK>`. The reaper stops stacks idle > 1 h (keeps data).
+"""
+
+
+def die(msg, code=1):
+    print(msg, file=sys.stderr)
+    sys.exit(code)
+
+
+def now():
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def task_key(t):
+    t = t.strip()
+    if not re.fullmatch(r"[A-Za-z][A-Za-z0-9-]{0,40}", t):
+        die(f"bad task id {t!r} (expected something like GRA-300)")
+    return t.upper()
+
+
+def sdir(task):
+    return os.path.join(ROOT, task)
+
+
+def load_json(p, default):
+    try:
+        with open(p) as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return default
+
+
+def save_json(p, data):
+    os.makedirs(os.path.dirname(p), exist_ok=True)
+    tmp = p + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(data, f, indent=2)
+    os.replace(tmp, p)
+
+
+@contextmanager
+def locked(task):
+    os.makedirs(sdir(task), exist_ok=True)
+    with open(os.path.join(sdir(task), ".lock"), "w") as lf:
+        fcntl.flock(lf, fcntl.LOCK_EX)
+        yield
+
+
+def manifest(task, must=True):
+    m = load_json(os.path.join(sdir(task), "stack.json"), None)
+    if m is None and must:
+        die(f"no stack {task}: preview-stack init {task}")
+    return m
+
+
+def save_manifest(task, m):
+    save_json(os.path.join(sdir(task), "stack.json"), m)
+
+
+def state(task):
+    return load_json(os.path.join(sdir(task), "state.json"), {"ports": {}, "services": {}})
+
+
+def save_state(task, st):
+    save_json(os.path.join(sdir(task), "state.json"), st)
+
+
+def slug(task, name, mem):
+    return task.lower() if mem.get("primary") else f"{task.lower()}-{name.lower()}"
+
+
+def public_url(task, name, mem):
+    return f"https://{slug(task, name, mem)}.{BASE}"
+
+
+def data_dir(task, name):
+    d = os.path.join(sdir(task), "data", name)
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def log_path(task, name):
+    d = os.path.join(sdir(task), "logs")
+    os.makedirs(d, exist_ok=True)
+    return os.path.join(d, f"{name}.log")
+
+
+def free_port(taken):
+    import random
+    for _ in range(200):
+        p = random.randint(4100, 4999)
+        if p in taken:
+            continue
+        s = socket.socket()
+        try:
+            s.bind(("127.0.0.1", p))
+            s.close()
+            return p
+        except OSError:
+            s.close()
+    die("no free port in 4100-4999")
+
+
+def ports(task, m, st):
+    """Stable port per member, allocated once and kept in state."""
+    taken = set(st["ports"].values())
+    for name in m["members"]:
+        if name not in st["ports"]:
+            p = free_port(taken)
+            st["ports"][name] = p
+            taken.add(p)
+    for name in list(st["ports"]):
+        if name not in m["members"]:
+            st["ports"].pop(name)
+    return st["ports"]
+
+
+def workspace_of(dir_):
+    if not dir_:
+        return None
+    try:
+        url = subprocess.run(["git", "-C", dir_, "remote", "get-url", "origin"], capture_output=True, text=True, timeout=10).stdout.strip()
+    except Exception:
+        url = ""
+    if url:
+        return re.sub(r"\.git$", "", url.rstrip("/").split("/")[-1].split(":")[-1])
+    return None
+
+
+def recipe(ws):
+    if not ws:
+        return {}
+    return load_json(os.path.join(RECIPES, f"{ws}.json"), {})
+
+
+def kv(items, flag="--env"):
+    out = {}
+    for it in items:
+        if "=" not in it:
+            die(f"{flag} expects KEY=VALUE, got {it!r}")
+        k, v = it.split("=", 1)
+        out[k] = v
+    return out
+
+
+def parse_env_file(p):
+    out = {}
+    try:
+        with open(p) as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                line = re.sub(r"^export\s+", "", line)
+                if "=" not in line:
+                    continue
+                k, v = line.split("=", 1)
+                v = v.strip()
+                if len(v) >= 2 and v[0] == v[-1] and v[0] in "\"'":
+                    v = v[1:-1]
+                else:
+                    v = re.sub(r"\s+#.*$", "", v)
+                out[k.strip()] = v
+    except OSError:
+        pass
+    return out
+
+
+def norm_url(u):
+    return u.strip().rstrip("/").lower()
+
+
+def rewrites(task, m, name, mem):
+    """Env keys in this member's .env* files whose value points at another member's devUrl."""
+    targets = []
+    for other, om in m["members"].items():
+        if other != name and om.get("devUrl"):
+            targets.append((norm_url(om["devUrl"]), other, om))
+    if not targets or not mem.get("dir"):
+        return {}
+    found = {}
+    for fn in ENV_FILES:
+        for k, v in parse_env_file(os.path.join(mem["dir"], fn)).items():
+            nv = norm_url(v)
+            for dev, other, om in targets:
+                if nv == dev or nv.startswith(dev + "/"):
+                    rest = v.strip()[len(om["devUrl"].rstrip("/")):]
+                    found[k] = (public_url(task, other, om) + rest, other)
+    return found
+
+
+def subst(task, m, st, s, self_name):
+    def rep(mo):
+        kind, ref = mo.group(1), mo.group(2)
+        if kind == "host":
+            return "127.0.0.1"
+        if kind == "task":
+            return task
+        ref = ref or self_name
+        if ref not in m["members"]:
+            die(f"placeholder {mo.group(0)} names unknown member {ref!r}")
+        if kind == "url":
+            return public_url(task, ref, m["members"][ref])
+        if kind == "port":
+            return str(st["ports"][ref])
+        if kind == "data":
+            return data_dir(task, ref)
+        if kind == "dir":
+            return m["members"][ref].get("dir") or data_dir(task, ref)
+    return PH.sub(rep, s)
+
+
+def resolved_env(task, m, st, name):
+    mem = m["members"][name]
+    env = {k: v for k, (v, _) in rewrites(task, m, name, mem).items()}
+    env.update({k: subst(task, m, st, str(v), name) for k, v in (mem.get("env") or {}).items()})
+    return env
+
+
+def order(m, only=None, strict=True):
+    names = list(m["members"])
+    seen, out = set(), []
+
+    def visit(n, stack=()):
+        if n in seen:
+            return
+        if n in stack:
+            die(f"dependency cycle: {' -> '.join(stack + (n,))}")
+        mem = m["members"].get(n)
+        if mem is None:
+            if not strict:
+                return
+            die(f"--after names unknown member {n!r}")
+        for d in mem.get("after") or []:
+            visit(d, stack + (n,))
+        seen.add(n)
+        out.append(n)
+
+    for n in (only or names):
+        visit(n)
+    return out
+
+
+def alive(pid):
+    try:
+        os.kill(int(pid), 0)
+    except Exception:
+        return False
+    try:  # a child that exited but was not reaped yet is a zombie, not alive
+        with open(f"/proc/{int(pid)}/stat") as f:
+            return f.read().rsplit(")", 1)[1].split()[0] != "Z"
+    except OSError:
+        return True
+
+
+def port_open(p):
+    s = socket.socket()
+    s.settimeout(1)
+    try:
+        s.connect(("127.0.0.1", int(p)))
+        return True
+    except OSError:
+        return False
+    finally:
+        s.close()
+
+
+def http_ok(p, path):
+    try:
+        r = subprocess.run(["curl", "-s", "-o", "/dev/null", "-m", "5", "-w", "%{http_code}", f"http://127.0.0.1:{p}{path}"],
+                           capture_output=True, text=True, timeout=10)
+        code = int(r.stdout or 0)
+        return 0 < code < 500
+    except Exception:
+        return False
+
+
+def pu(args, env=None, cwd=None):
+    e = dict(os.environ)
+    e.update(env or {})
+    return subprocess.run([PREVIEW_URL] + args, capture_output=True, text=True, env=e, cwd=cwd, timeout=120)
+
+
+def pu_status(sl):
+    return (pu(["status", sl]).stdout or "").strip()
+
+
+def is_app(mem):
+    return mem.get("kind", "app") == "app"
+
+
+def ready(task, m, st, name):
+    """(ready: bool, detail: str)"""
+    mem = m["members"][name]
+    p = st["ports"].get(name)
+    spec = mem.get("ready") or ("preview" if is_app(mem) else "tcp")
+    if is_app(mem):
+        s = pu_status(slug(task, name, mem))
+        if s.startswith("failed") or s == "not running":
+            return False, s
+        if not s.startswith("ready"):
+            return False, s
+        base = s
+    else:
+        svc = st["services"].get(name)
+        if not svc:
+            return False, "not running"
+        if not alive(svc.get("pid", 0)):
+            return False, f"failed: exited (preview-stack logs {task} {name})"
+        base = "running"
+    if spec == "preview" or spec == "tcp":
+        return (port_open(p), base if port_open(p) else f"{base}, port {p} not answering")
+    if spec.startswith("http:"):
+        ok = http_ok(p, spec[5:] or "/")
+        return ok, base if ok else f"{base}, {spec} not answering"
+    if spec.startswith("cmd:"):
+        cmd = subst(task, m, st, spec[4:], name)
+        ok = subprocess.run(["bash", "-c", cmd], capture_output=True, timeout=30).returncode == 0
+        return ok, base if ok else f"{base}, ready check failing"
+    return False, f"unknown ready spec {spec!r}"
+
+
+def fp(obj):
+    return hashlib.sha256(json.dumps(obj, sort_keys=True).encode()).hexdigest()[:16]
+
+
+def stop_service(st, name):
+    svc = st["services"].pop(name, None)
+    if svc and alive(svc.get("pid", 0)):
+        try:
+            os.killpg(int(svc["pid"]), signal.SIGTERM)
+        except Exception:
+            try:
+                os.kill(int(svc["pid"]), signal.SIGTERM)
+            except Exception:
+                pass
+        for _ in range(20):
+            if not alive(svc["pid"]):
+                break
+            time.sleep(0.5)
+        if alive(svc["pid"]):
+            try:
+                os.killpg(int(svc["pid"]), signal.SIGKILL)
+            except Exception:
+                pass
+
+
+def stop_app(task, name, mem):
+    pu(["stop"], env={"PREVIEW_SLUG": slug(task, name, mem)}, cwd=mem.get("dir") if mem.get("dir") and os.path.isdir(mem["dir"]) else "/tmp")
+
+
+def start_member(task, m, st, name):
+    """Start or refresh one member. Returns a short note."""
+    mem = m["members"][name]
+    p = st["ports"][name]
+    env = resolved_env(task, m, st, name)
+    base_env = {"PORT": str(p)}
+    if is_app(mem):
+        d = mem.get("dir")
+        if not d or not os.path.isdir(d):
+            return f"dir missing: {d}"
+        e = dict(base_env)
+        e.update(env)
+        e.update({"PREVIEW_SLUG": slug(task, name, mem), "PREVIEW_PORT": str(p), "PREVIEW_STACK": task,
+                  "PREVIEW_FP_EXTRA": fp({"env": env, "cmd": mem.get("cmd")})})
+        args = ["start"] + ([subst(task, m, st, mem["cmd"], name)] if mem.get("cmd") else [])
+        r = pu(args, env=e, cwd=d)
+        if r.returncode != 0:
+            return f"preview-url start failed: {(r.stderr or r.stdout).strip()[:300]}"
+        return (r.stderr or "").strip().splitlines()[-1] if r.stderr.strip() else "started"
+    cmd = subst(task, m, st, mem.get("cmd") or "", name)
+    if not cmd:
+        return "service has no cmd"
+    cwd = mem.get("dir") or data_dir(task, name)
+    want = fp({"cmd": cmd, "env": env, "cwd": cwd})
+    svc = st["services"].get(name) or {}
+    if alive(svc.get("pid", 0)) and svc.get("fp") == want:
+        return "unchanged"
+    if svc:
+        stop_service(st, name)
+    e = dict(os.environ)
+    e.update(base_env)
+    e.update(env)
+    with open(log_path(task, name), "a") as lf:
+        lf.write(f"== {now()} start: {cmd}\n")
+        lf.flush()
+        proc = subprocess.Popen(["bash", "-c", f"exec {cmd}"], cwd=cwd, env=e, stdout=lf, stderr=subprocess.STDOUT,
+                                stdin=subprocess.DEVNULL, start_new_session=True)
+    st["services"][name] = {"pid": proc.pid, "fp": want, "startedAt": now()}
+    return "started"
+
+
+def up(task, only=None, wait=100):
+    deadline = time.time() + wait
+    started, notes = set(), {}
+    while True:
+        with locked(task):
+            m = manifest(task)
+            st = state(task)
+            ports(task, m, st)
+            names = order(m, only)
+            status = {}
+            for n in names:
+                mem = m["members"][n]
+                deps = mem.get("after") or []
+                if n not in started:
+                    if all(status.get(d, (False,))[0] or ready(task, m, st, d)[0] for d in deps):
+                        notes[n] = start_member(task, m, st, n)
+                        started.add(n)
+                    else:
+                        status[n] = (False, "waiting for " + ", ".join(d for d in deps))
+                        continue
+                status[n] = ready(task, m, st, n)
+            save_state(task, st)
+        if all(s[0] for s in status.values()) or time.time() > deadline:
+            break
+        if any(s[1].startswith("failed") for s in status.values()):
+            break
+        time.sleep(3)
+    print_status(task, m, st, status, notes)
+    return all(s[0] for s in status.values())
+
+
+def print_status(task, m, st, status=None, notes=None):
+    status = dict(status or {})
+    for n in order(m, strict=False):
+        mem = m["members"][n]
+        if n not in status:
+            status[n] = ready(task, m, st, n)
+        ok, detail = status[n]
+        where = public_url(task, n, mem) if is_app(mem) else f"127.0.0.1:{st['ports'].get(n, '?')}"
+        extra = f"  [{notes[n]}]" if notes and n in notes and notes[n] not in ("unchanged",) else ""
+        print(f"{'READY' if ok else 'WAIT '}  {n:<12} {mem.get('kind', 'app'):<8} {where:<52} {detail}{extra}")
+    if status and not all(s[0] for s in status.values()):
+        print(f"not ready yet: run `preview-stack wait {task}` again, or `preview-stack logs {task} <name>`")
+
+
+def cmd_init(a):
+    task = task_key(a[0])
+    with locked(task):
+        if manifest(task, must=False):
+            print(f"stack {task} exists")
+            return
+        save_manifest(task, {"task": task, "createdAt": now(), "members": {}})
+    print(f"stack {task} created: {sdir(task)}")
+
+
+def cmd_add(a):
+    if len(a) < 2:
+        die("usage: preview-stack add <TASK> <name> [options]")
+    task, name = task_key(a[0]), a[1]
+    if not re.fullmatch(r"[a-z][a-z0-9-]{0,20}", name):
+        die("member name: lowercase letters, digits, dashes (api, web, mongo)")
+    opts = {"env": [], "after": []}
+    i = 2
+    flags = {"--dir": "dir", "--cmd": "cmd", "--ready": "ready", "--workspace": "workspace", "--dev-url": "devUrl", "--notes": "notes"}
+    while i < len(a):
+        f = a[i]
+        if f in flags:
+            opts[flags[f]] = a[i + 1]
+            i += 2
+        elif f == "--env":
+            opts["env"].append(a[i + 1]); i += 2
+        elif f == "--after":
+            opts["after"] += [x for x in a[i + 1].split(",") if x]; i += 2
+        elif f == "--service":
+            opts["kind"] = "service"; i += 1
+        elif f == "--primary":
+            opts["primary"] = True; i += 1
+        elif f == "--no-recipe":
+            opts["norecipe"] = True; i += 1
+        else:
+            die(f"unknown option {f}")
+    if opts.get("dir"):
+        opts["dir"] = os.path.abspath(opts["dir"])
+        if not os.path.isdir(opts["dir"]):
+            die(f"--dir {opts['dir']} does not exist")
+    ws = opts.get("workspace") or workspace_of(opts.get("dir"))
+    mem = {}
+    if not opts.pop("norecipe", False):
+        rec = recipe(ws)
+        mem.update({k: v for k, v in rec.items() if k in MEMBER_KEYS and k != "dir"})
+        if rec:
+            print(f"recipe {ws} applied")
+    envs = dict(mem.get("env") or {})
+    envs.update(kv(opts.pop("env")))
+    after = list(dict.fromkeys((mem.get("after") or []) + opts.pop("after")))
+    mem.update(opts)
+    mem["env"] = envs
+    mem["after"] = after
+    if ws:
+        mem["workspace"] = ws
+    mem.setdefault("kind", "app")
+    if is_app(mem) and not mem.get("dir"):
+        die("an app needs --dir (its worktree)")
+    with locked(task):
+        m = manifest(task)
+        if mem.get("primary"):
+            for o in m["members"].values():
+                o.pop("primary", None)
+        m["members"][name] = mem
+        save_manifest(task, m)
+    missing = [d for d in after if d not in m["members"]]
+    print(f"member {name} ({mem['kind']}) set" + (f"; after {missing} not defined yet" if missing else ""))
+
+
+def set_field(mem, key, val):
+    if key.startswith("env."):
+        mem.setdefault("env", {})
+        if val == "":
+            mem["env"].pop(key[4:], None)
+        else:
+            mem["env"][key[4:]] = val
+        return
+    if key not in MEMBER_KEYS:
+        die(f"unknown field {key} (fields: {', '.join(sorted(MEMBER_KEYS))}, env.KEY)")
+    if key == "after":
+        mem[key] = [x for x in val.split(",") if x]
+    elif key == "primary":
+        mem[key] = val.lower() in ("1", "true", "yes")
+    elif val == "":
+        mem.pop(key, None)
+    else:
+        mem[key] = val
+
+
+def cmd_set(a):
+    task, name = task_key(a[0]), a[1]
+    with locked(task):
+        m = manifest(task)
+        if name not in m["members"]:
+            die(f"no member {name}")
+        for kvp in a[2:]:
+            k, v = kvp.split("=", 1) if "=" in kvp else die(f"expected KEY=VALUE, got {kvp}")
+            if k == "primary" and v.lower() in ("1", "true", "yes"):
+                for o in m["members"].values():
+                    o.pop("primary", None)
+            set_field(m["members"][name], k, v)
+        save_manifest(task, m)
+    print(f"member {name} updated; run preview-stack up {task}")
+
+
+def cmd_rm(a):
+    task, name = task_key(a[0]), a[1]
+    with locked(task):
+        m = manifest(task)
+        mem = m["members"].pop(name, None)
+        if mem is None:
+            die(f"no member {name}")
+        st = state(task)
+        stop_app(task, name, mem) if is_app(mem) else stop_service(st, name)
+        st["ports"].pop(name, None)
+        save_state(task, st)
+        save_manifest(task, m)
+    print(f"removed {name}")
+
+
+def cmd_plan(a):
+    task = task_key(a[0])
+    with locked(task):
+        m = manifest(task)
+        st = state(task)
+        ports(task, m, st)
+        save_state(task, st)
+    for n in order(m):
+        mem = m["members"][n]
+        url = public_url(task, n, mem) if is_app(mem) else "-"
+        print(f"{n}: {mem.get('kind', 'app')} port {st['ports'][n]} url {url}")
+        print(f"   dir {mem.get('dir') or data_dir(task, n)}")
+        print(f"   cmd {subst(task, m, st, mem['cmd'], n) if mem.get('cmd') else '(preview-url auto-detect, production build)'}")
+        if mem.get("after"):
+            print(f"   after {', '.join(mem['after'])}")
+        for k, (v, other) in sorted(rewrites(task, m, n, mem).items()):
+            flag = " (overridden by explicit env)" if k in (mem.get("env") or {}) else ""
+            print(f"   rewrite {k} -> {v}  (was {other}'s devUrl){flag}")
+        for k, v in sorted((mem.get("env") or {}).items()):
+            print(f"   env {k}={mask(k, subst(task, m, st, str(v), n))}")
+
+
+def mask(k, v):
+    if SECRETISH.search(k) and not v.startswith("http"):
+        return v[:3] + "…" if len(v) > 6 else "…"
+    return re.sub(r"(://[^:/@]+:)[^@]+@", r"\1***@", v)
+
+
+def cmd_up(a):
+    task = task_key(a[0])
+    wait = 100
+    rest = []
+    i = 1
+    while i < len(a):
+        if a[i] == "--wait":
+            wait = int(a[i + 1]); i += 2
+        else:
+            rest.append(a[i]); i += 1
+    sys.exit(0 if up(task, rest or None, wait) else 3)
+
+
+def cmd_wait(a):
+    task = task_key(a[0])
+    sys.exit(0 if up(task, None, int(a[1]) if len(a) > 1 else 540) else 3)
+
+
+def cmd_status(a):
+    task = task_key(a[0])
+    m = manifest(task)
+    st = state(task)
+    if "--json" in a:
+        out = {}
+        for n, mem in m["members"].items():
+            ok, detail = ready(task, m, st, n)
+            out[n] = {"kind": mem.get("kind", "app"), "ready": ok, "detail": detail, "port": st["ports"].get(n),
+                      "url": public_url(task, n, mem) if is_app(mem) else None,
+                      "primary": bool(mem.get("primary")), "dir": mem.get("dir")}
+        print(json.dumps(out, indent=2))
+        return
+    print_status(task, m, st)
+
+
+def cmd_logs(a):
+    task, name = task_key(a[0]), a[1]
+    lines = a[2] if len(a) > 2 else "60"
+    m = manifest(task)
+    mem = m["members"].get(name) or die(f"no member {name}")
+    p = os.path.join(os.environ.get("PREVIEW_LOGDIR", "/home/paperclip/preview-logs"), slug(task, name, mem) + ".log") if is_app(mem) else log_path(task, name)
+    print(f"== {p}")
+    subprocess.run(["tail", "-n", str(lines), p])
+
+
+def cmd_restart(a):
+    task, name = task_key(a[0]), a[1]
+    with locked(task):
+        m = manifest(task)
+        mem = m["members"].get(name) or die(f"no member {name}")
+        st = state(task)
+        stop_app(task, name, mem) if is_app(mem) else stop_service(st, name)
+        save_state(task, st)
+    sys.exit(0 if up(task, [name], 100) else 3)
+
+
+def cmd_env(a):
+    task, name = task_key(a[0]), a[1]
+    m = manifest(task)
+    st = state(task)
+    ports(task, m, st)
+    if name not in m["members"]:
+        die(f"no member {name}")
+    env = {"PORT": str(st["ports"][name])}
+    env.update(resolved_env(task, m, st, name))
+    for k, v in sorted(env.items()):
+        print(f"{k}={mask(k, v)}")
+
+
+def down(task, purge=False):
+    with locked(task):
+        m = manifest(task, must=False) or {"members": {}}
+        st = state(task)
+        for n in reversed(order(m, strict=False)):
+            mem = m["members"][n]
+            stop_app(task, n, mem) if is_app(mem) else stop_service(st, n)
+        for n in list(st.get("services", {})):
+            stop_service(st, n)
+        save_state(task, st)
+    if purge:
+        subprocess.run(["rm", "-rf", sdir(task)])
+
+
+def cmd_down(a):
+    task = task_key(a[0])
+    down(task)
+    print(f"stack {task} stopped (manifest and data kept; `preview-stack up {task}` brings it back)")
+
+
+def cmd_destroy(a):
+    task = task_key(a[0])
+    down(task, purge=True)
+    print(f"stack {task} destroyed")
+
+
+def cmd_list(a):
+    if not os.path.isdir(ROOT):
+        return
+    for t in sorted(os.listdir(ROOT)):
+        m = manifest(t, must=False)
+        if not m:
+            continue
+        st = state(t)
+        live = sum(1 for s in st.get("services", {}).values() if alive(s.get("pid", 0)))
+        print(f"{t}: {', '.join(m['members'])}  (services alive: {live})")
+
+
+def cmd_recipe(a):
+    if not a or a[0] == "list":
+        if os.path.isdir(RECIPES):
+            for f in sorted(os.listdir(RECIPES)):
+                if f.endswith(".json"):
+                    r = load_json(os.path.join(RECIPES, f), {})
+                    print(f"{f[:-5]}: {r.get('kind', 'app')}  {r.get('notes', '')}")
+        return
+    op = a[0]
+    if op == "show":
+        print(json.dumps(recipe(a[1]), indent=2))
+    elif op == "save":
+        task, name = task_key(a[1]), a[2]
+        m = manifest(task)
+        mem = m["members"].get(name) or die(f"no member {name}")
+        ws = a[3] if len(a) > 3 else mem.get("workspace") or die("no workspace known: preview-stack recipe save <TASK> <name> <workspace>")
+        rec = {k: v for k, v in mem.items() if k in MEMBER_KEYS and k not in ("dir", "primary", "workspace")}
+        leaks = [k for k, v in (rec.get("env") or {}).items() if v and SECRETISH.search(k) and not PH.search(str(v)) and not str(v).startswith("http")]
+        if leaks:
+            die(f"refusing: env {leaks} look like secrets; secrets stay in the repo's .env files, not recipes "
+                f"(preview-stack set {task} {name} env.KEY= to drop them, then save)")
+        rec["savedFrom"] = f"{task}/{name} {now()}"
+        save_json(os.path.join(RECIPES, f"{ws}.json"), rec)
+        print(f"recipe {ws} saved")
+    elif op == "set":
+        ws = a[1]
+        rec = recipe(ws)
+        for kvp in a[2:]:
+            k, v = kvp.split("=", 1)
+            set_field(rec, k, v)
+        save_json(os.path.join(RECIPES, f"{ws}.json"), rec)
+        print(f"recipe {ws} updated")
+    elif op == "rm":
+        try:
+            os.remove(os.path.join(RECIPES, f"{a[1]}.json"))
+        except FileNotFoundError:
+            pass
+        print(f"recipe {a[1]} removed")
+    else:
+        die("recipe list | show WS | save <TASK> <name> [WS] | set WS KEY=VALUE ... | rm WS")
+
+
+CMDS = {"init": cmd_init, "add": cmd_add, "set": cmd_set, "rm": cmd_rm, "plan": cmd_plan, "up": cmd_up, "wait": cmd_wait,
+        "status": cmd_status, "logs": cmd_logs, "restart": cmd_restart, "env": cmd_env, "down": cmd_down,
+        "destroy": cmd_destroy, "list": cmd_list, "recipe": cmd_recipe}
+
+if __name__ == "__main__":
+    argv = sys.argv[1:]
+    if not argv or argv[0] in ("help", "-h", "--help"):
+        print(HELP)
+    elif argv[0] == "guide":
+        print(GUIDE)
+    elif argv[0] in CMDS:
+        need = {"init": 1, "add": 2, "set": 3, "rm": 2, "plan": 1, "up": 1, "wait": 1, "status": 1, "logs": 2, "restart": 2, "env": 2, "down": 1, "destroy": 1}
+        if len(argv) - 1 < need.get(argv[0], 0):
+            die(HELP)
+        CMDS[argv[0]](argv[1:])
+    else:
+        die(HELP)

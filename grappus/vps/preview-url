@@ -8,6 +8,9 @@
 #   preview-url url               print the URL if registered
 #   preview-url list              all registered previews
 # Slug = issue identifier from the branch name (GRA-28-foo -> gra-28), else directory name.
+# preview-stack drives this script through env: PREVIEW_SLUG (slug), PREVIEW_PORT (port), PREVIEW_STACK (registry
+# tag, so the reaper treats a stack as one unit) and PREVIEW_FP_EXTRA (hash of the injected env: a changed backend
+# URL rebuilds). Any other variable in the environment reaches the build and the server and beats .env* files.
 #
 # Production mode: Next -> `next build` + `next start`; Vite -> `vite build` + `vite preview`;
 # CRA (react-scripts) -> `npm run build` + a static SPA server. `start` returns at once and the build runs
@@ -15,14 +18,15 @@
 # back to the dev server, and `status` says so. A `start` on a running production preview rebuilds it
 # when the worktree changed since that build (fix rounds); a dev preview hot-reloads and is left alone.
 set -euo pipefail
-REG=/home/paperclip/preview-registry.json
+REG=${PREVIEW_REGISTRY:-/home/paperclip/preview-registry.json}
 BASE=187-126-114-172.sslip.io
-LOGDIR=/home/paperclip/preview-logs; mkdir -p "$LOGDIR"
+LOGDIR=${PREVIEW_LOGDIR:-/home/paperclip/preview-logs}; mkdir -p "$LOGDIR"
 [ -f "$REG" ] || echo "{}" > "$REG"
 SELF=$(readlink -f "$0")
 
 slug_from_cwd() {
   local branch s
+  [ -n "${PREVIEW_SLUG:-}" ] && { printf '%s' "$PREVIEW_SLUG" | tr 'A-Z' 'a-z'; return; }
   branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)
   s=$(printf '%s' "${branch:-$(basename "$PWD")}" | grep -oiE '^[a-z]+-[0-9]+' | tr 'A-Z' 'a-z' || true)
   [ -n "$s" ] || s=$(basename "$PWD" | tr 'A-Z' 'a-z' | tr -c 'a-z0-9\n' '-' | cut -c1-40)
@@ -33,7 +37,9 @@ reg() { python3 - "$REG" "$@" <<'PY'
 import json,sys
 p=sys.argv[1]; op=sys.argv[2]; slug=sys.argv[3]
 r=json.load(open(p))
-if op=="set": r[slug]={"port":int(sys.argv[4]),"cwd":sys.argv[5],"pid":int(sys.argv[6]),"startedAt":sys.argv[7],"lastHit":None,"state":"building","mode":sys.argv[8]}
+if op=="set":
+    r[slug]={"port":int(sys.argv[4]),"cwd":sys.argv[5],"pid":int(sys.argv[6]),"startedAt":sys.argv[7],"lastHit":None,"state":"building","mode":sys.argv[8]}
+    if len(sys.argv)>9 and sys.argv[9]: r[slug]["stack"]=sys.argv[9]
 elif op=="state":
     if slug in r: r[slug]["state"]=sys.argv[4]
 elif op=="del": r.pop(slug,None)
@@ -50,7 +56,7 @@ PY
 }
 # What the build was made from: HEAD plus uncommitted changes (ignoring build output).
 fingerprint() {
-  { git rev-parse HEAD 2>/dev/null; git status --porcelain --untracked-files=all 2>/dev/null | grep -vE ' (\.next|dist|build)/'; git diff 2>/dev/null; } | sha256sum | cut -c1-16
+  { echo "${PREVIEW_FP_EXTRA:-}"; git rev-parse HEAD 2>/dev/null; git status --porcelain --untracked-files=all 2>/dev/null | grep -vE ' (\.next|dist|build)/'; git diff 2>/dev/null; } | sha256sum | cut -c1-16
 }
 running() { [ -f "$LOGDIR/$1.pid" ] && kill -0 "$(cat "$LOGDIR/$1.pid")" 2>/dev/null; }
 stop_slug() {
@@ -125,6 +131,7 @@ run_worker() {
     local unsafe=""
     if [ -f .env.production ]; then
       for k in $(grep -oE '^[A-Za-z_][A-Za-z0-9_]*' .env.production | sort -u); do
+        [ -n "${!k+x}" ] && continue   # set in the environment (preview-stack): beats .env.production
         grep -qsE "^$k=" .env.local .env.production.local || unsafe="$unsafe $k"
       done
     fi
@@ -139,7 +146,7 @@ run_worker() {
       echo "== $(date -u +%FT%TZ) serve: $serve"
       echo "starting prod" > "$st"; reg state "$slug" "starting prod"
       (for _ in $(seq 1 120); do sleep 1; curl -s -o /dev/null "http://127.0.0.1:$port/" && { echo "ready prod" > "$st"; reg state "$slug" "ready prod"; break; }; done) &
-      exec bash -c "exec $serve"
+      exec bash -c "$serve"
     fi
     echo "== $(date -u +%FT%TZ) build FAILED, falling back to dev: $dev"
     mode=dev-fallback
@@ -148,7 +155,7 @@ run_worker() {
   local ready="ready dev"; [ "$mode" = dev-fallback ] && ready="ready dev (build failed)"
   echo "starting dev" > "$st"; reg state "$slug" "starting dev"
   (for _ in $(seq 1 180); do sleep 1; curl -s -o /dev/null "http://127.0.0.1:$port/" && { echo "$ready" > "$st"; reg state "$slug" "$ready"; break; }; done) &
-  exec bash -c "exec $dev"
+  exec bash -c "$dev"
 }
 
 status_of() {
@@ -177,7 +184,7 @@ case "${1:-url}" in
       echo "worktree changed since the last build: rebuilding" >&2
       stop_slug "$slug"
     fi
-    port=$(free_port)
+    port=${PREVIEW_PORT:-$(free_port)}
     write_static_server
     dev=$(detect_dev "$port" || true)
     if [ -n "$cmd" ]; then build=""; serve="$cmd"; mode=custom
@@ -186,13 +193,13 @@ case "${1:-url}" in
     else mode=dev; fi
     [ "$mode" = dev ] && [ -z "$dev" ] && { echo "cannot auto-detect how to run this app; pass one: preview-url start '<command>'" >&2; exit 2; }
     if [ "$mode" = custom ]; then
-      echo "starting custom" > "$LOGDIR/$slug.state"
-      PORT=$port setsid bash -c "exec $serve" >"$LOGDIR/$slug.log" 2>&1 < /dev/null &
+      echo "ready custom" > "$LOGDIR/$slug.state"   # no build step; readiness = the port answering
+      PORT=$port setsid bash -c "$serve" >"$LOGDIR/$slug.log" 2>&1 < /dev/null &
     else
       PORT=$port setsid "$SELF" _run "$slug" "$port" "$mode" "$build" "$serve" "$dev" >"$LOGDIR/$slug.log" 2>&1 < /dev/null &
     fi
     pid=$!; echo $pid > "$LOGDIR/$slug.pid"; echo "$fp" > "$LOGDIR/$slug.fp"
-    reg set "$slug" "$port" "$PWD" "$pid" "$(date -u +%FT%TZ)" "$mode"
+    reg set "$slug" "$port" "$PWD" "$pid" "$(date -u +%FT%TZ)" "$mode" "${PREVIEW_STACK:-}"
     [ "$mode" = custom ] && reg state "$slug" "ready custom"
     echo "$url"
     echo "status: $(status_of "$slug") (poll: preview-url status; block: preview-url wait)" >&2
