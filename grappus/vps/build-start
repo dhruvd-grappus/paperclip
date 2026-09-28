@@ -63,6 +63,10 @@ ENVCOPIED=false
 if [ -f "$PRIMARY/.env.local" ] && [ ! -f "$DIR/.env.local" ]; then cp -n "$PRIMARY/.env.local" "$DIR/.env.local"; fi
 # Backends often keep their config in a gitignored .env instead (Unberry ATS backend); copy it only when git ignores it.
 if [ -f "$PRIMARY/.env" ] && [ ! -e "$DIR/.env" ] && git -C "$DIR" check-ignore -q .env; then cp -n "$PRIMARY/.env" "$DIR/.env"; fi
+# Mobile apps keep Firebase config next to the env file, gitignored (Expo, Flutter, native): copy it the same way.
+for f in GoogleService-Info.plist GoogleService-Info.production.plist google-services.json; do
+  [ -f "$PRIMARY/$f" ] && [ ! -e "$DIR/$f" ] && git -C "$DIR" check-ignore -q "$f" && cp -n "$PRIMARY/$f" "$DIR/$f"
+done
 { [ -f "$DIR/.env.local" ] || [ -f "$DIR/.env" ]; } && ENVCOPIED=true
 if [ -d "$DIR/.husky" ] && [ -f "$DIR/package.json" ]; then ( cd "$DIR" && git config core.hooksPath .husky ) || true; fi
 HOST=$(git -C "$PRIMARY" remote get-url origin 2>/dev/null | sed -E 's#^(ssh://)?(git@|https://)##; s#[:/].*##')

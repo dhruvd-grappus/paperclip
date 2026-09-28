@@ -144,7 +144,7 @@ case "$cmd" in
       [ -n "$dev" ] || { echo "no simulator booted: mac sim <mac> boot" >&2; exit 3; }'
     java='export PATH="$HOME/.maestro/bin:$PATH"; for j in /opt/homebrew/opt/openjdk@17 /opt/homebrew/opt/openjdk /usr/local/opt/openjdk@17; do [ -x $j/bin/java ] && export JAVA_HOME=$j && break; done'
     pull() { mkdir -p "$out"; rsync -r -e "ssh ${SSHO[*]}" "$(target "$n"):$art/" "$out/" && echo "artifacts: $out" && ls "$out" | head -20; }
-    cfg=""; except=""; sub=.; args=(); while [ $# -gt 0 ]; do case "$1" in --config) cfg=$2; shift 2;; --except) except=$2; shift 2;; --path) sub=$2; shift 2;; --with-env) WITH_ENV=1; shift;; *) args+=("$1"); shift;; esac; done; set -- "${args[@]+"${args[@]}"}"
+    cfg=""; except=""; sub=.; go=0; args=(); while [ $# -gt 0 ]; do case "$1" in --config) cfg=$2; shift 2;; --except) except=$2; shift 2;; --path) sub=$2; shift 2;; --with-env) WITH_ENV=1; shift;; --go) go=1; shift;; *) args+=("$1"); shift;; esac; done; set -- "${args[@]+"${args[@]}"}"
     case "$a" in
       devices) remote "$n" 'xcrun simctl list devices available | grep -E "^--|iPhone|iPad"';;
       boot) # [device name|udid] [--except cats]: always a slim simulator (simslim: ~170 background daemons off, ~4x less RAM).
@@ -194,13 +194,20 @@ print(x[\"name\"], x[\"osVersion\"], x[\"udid\"], x[\"state\"], \"slim %s/%s dae
           st=$(printf %q "$st"); case \$st in /*) ;; *) st=\$HOME/\$st;; esac; mkdir -p \$st; [ -f \$st/pgid ] && { kill -- -\$(cat \$st/pgid) 2>/dev/null; sleep 2; }
           cd $(printf %q "$rdir/$sub") || exit 1
           if [ -f pubspec.yaml ]; then kind=flutter; cmd=\"flutter run -d \$dev\"; ready='Flutter run key commands|Dart VM Service .* is available'
-          elif [ -f package.json ] && grep -q '\"expo\"' package.json; then kind=expo; cmd=\"npx expo run:ios --device \$dev\"; ready='Logs for your project will appear|Opening on'
-          elif [ -f package.json ] && grep -q '\"react-native\"' package.json; then kind=rn; cmd=\"npx react-native run-ios --udid \$dev\"; ready='Successfully launched the app'
+          elif [ -f package.json ] && grep -q '\"expo\"' package.json; then
+            # Expo Go (no native compile) when asked, or when the repo's own ios script is expo start (a Go project);
+            # otherwise a development build: expo run:ios compiles the app's native modules once, then Metro as usual.
+            # every JS session gets its own Metro port: several apps can run on one Mac at once
+            port=8081; while lsof -nP -iTCP:\$port -sTCP:LISTEN >/dev/null 2>&1; do port=\$((port+1)); done
+            if [ $go = 1 ] || grep -q -E '\"ios\": *\"(npx )?expo start' package.json; then kind=expo-go; cmd=\"npx expo start --ios --go --port \$port\"
+            else kind=expo; cmd=\"npx expo run:ios --device \$dev --port \$port\"; fi
+            ready='Logs for your project will appear|Opening on'; [ \$kind = expo-go ] && ready='Bundled [0-9]'  # Go: up only once the JS bundle is in
+          elif [ -f package.json ] && grep -q '\"react-native\"' package.json; then kind=rn; port=8081; while lsof -nP -iTCP:\$port -sTCP:LISTEN >/dev/null 2>&1; do port=\$((port+1)); done; cmd=\"npx react-native run-ios --udid \$dev --port \$port\"; ready='Successfully launched the app'
           else echo 'no Flutter, Expo or React Native app here: use mac build (native) or --path <app dir>'; exit 3; fi
           if [ \$kind != flutter ]; then   # JS deps with the repo's own lockfile, only when package.json or the lockfile moved
             lf=\$(ls pnpm-lock.yaml yarn.lock package-lock.json 2>/dev/null | head -1); h=\$(cat package.json \$lf | shasum | cut -c1-12)
             if [ ! -d node_modules ] || [ \"\$(cat \$st/deps 2>/dev/null)\" != \"\$h\" ]; then echo \"installing JS deps (\${lf:-npm})\"
-              case \$lf in pnpm-lock.yaml) pnpm install --frozen-lockfile;; yarn.lock) yarn install --frozen-lockfile;; *) npm ci;; esac > \$st/install.log 2>&1 || { tail -20 \$st/install.log; exit 1; }
+              case \$lf in pnpm-lock.yaml) pnpm install --frozen-lockfile;; yarn.lock) yarn install --frozen-lockfile;; package-lock.json) npm ci;; *) npm install;; esac > \$st/install.log 2>&1 || { tail -20 \$st/install.log; exit 1; }
               echo \$h > \$st/deps; fi
           fi
           rm -f \$st/in; mkfifo \$st/in; : > \$st/log; echo \$kind > \$st/kind
@@ -209,6 +216,11 @@ print(x[\"name\"], x[\"osVersion\"], x[\"udid\"], x[\"state\"], \"slim %s/%s dae
           for i in 1 2 3 4 5; do [ -s \$st/pgid ] && break; sleep 1; done
           echo \"\$kind: \$cmd (log on the Mac: \$st/log)\"
           for i in {1..300}; do
+            # Expo Go: iOS asks \"Open in 'Expo Go'?\" (another app was in front) and Go shows a one-time dev-menu intro:
+            # once the bundle is in, clear both with optional Maestro taps, twice (the prompt can come back once)
+            if [ \$kind = expo-go ] && grep -q -E \"\$ready\" \$st/log; then
+              printf 'appId: host.exp.Exponent\\n---\\n- repeat:\\n    times: 2\\n    commands:\\n      - tapOn: {text: \"Open\", optional: true}\\n      - tapOn: {text: \"Continue\", optional: true}\\n- runFlow:\\n    when: {visible: \"Go home\"}\\n    commands:\\n      - tapOn: {point: \"50%%,15%%\"}\\n' > \$st/clear.yaml
+              ( export PATH=\$HOME/.maestro/bin:\$PATH JAVA_HOME=/opt/homebrew/opt/openjdk@17; maestro --device \$dev test \$st/clear.yaml >/dev/null 2>&1 ); fi
             grep -q -E \"\$ready\" \$st/log && { echo 'app running'; grep -E 'Error|error:|Exception' \$st/log | tail -3; exit 0; }
             kill -0 \$(cat \$st/pgid) 2>/dev/null || { echo 'run exited:'; grep -E 'rror|xception|FAILED' \$st/log | sort -u | head -12; tail -8 \$st/log; exit 1; }
             sleep 3; done; echo 'still starting after 15 min: mac sim <mac> logs'; exit 2";;
@@ -251,7 +263,9 @@ mac: run Xcode/Swift/iOS/macOS work on a real Mac from this Linux host (it canno
   mac sim <name> install|reinstall|launch|terminate <repo|worktree> [--config Debug-Dev]
                                             the app from that repo's last `mac build`; reinstall = uninstall + install +
                                             launch (fresh app data); launch relaunches when running
-  mac sim <name> run <worktree> [--path <app dir>] [--with-env]
+  mac sim <name> run <worktree> [--path <app dir>] [--with-env] [--go]
+                                            Expo: --go (or a repo whose ios script is `expo start`) = Expo Go, no compile;
+                                            otherwise expo run:ios (development build, for apps with custom native modules)
                                             Flutter / Expo / React Native: the framework's own run (flutter run, npx expo
                                             run:ios, react-native run-ios) on the booted simulator, kept running on the Mac
                                             (Metro, hot reload); returns when the app is up. Native Xcode apps: mac build + install
