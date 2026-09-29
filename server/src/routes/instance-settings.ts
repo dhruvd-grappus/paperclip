@@ -27,8 +27,10 @@ import {
 } from "../services/instance-providers.js";
 import {
   githubRepoSlug,
+  instanceAutoUpdater,
   instanceUpdateService,
   InstanceUpdateError,
+  type InstanceAutoUpdater,
   type InstanceUpdateService,
 } from "../services/instance-update.js";
 import { assertEnvironmentSelectionForCompany } from "./environment-selection.js";
@@ -130,7 +132,12 @@ function canManageInstance(req: Request): boolean {
 
 export function instanceSettingsRoutes(
   db: Db,
-  opts: { updates?: InstanceUpdateService | null; providers?: InstanceProvidersService | null } = {},
+  opts: {
+    updates?: InstanceUpdateService | null;
+    /** Auto-updater to report on; when omitted, one is started for the production service. */
+    autoUpdater?: InstanceAutoUpdater | null;
+    providers?: InstanceProvidersService | null;
+  } = {},
 ) {
   const router = Router();
   const svc = instanceSettingsService(db);
@@ -155,12 +162,29 @@ export function instanceSettingsRoutes(
   const updates = opts.updates !== undefined
     ? opts.updates
     : updateRepo ? instanceUpdateService({ repo: updateRepo }) : null;
+  // Automatic updates: poll for new CI builds and queue them without a click.
+  // Only the production path (no injected service) starts the timer; tests
+  // pass their own updater or none.
+  let autoUpdater: InstanceAutoUpdater | null = null;
+  if (opts.autoUpdater !== undefined) {
+    autoUpdater = opts.autoUpdater;
+  } else if (opts.updates === undefined && updates) {
+    autoUpdater = instanceAutoUpdater({
+      updates,
+      currentCommit: instanceBuildInfo().commit,
+      log: {
+        info: (obj, msg) => logger.info(obj, msg),
+        warn: (obj, msg) => logger.warn(obj, msg),
+      },
+    });
+    autoUpdater.start();
+  }
 
   router.get("/instance/build/update", async (req, res) => {
     assertBoardOrgAccess(req);
     const build = instanceBuildInfo();
     if (!updates) {
-      res.json({ enabled: false, canUpdate: false, latest: null, updateAvailable: false, status: null, error: null });
+      res.json({ enabled: false, canUpdate: false, latest: null, updateAvailable: false, status: null, auto: null, error: null });
       return;
     }
     let latest = null;
@@ -178,6 +202,7 @@ export function instanceSettingsRoutes(
       latest,
       updateAvailable: Boolean(latest && build.commit && !build.commit.startsWith(latest.sha)),
       status: updates.status(),
+      auto: autoUpdater?.info() ?? null,
       error,
     });
   });

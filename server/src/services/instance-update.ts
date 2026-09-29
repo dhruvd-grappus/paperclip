@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -7,7 +7,8 @@ import { join } from "node:path";
  *
  * CI (fork workflow "grappus overlay") publishes every grappus/stable build as
  * a GitHub release `overlay-<sha12>`. This service reads the latest release and
- * queues an update by writing `request.json` into the update directory. It
+ * queues an update by writing `request.json` into the update directory, either
+ * on "Update now" or from the auto-updater below (instanceAutoUpdater). It
  * never installs anything itself: a root systemd path unit on the host
  * (paperclip-update.path → `paperclip-overlay apply-request`) picks the request
  * up, waits for agent runs to finish, installs the release, restarts Paperclip
@@ -223,3 +224,168 @@ export function instanceUpdateService(opts: {
 }
 
 export type InstanceUpdateService = ReturnType<typeof instanceUpdateService>;
+
+/**
+ * Automatic updates: poll GitHub for the latest CI release and queue it the same
+ * way "Update now" does. Everything that makes an update safe stays on the host
+ * side (paperclip-overlay apply-request waits until no agent run is live,
+ * verifies the new install and rolls back on failure); this only removes the
+ * click. Guards:
+ *
+ *  - never queues while a request is in flight;
+ *  - a build that failed verification and was rolled back is never retried
+ *    automatically (it is a bad build; a human can still force it from the UI);
+ *  - a build whose install failed for another reason (host never went idle,
+ *    download error) is retried after FAILED_RETRY_MS;
+ *  - the `requestedBy` marker is "auto-update", so the UI can tell the two apart;
+ *  - opt out with PAPERCLIP_GRAPPUS_AUTO_UPDATE=0 (restart) or by creating
+ *    `<update dir>/auto-update.disabled` (no restart needed).
+ */
+export const AUTO_UPDATE_REQUESTED_BY = "auto-update";
+export const AUTO_UPDATE_DISABLE_FILE = "auto-update.disabled";
+const AUTO_UPDATE_DEFAULT_INTERVAL_MS = 5 * 60 * 1000;
+const AUTO_UPDATE_MIN_INTERVAL_MS = 60 * 1000;
+const AUTO_UPDATE_INITIAL_DELAY_MS = 60 * 1000;
+const FAILED_RETRY_MS = 60 * 60 * 1000;
+
+export interface InstanceAutoUpdateInfo {
+  /** Configured on at boot (env). */
+  enabled: boolean;
+  /** Enabled and not paused by the disable file. */
+  active: boolean;
+  intervalMs: number;
+  lastCheckedAt: string | null;
+  lastError: string | null;
+  lastQueuedTag: string | null;
+  lastQueuedAt: string | null;
+  /** Why the last tick did nothing, for the settings page. */
+  lastSkipReason: string | null;
+}
+
+export function autoUpdateEnabledFromEnv(env: NodeJS.ProcessEnv = process.env): boolean {
+  const raw = (env.PAPERCLIP_GRAPPUS_AUTO_UPDATE ?? "").trim().toLowerCase();
+  return !["0", "false", "off", "no"].includes(raw);
+}
+
+export function autoUpdateIntervalFromEnv(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = Number(env.PAPERCLIP_GRAPPUS_AUTO_UPDATE_INTERVAL_MS ?? "");
+  if (!Number.isFinite(raw) || raw <= 0) return AUTO_UPDATE_DEFAULT_INTERVAL_MS;
+  return Math.max(AUTO_UPDATE_MIN_INTERVAL_MS, Math.floor(raw));
+}
+
+export function instanceAutoUpdater(opts: {
+  updates: InstanceUpdateService;
+  /** The commit this server runs; a release whose sha prefixes it is already installed. */
+  currentCommit: string | null;
+  dir?: string;
+  enabled?: boolean;
+  intervalMs?: number;
+  now?: () => number;
+  log?: { info: (obj: object, msg: string) => void; warn: (obj: object, msg: string) => void };
+}) {
+  const dir = opts.dir ?? defaultInstanceUpdateDir();
+  const now = opts.now ?? Date.now;
+  const enabled = opts.enabled ?? autoUpdateEnabledFromEnv();
+  const intervalMs = opts.intervalMs ?? autoUpdateIntervalFromEnv();
+  const log = opts.log ?? { info: () => {}, warn: () => {} };
+  let timer: NodeJS.Timeout | null = null;
+  let ticking = false;
+  const state: InstanceAutoUpdateInfo = {
+    enabled,
+    active: enabled,
+    intervalMs,
+    lastCheckedAt: null,
+    lastError: null,
+    lastQueuedTag: null,
+    lastQueuedAt: null,
+    lastSkipReason: null,
+  };
+
+  function paused(): boolean {
+    return existsSync(join(dir, AUTO_UPDATE_DISABLE_FILE));
+  }
+
+  function skip(reason: string) {
+    state.lastSkipReason = reason;
+    return { queued: false as const, reason };
+  }
+
+  /** One poll. Returns what happened so tests and the status endpoint can see it. */
+  async function tick(): Promise<{ queued: boolean; reason: string }> {
+    if (ticking) return skip("previous check still running");
+    ticking = true;
+    try {
+      state.active = enabled && !paused();
+      if (!enabled) return skip("disabled by PAPERCLIP_GRAPPUS_AUTO_UPDATE");
+      if (!state.active) return skip(`paused by ${AUTO_UPDATE_DISABLE_FILE}`);
+      state.lastCheckedAt = new Date(now()).toISOString();
+      let latest: InstanceUpdateRelease | null;
+      try {
+        latest = await opts.updates.latestRelease(true);
+        state.lastError = null;
+      } catch (err) {
+        state.lastError = err instanceof Error ? err.message : String(err);
+        return skip(`GitHub check failed: ${state.lastError}`);
+      }
+      if (!latest) return skip("no release published");
+      if (opts.currentCommit && opts.currentCommit.startsWith(latest.sha)) return skip("already on the latest build");
+      const status = opts.updates.status();
+      if (opts.updates.inFlight()) return skip(`update ${status?.tag ?? ""} in flight`.trim());
+      if (status?.tag === latest.tag) {
+        if (status.state === "rolled_back") return skip(`${latest.tag} failed verification and was rolled back; not retrying automatically`);
+        if (status.state === "succeeded") return skip(`${latest.tag} already installed`);
+        if (status.state === "failed") {
+          const at = status.updatedAt ? Date.parse(status.updatedAt) : Number.NaN;
+          if (Number.isFinite(at) && now() - at < FAILED_RETRY_MS) {
+            return skip(`${latest.tag} failed ${Math.round((now() - at) / 60000)} min ago; retrying after ${FAILED_RETRY_MS / 60000} min`);
+          }
+        }
+      }
+      try {
+        await opts.updates.request(latest.tag, AUTO_UPDATE_REQUESTED_BY);
+      } catch (err) {
+        state.lastError = err instanceof Error ? err.message : String(err);
+        return skip(`could not queue ${latest.tag}: ${state.lastError}`);
+      }
+      state.lastQueuedTag = latest.tag;
+      state.lastQueuedAt = new Date(now()).toISOString();
+      state.lastSkipReason = null;
+      log.info({ tag: latest.tag, build: latest.build }, "auto-update: queued latest build");
+      return { queued: true, reason: `queued ${latest.tag}` };
+    } finally {
+      ticking = false;
+    }
+  }
+
+  function start() {
+    if (timer || !enabled) return;
+    const run = () => {
+      void tick()
+        .then((result) => {
+          if (!result.queued) log.info({ reason: result.reason }, "auto-update: nothing to do");
+        })
+        .catch((err) => log.warn({ err }, "auto-update: check failed"));
+    };
+    // Give the host time to finish booting (and the previous install's status to settle).
+    timer = setTimeout(() => {
+      run();
+      timer = setInterval(run, intervalMs);
+      timer.unref();
+    }, AUTO_UPDATE_INITIAL_DELAY_MS);
+    timer.unref();
+  }
+
+  function stop() {
+    if (timer) clearTimeout(timer);
+    if (timer) clearInterval(timer);
+    timer = null;
+  }
+
+  function info(): InstanceAutoUpdateInfo {
+    return { ...state, active: enabled && !paused() };
+  }
+
+  return { tick, start, stop, info };
+}
+
+export type InstanceAutoUpdater = ReturnType<typeof instanceAutoUpdater>;

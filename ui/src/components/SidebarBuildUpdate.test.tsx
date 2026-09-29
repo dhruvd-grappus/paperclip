@@ -95,4 +95,21 @@ describe("SidebarBuildUpdate", () => {
     await render();
     expect(container!.querySelector('[data-testid="sidebar-build-update"]')).toBeNull();
   });
+
+  it("says that new builds install automatically when the auto-updater is active", async () => {
+    mockInstanceUpdateApi.get.mockResolvedValue({
+      enabled: true, canUpdate: true, latest, updateAvailable: false, status: null, error: null,
+      auto: { enabled: true, active: true, intervalMs: 300_000, lastCheckedAt: null, lastError: null, lastQueuedTag: null, lastQueuedAt: null, lastSkipReason: null },
+    });
+    await render();
+    expect(text()).toContain("New builds install automatically (checked every 5 min).");
+
+    act(() => root?.unmount());
+    mockInstanceUpdateApi.get.mockResolvedValue({
+      enabled: true, canUpdate: true, latest, updateAvailable: false, status: null, error: null,
+      auto: { enabled: true, active: false, intervalMs: 300_000, lastCheckedAt: null, lastError: null, lastQueuedTag: null, lastQueuedAt: null, lastSkipReason: null },
+    });
+    await render();
+    expect(text()).toContain("Automatic updates are paused on this host.");
+  });
 });

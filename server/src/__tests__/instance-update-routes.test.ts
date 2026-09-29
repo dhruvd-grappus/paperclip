@@ -5,7 +5,7 @@ import express from "express";
 import request from "supertest";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { hoistModuleGraph } from "./helpers/hoist-module-graph.js";
-import { instanceUpdateService, parseRelease } from "../services/instance-update.js";
+import { instanceAutoUpdater, instanceUpdateService, parseRelease } from "../services/instance-update.js";
 
 function registerModuleMocks() {
   vi.doMock("../services/index.js", () => ({
@@ -179,6 +179,21 @@ describe("instance self-update routes", () => {
     expect(limited.body.latest?.tag).toBe("overlay-2138d93848bd");
     expect(limited.body.error).toMatch(/rate limit/i);
   });
+  it("reports the auto-updater in GET /instance/build/update", async () => {
+    const { errorHandler, instanceSettingsRoutes } = routeModules.value;
+    const updates = instanceUpdateService({ repo: "dhruvd-grappus/paperclip", dir, fetchImpl: fetchImpl as any });
+    const auto = instanceAutoUpdater({
+      updates, currentCommit: "82744b4733ea0000000000000000000000000000", dir, enabled: true, intervalMs: 60_000,
+    });
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => { req.actor = member; next(); });
+    app.use("/api", instanceSettingsRoutes({} as any, { updates, autoUpdater: auto }));
+    app.use(errorHandler);
+    const res = await request(app).get("/api/instance/build/update");
+    expect(res.status).toBe(200);
+    expect(res.body.auto).toMatchObject({ enabled: true, active: true, intervalMs: 60_000 });
+  });
 });
 
 describe("parseRelease", () => {
@@ -188,5 +203,86 @@ describe("parseRelease", () => {
     expect(parseRelease({ ...LATEST, draft: true })).toBeNull();
     expect(parseRelease({ ...LATEST, assets: [] })).toBeNull();
     expect(parseRelease(null)).toBeNull();
+  });
+});
+
+describe("instanceAutoUpdater", () => {
+  let dir: string;
+  let fetchImpl: ReturnType<typeof vi.fn>;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "grappus-auto-update-"));
+    fetchImpl = vi.fn(async () => new Response(JSON.stringify(LATEST), { status: 200 }));
+  });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  const RUNNING_OLD = "82744b4733ea0000000000000000000000000000";
+  const RUNNING_LATEST = "2138d93848bd0000000000000000000000000000";
+
+  function make(currentCommit: string | null, extra: Partial<Parameters<typeof instanceAutoUpdater>[0]> = {}) {
+    const updates = instanceUpdateService({ repo: "dhruvd-grappus/paperclip", dir, fetchImpl: fetchImpl as any });
+    return { updates, auto: instanceAutoUpdater({ updates, currentCommit, dir, enabled: true, intervalMs: 60_000, ...extra }) };
+  }
+
+  it("queues the latest build when it is not the running one, marked as auto-update", async () => {
+    const { auto } = make(RUNNING_OLD);
+    const result = await auto.tick();
+    expect(result).toMatchObject({ queued: true });
+    expect(JSON.parse(readFileSync(join(dir, "request.json"), "utf8"))).toMatchObject({
+      tag: LATEST.tag_name,
+      requestedBy: "auto-update",
+    });
+    expect(auto.info()).toMatchObject({ active: true, lastQueuedTag: LATEST.tag_name, lastError: null });
+  });
+
+  it("does nothing when the running build is already the latest", async () => {
+    const { auto } = make(RUNNING_LATEST);
+    expect(await auto.tick()).toMatchObject({ queued: false, reason: "already on the latest build" });
+    expect(existsSync(join(dir, "request.json"))).toBe(false);
+  });
+
+  it("does not queue twice while an update is in flight", async () => {
+    const { auto } = make(RUNNING_OLD);
+    await auto.tick();
+    rmSync(join(dir, "request.json"));  // the host consumed it; status.json still says queued
+    expect(await auto.tick()).toMatchObject({ queued: false, reason: expect.stringContaining("in flight") });
+    expect(existsSync(join(dir, "request.json"))).toBe(false);
+  });
+
+  it("never retries a build the host rolled back, but retries a plain failure after an hour", async () => {
+    let clock = Date.parse("2026-09-29T10:00:00Z");
+    const { auto } = make(RUNNING_OLD, { now: () => clock });
+    writeFileSync(join(dir, "status.json"), JSON.stringify({
+      state: "rolled_back", tag: LATEST.tag_name, message: "verification failed", updatedAt: "2026-09-29T09:00:00Z",
+    }));
+    expect(await auto.tick()).toMatchObject({ queued: false, reason: expect.stringContaining("rolled back") });
+    expect(existsSync(join(dir, "request.json"))).toBe(false);
+
+    writeFileSync(join(dir, "status.json"), JSON.stringify({
+      state: "failed", tag: LATEST.tag_name, message: "never went idle", updatedAt: "2026-09-29T09:30:00Z",
+    }));
+    expect(await auto.tick()).toMatchObject({ queued: false, reason: expect.stringContaining("retrying after") });
+    clock = Date.parse("2026-09-29T10:31:00Z");
+    expect(await auto.tick()).toMatchObject({ queued: true });
+  });
+
+  it("pauses while the disable file exists and stays off when disabled by env", async () => {
+    const { auto } = make(RUNNING_OLD);
+    writeFileSync(join(dir, "auto-update.disabled"), "");
+    expect(await auto.tick()).toMatchObject({ queued: false, reason: expect.stringContaining("paused") });
+    expect(auto.info()).toMatchObject({ enabled: true, active: false });
+    rmSync(join(dir, "auto-update.disabled"));
+    expect(await auto.tick()).toMatchObject({ queued: true });
+
+    const off = make(RUNNING_OLD, { enabled: false });
+    expect(await off.auto.tick()).toMatchObject({ queued: false, reason: expect.stringContaining("disabled") });
+    expect(off.auto.info()).toMatchObject({ enabled: false, active: false });
+  });
+
+  it("records a GitHub failure and keeps going", async () => {
+    fetchImpl.mockResolvedValue(new Response("nope", { status: 500 }));
+    const { auto } = make(RUNNING_OLD);
+    expect(await auto.tick()).toMatchObject({ queued: false, reason: expect.stringContaining("GitHub check failed") });
+    expect(auto.info().lastError).toBe("GitHub answered 500");
+    expect(existsSync(join(dir, "request.json"))).toBe(false);
   });
 });

@@ -24,8 +24,9 @@ const STATE_LABEL: Record<InstanceUpdateState, string> = {
 /**
  * "Check for updates" on Settings → Instance settings → Updates. The server
  * only queues a request; the host's updater installs the latest CI build of
- * grappus/stable, restarts
- * Paperclip and reports back. While that runs the API is briefly down, so the
+ * grappus/stable, restarts Paperclip and reports back. New builds normally
+ * queue themselves (the server's auto-updater), so the button is a manual
+ * override and the panel says whether automatic updates are active. While that runs the API is briefly down, so the
  * panel keeps polling and offers a reload once the running commit changes.
  */
 export function SidebarBuildUpdate({ build }: { build: InstanceBuildInfo }) {
@@ -131,6 +132,18 @@ export function SidebarBuildUpdate({ build }: { build: InstanceBuildInfo }) {
           {info.updateAvailable && info.canUpdate ? (
             <p className="text-xs text-muted-foreground">
               Paperclip restarts once no agent task is running. Pages reconnect by themselves.
+            </p>
+          ) : null}
+          {info.auto ? (
+            <p className="text-xs text-muted-foreground" data-testid="sidebar-build-auto">
+              {info.auto.active
+                ? `New builds install automatically (checked every ${Math.max(1, Math.round(info.auto.intervalMs / 60000))} min).`
+                : info.auto.enabled
+                  ? "Automatic updates are paused on this host."
+                  : "Automatic updates are off on this host."}
+              {info.auto.active && info.auto.lastSkipReason && info.updateAvailable
+                ? ` Last check: ${info.auto.lastSkipReason}.`
+                : ""}
             </p>
           ) : null}
         </>

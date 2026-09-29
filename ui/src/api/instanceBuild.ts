@@ -44,6 +44,18 @@ export interface InstanceUpdateStatus {
   updatedAt: string | null;
 }
 
+/** Mirrors InstanceAutoUpdateInfo in server/src/services/instance-update.ts. */
+export interface InstanceAutoUpdateInfo {
+  enabled: boolean;
+  active: boolean;
+  intervalMs: number;
+  lastCheckedAt: string | null;
+  lastError: string | null;
+  lastQueuedTag: string | null;
+  lastQueuedAt: string | null;
+  lastSkipReason: string | null;
+}
+
 /** Mirrors GET /instance/build/update (server/src/routes/instance-settings.ts). */
 export interface InstanceUpdateInfo {
   enabled: boolean;
@@ -51,6 +63,8 @@ export interface InstanceUpdateInfo {
   latest: InstanceUpdateRelease | null;
   updateAvailable: boolean;
   status: InstanceUpdateStatus | null;
+  /** Automatic-update poller state; null on builds that predate it. */
+  auto?: InstanceAutoUpdateInfo | null;
   error: string | null;
 }
 
