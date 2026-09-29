@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import type { WaitingOnHumanRow, WaitingReason } from "@paperclipai/shared";
 import { waitingReasonLabel } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
@@ -44,6 +45,9 @@ export function WaitingOnYouPanel({
   onUpdateIssue,
   showAll = false,
   showHeading = true,
+  filters,
+  filtering = false,
+  moreHref = "/waiting-on-you",
 }: {
   /**
    * The rows, as the server built them (`GET /companies/:id/waiting-on-you`).
@@ -63,21 +67,41 @@ export function WaitingOnYouPanel({
   /** Render every row instead of collapsing into a "+N more" link. */
   showAll?: boolean;
   showHeading?: boolean;
+  /**
+   * The filter pickers, rendered beside the heading. A slot rather than props:
+   * the panel renders rows and has no business knowing what a facet is, and the
+   * dashboard and the page hand it the same pair from one hook
+   * (`useWaitingOnYouFilters`), so the two surfaces filter identically.
+   */
+  filters?: ReactNode;
+  /** Whether a filter is on, so the empty state says which emptiness this is. */
+  filtering?: boolean;
+  /**
+   * Where "+N more" goes. The dashboard passes its current filters along in the
+   * query string, so following the link keeps the list you were looking at.
+   */
+  moreHref?: string;
 }) {
   const visibleRows = showAll ? rows : rows.slice(0, VISIBLE_ROWS);
 
   return (
     <div className="min-w-0" data-testid="dashboard-waiting-on-you">
-      {showHeading ? (
-        <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-3">
-          Waiting On You{rows.length > 0 ? ` · ${rows.length}` : ""}
-        </h3>
+      {showHeading || filters ? (
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+          {showHeading ? (
+            <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">
+              Waiting On You{rows.length > 0 ? ` · ${rows.length}` : ""}
+            </h3>
+          ) : null}
+          {filters ? <div className="flex flex-wrap items-center gap-2">{filters}</div> : null}
+        </div>
       ) : null}
       {rows.length === 0 ? (
         <Card className="block p-4">
           <p className="text-sm text-muted-foreground">
-            No task is waiting on a person — no open questions, confirmations, reviews, or
-            finished work to approve.
+            {filtering
+              ? "No task waiting on a person matches these filters."
+              : "No task is waiting on a person — no open questions, confirmations, reviews, or finished work to approve."}
           </p>
         </Card>
       ) : (
@@ -143,7 +167,7 @@ export function WaitingOnYouPanel({
             <Link
               // The full list, not `/issues`: half of these rows are pending
               // cards that no task-list filter can express.
-              to="/waiting-on-you"
+              to={moreHref}
               className="block px-3 py-1.5 text-xs text-muted-foreground no-underline hover:bg-accent/50"
             >
               +{rows.length - VISIBLE_ROWS} more

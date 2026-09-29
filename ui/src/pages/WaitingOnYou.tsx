@@ -1,18 +1,12 @@
-import { useEffect, useMemo, useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useEffect } from "react";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { CircleDot } from "lucide-react";
-import { accessApi } from "../api/access";
+import { useSearchParams } from "@/lib/router";
 import { issuesApi } from "../api/issues";
-import { projectsApi } from "../api/projects";
-import {
-  WAITING_ON_YOU_UNASSIGNED,
-  WAITING_ON_YOU_UNFILED,
-  waitingOnYouApi,
-} from "../api/waiting-on-you";
-import { buildCompanyUserProfileMap } from "../lib/company-members";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
+import { useWaitingOnYouFilters } from "../hooks/useWaitingOnYouFilters";
 import { EmptyState } from "../components/EmptyState";
 import { WaitingOnYouPanel } from "../components/WaitingOnYouPanel";
 import { FacetMultiSelect } from "../components/FacetMultiSelect";
@@ -28,49 +22,44 @@ import { FacetMultiSelect } from "../components/FacetMultiSelect";
  * the same query key the dashboard widget reads, so the page can never
  * disagree with the card that sent you there.
  *
- * The owner and project filters are server filters, not client-side slices.
- * Both are multi-select and the two axes are ANDed. The response always
- * reports the *unfiltered* owners and projects, so narrowing the list never
- * empties the picker you narrowed it with — which matters far more for a
- * tick-list than for a one-of picker, since the whole point is to tick again.
+ * The owner and project filters are server filters, not client-side slices,
+ * and the dashboard widget has the same pair from the same hook. Both are
+ * multi-select and the two axes are ANDed. The response always reports the
+ * *unfiltered* owners and projects, so narrowing the list never empties the
+ * picker you narrowed it with — which matters far more for a tick-list than
+ * for a one-of picker, since the whole point is to tick again.
+ *
+ * The selection is read from the query string on arrival, because the widget's
+ * "+N more" puts it there: following that link should open the list you were
+ * looking at, not the unfiltered one.
  */
 export function WaitingOnYou() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
-  const [owners, setOwners] = useState<string[]>([]);
-  const [projects, setProjects] = useState<string[]>([]);
+  const [searchParams] = useSearchParams();
+  const {
+    rows,
+    owners,
+    setOwners,
+    projects,
+    setProjects,
+    ownerOptions,
+    projectOptions,
+    userName,
+    filtering,
+    shownCount,
+    totalCount,
+  } = useWaitingOnYouFilters(selectedCompanyId, {
+    // Read once, as the initial selection: the pickers own it from then on, so
+    // ticking is not fighting a URL that would have to be rewritten each time.
+    initialOwners: searchParams.getAll("user"),
+    initialProjects: searchParams.getAll("project"),
+  });
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Waiting On You" }]);
   }, [setBreadcrumbs]);
-
-  const { data: feed } = useQuery({
-    queryKey: queryKeys.waitingOnYou(selectedCompanyId!, owners, projects),
-    queryFn: () => waitingOnYouApi.list(selectedCompanyId!, { users: owners, projects }),
-    enabled: !!selectedCompanyId,
-    refetchInterval: 60_000,
-  });
-
-  // Names for the project picker. The feed reports which projects are present
-  // and how many rows each holds; the project list is only asked for the names.
-  const { data: projectList } = useQuery({
-    queryKey: queryKeys.projects.list(selectedCompanyId!, { includeArchived: true }),
-    queryFn: () => projectsApi.list(selectedCompanyId!, { includeArchived: true }),
-    enabled: !!selectedCompanyId,
-  });
-
-  const { data: companyMembers } = useQuery({
-    queryKey: queryKeys.access.companyUserDirectory(selectedCompanyId!),
-    queryFn: () => accessApi.listUserDirectory(selectedCompanyId!),
-    enabled: !!selectedCompanyId,
-  });
-  const userProfileMap = useMemo(
-    () => buildCompanyUserProfileMap(companyMembers?.users),
-    [companyMembers?.users],
-  );
-  const userName = (userId: string | null | undefined) =>
-    userId ? userProfileMap.get(userId)?.label ?? null : null;
 
   // Same inline status editing as the dashboard widget: this page exists so a
   // person can work the list, and working it means changing statuses.
@@ -88,30 +77,6 @@ export function WaitingOnYou() {
     return <EmptyState icon={CircleDot} message="Select an organization to see what is waiting on you." />;
   }
 
-  const projectNames = new Map(
-    (projectList ?? []).map((project) => [project.id, project.name] as const),
-  );
-  // Options come from the feed's facets, not from the directories: these are
-  // the values actually present in the list, with the count of rows each one
-  // holds. A person and a project with nothing waiting are not worth offering.
-  const ownerOptions = (feed?.owners ?? []).map((entry) => ({
-    value: entry.userId ?? WAITING_ON_YOU_UNASSIGNED,
-    label: entry.userId
-      ? userName(entry.userId) ?? "Unknown person"
-      : "No owner",
-    count: entry.count,
-  }));
-  const projectOptions = (feed?.projects ?? []).map((entry) => ({
-    value: entry.projectId ?? WAITING_ON_YOU_UNFILED,
-    label: entry.projectId
-      ? projectNames.get(entry.projectId) ?? "Unknown project"
-      : "No project",
-    count: entry.count,
-  }));
-  const filtering = owners.length > 0 || projects.length > 0;
-  const shown = feed?.items.length ?? 0;
-  const total = feed?.totalCount ?? 0;
-
   return (
     <div className="p-4 sm:p-6 space-y-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -126,7 +91,7 @@ export function WaitingOnYou() {
         <div className="flex flex-wrap items-center gap-2">
           <FacetMultiSelect
             label="people"
-            allLabel={`Anyone · ${total}`}
+            allLabel={`Anyone · ${totalCount}`}
             options={ownerOptions}
             selected={owners}
             onChange={setOwners}
@@ -144,12 +109,13 @@ export function WaitingOnYou() {
       </div>
       {filtering ? (
         <p className="text-xs text-muted-foreground">
-          Showing {shown} of {total}.
+          Showing {shownCount} of {totalCount}.
         </p>
       ) : null}
       <WaitingOnYouPanel
-        rows={feed?.items ?? []}
+        rows={rows}
         userName={userName}
+        filtering={filtering}
         onUpdateIssue={(issueId, data) => updateIssueStatus.mutate({ issueId, data })}
         showAll
         showHeading={false}

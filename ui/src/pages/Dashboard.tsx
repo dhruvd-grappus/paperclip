@@ -25,7 +25,8 @@ import { Bot, CircleCheck, CircleDot, OctagonAlert, LayoutDashboard, PauseCircle
 import { RunningByProjectPanel } from "../components/RunningByProjectPanel";
 import { HumanInterventionPanel } from "../components/HumanInterventionPanel";
 import { WaitingOnYouPanel } from "../components/WaitingOnYouPanel";
-import { waitingOnYouApi } from "../api/waiting-on-you";
+import { FacetMultiSelect } from "../components/FacetMultiSelect";
+import { useWaitingOnYouFilters } from "../hooks/useWaitingOnYouFilters";
 import { ClaudeUsagePanel } from "../components/ClaudeUsagePanel";
 import { dashboardTaskMetrics } from "../lib/dashboard-task-metrics";
 import { visibleWorkTasks } from "../lib/task-visibility";
@@ -172,16 +173,12 @@ export function Dashboard() {
     enabled: !!selectedCompanyId,
   });
 
-  // The "Waiting on you" rows, built by the server (GRA-328). The widget used
-  // to union the attention feed with the task list here; the server does that
-  // now, so the dashboard and `/waiting-on-you` read one endpoint on one query
-  // key. Board-only: a non-board viewer gets no rows.
-  const { data: waitingOnYou } = useQuery({
-    queryKey: queryKeys.waitingOnYou(selectedCompanyId!),
-    queryFn: () => waitingOnYouApi.list(selectedCompanyId!),
-    enabled: !!selectedCompanyId,
-    refetchInterval: 60_000,
-  });
+  // The "Waiting on you" rows, built by the server (GRA-328), with the same
+  // owner and project pickers `/waiting-on-you` has — one hook, so the widget
+  // and the page cannot filter by subtly different things. The widget used to
+  // union the attention feed with the task list here; the server does that now.
+  // Board-only: a non-board viewer gets no rows.
+  const waitingOnYou = useWaitingOnYouFilters(selectedCompanyId);
 
   const { data: companyMembers } = useQuery({
     queryKey: queryKeys.access.companyUserDirectory(selectedCompanyId!),
@@ -409,9 +406,35 @@ export function Dashboard() {
             // Server-built rows (GRA-328): the widget no longer derives the
             // list from the whole task list and the whole attention feed, so
             // it shows exactly what `/waiting-on-you` shows.
-            rows={waitingOnYou?.items ?? []}
+            rows={waitingOnYou.rows}
             userName={(userId) => (userId ? userProfileMap.get(userId)?.label ?? null : null)}
             onUpdateIssue={(issueId, data) => updateIssueStatus.mutate({ issueId, data })}
+            filtering={waitingOnYou.filtering}
+            // The filters ride along to the full list, so "+N more" opens the
+            // list you were looking at rather than the unfiltered one.
+            moreHref={`/waiting-on-you${waitingOnYou.search}`}
+            filters={
+              <>
+                <FacetMultiSelect
+                  label="people"
+                  allLabel={`Anyone · ${waitingOnYou.totalCount}`}
+                  options={waitingOnYou.ownerOptions}
+                  selected={waitingOnYou.owners}
+                  onChange={waitingOnYou.setOwners}
+                  className="w-44"
+                  testId="dashboard-waiting-on-you-owner-filter"
+                />
+                <FacetMultiSelect
+                  label="projects"
+                  allLabel="All projects"
+                  options={waitingOnYou.projectOptions}
+                  selected={waitingOnYou.projects}
+                  onChange={waitingOnYou.setProjects}
+                  className="w-44"
+                  testId="dashboard-waiting-on-you-project-filter"
+                />
+              </>
+            }
           />
 
           <HumanInterventionPanel

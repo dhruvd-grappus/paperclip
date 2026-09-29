@@ -110,6 +110,9 @@ describe("WaitingOnYouPanel", () => {
       showAll?: boolean;
       userName?: (userId: string | null | undefined) => string | null;
       onUpdateIssue?: (issueId: string, data: { status: string }) => void;
+      filters?: ReactNode;
+      filtering?: boolean;
+      moreHref?: string;
     } = {},
   ) {
     flushSync(() => {
@@ -122,6 +125,29 @@ describe("WaitingOnYouPanel", () => {
   it("explains itself when nothing is waiting", () => {
     render([], []);
     expect(container.textContent).toContain("No task is waiting on a person");
+  });
+
+  it("says which emptiness it is when a filter is on", () => {
+    render([], [], { filtering: true });
+    expect(container.textContent).toContain("matches these filters");
+  });
+
+  it("renders the filter slot beside the heading", () => {
+    render([], [reviewIssue("GRA-20")], {
+      filters: <button data-testid="owner-filter">Anyone</button>,
+    });
+    expect(container.querySelector("[data-testid='owner-filter']")).not.toBeNull();
+    expect(container.textContent).toContain("Waiting On You");
+  });
+
+  it("sends the more link wherever the caller points it, filters and all", () => {
+    render(
+      [],
+      Array.from({ length: 10 }, (_, index) => reviewIssue(`GRA-3${index}`)),
+      { moreHref: "/waiting-on-you?user=user-1" },
+    );
+    const more = container.querySelector("a[href='/waiting-on-you?user=user-1']");
+    expect(more?.textContent).toContain("+2 more");
   });
 
   it("lists each waiting task with its reason and links to it", () => {
