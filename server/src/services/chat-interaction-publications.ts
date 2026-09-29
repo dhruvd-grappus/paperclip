@@ -248,12 +248,27 @@ export async function enqueueIssueInteractionChatPublications(
   ) {
     return [];
   }
-  // An endpoint is one immutable provider bot identity. Never externalize a
-  // user/system-authored interaction, or let one agent speak through another
-  // agent's endpoint. If the interaction names a source run, verify that run's
-  // company and agent instead of trusting the denormalized creator alone.
-  if (!interaction.createdByAgentId) return [];
+  // An endpoint is one immutable provider bot identity. Never let one agent
+  // speak through another agent's endpoint, and never externalize a
+  // system-authored interaction. If the interaction names a source run, verify
+  // that run's company and agent instead of trusting the denormalized creator
+  // alone.
+  //
+  // A board member's own card on a chat-bound issue is the one non-agent case
+  // that may be externalized. The requester is the human on the other end of
+  // that thread, a chat thread binds to exactly one issue
+  // (`chat_conversations_thread_uq`), and every callback path resolves the
+  // interaction through `conversation.issueId`, so such a card answers in
+  // place with no cross-issue reach. Without this, a board-authored question
+  // on the bound issue could only be a link out of the thread.
+  const boardAuthored =
+    !interaction.createdByAgentId && Boolean(interaction.createdByUserId);
+  let sourceRunAgentId: string | null = null;
+  if (!interaction.createdByAgentId && !boardAuthored) return [];
   if (interaction.sourceRunId) {
+    // A board-authored card must not borrow an agent run's identity: the run
+    // has to belong to the agent that owns the endpoint, which is checked per
+    // binding below, so here only the company and the agent creator are fixed.
     const sourceRun = await db
       .select({ agentId: heartbeatRuns.agentId })
       .from(heartbeatRuns)
@@ -261,11 +276,14 @@ export async function enqueueIssueInteractionChatPublications(
         and(
           eq(heartbeatRuns.id, interaction.sourceRunId),
           eq(heartbeatRuns.companyId, interaction.companyId),
-          eq(heartbeatRuns.agentId, interaction.createdByAgentId),
+          ...(interaction.createdByAgentId
+            ? [eq(heartbeatRuns.agentId, interaction.createdByAgentId)]
+            : []),
         ),
       )
       .then((rows) => rows[0] ?? null);
     if (!sourceRun) return [];
+    if (boardAuthored) sourceRunAgentId = sourceRun.agentId;
   }
   const bindings = await db
     .select({
@@ -298,7 +316,15 @@ export async function enqueueIssueInteractionChatPublications(
       : null;
   const inserted: Array<typeof chatPublications.$inferSelect> = [];
   for (const { conversation, endpoint } of bindings) {
-    if (endpoint.assignedAgentId !== interaction.createdByAgentId) continue;
+    if (boardAuthored) {
+      // The endpoint still speaks for one agent, and a board card that names a
+      // run may only go out through that run's own agent's endpoint.
+      if (!endpoint.assignedAgentId) continue;
+      if (sourceRunAgentId && sourceRunAgentId !== endpoint.assignedAgentId)
+        continue;
+    } else if (endpoint.assignedAgentId !== interaction.createdByAgentId) {
+      continue;
+    }
     const formDraft =
       interaction.kind === "ask_user_questions" &&
       (endpoint.provider === "slack" ||

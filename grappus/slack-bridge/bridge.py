@@ -397,12 +397,12 @@ for root_id, conv in roots.items():
             continue
         mirror = next((v for v in state["mirrors"].values() if v.get("rootCard") == cid), None)
         if mirror:
-            # Paperclip only publishes cards created inside an agent run, so a relayed copy never shows as a Slack form
-            # (seen 26 Sep, GRA-114). Point to the child task instead, and warn that a thread reply freezes the task.
+            # A relayed copy now publishes as a real Slack form: the board may author a card on a chat-bound issue
+            # (29 Sep, GRA-295). The notice stays, so the thread is notified even if that publication is delayed.
             ident = mirror.get("childIdent") or req("GET", f"/api/issues/{mirror['child']}")["identifier"]
             text = (f'Paperclip needs an answer to continue: "{clip(card.get("title"), 80)}". '
-                    f'Please answer it here: https://187.126.114.172.sslip.io/GRA/issues/{ident} '
-                    f'(Slack cannot show this form, and a reply in this thread will not reach it while the work is running.)')
+                    f'Answer on the form in this thread, or here: https://187.126.114.172.sslip.io/GRA/issues/{ident} '
+                    f'(a plain reply in this thread does not reach it).')
         else:
             text = f'Paperclip has a question for you: "{clip(card.get("title"), 80)}". Please answer on the form above.'
         notify(root, conv, text, f"question-notice:{cid}")

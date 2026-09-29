@@ -267,9 +267,14 @@ describeEmbeddedPostgres(
         },
       };
 
-      const userAuthored = await service.create(
+      const systemAuthored = await service.create(
         { id: fixture.issueId, companyId: fixture.companyId },
         question,
+        {},
+      );
+      const borrowedRun = await service.create(
+        { id: fixture.issueId, companyId: fixture.companyId },
+        { ...question, sourceRunId: foreignRunId },
         { userId: "board-user" },
       );
       const foreignAuthored = await service.create(
@@ -284,7 +289,10 @@ describeEmbeddedPostgres(
       );
 
       await expect(
-        publicationsForInteraction(fixture.companyId, userAuthored.id),
+        publicationsForInteraction(fixture.companyId, systemAuthored.id),
+      ).resolves.toEqual([]);
+      await expect(
+        publicationsForInteraction(fixture.companyId, borrowedRun.id),
       ).resolves.toEqual([]);
       await expect(
         publicationsForInteraction(fixture.companyId, foreignAuthored.id),
@@ -310,6 +318,57 @@ describeEmbeddedPostgres(
             `interaction:${assignedAgent.id}:${row.endpointId}`,
         ),
       ).toBe(true);
+    });
+
+    it("publishes a board member's own question on the bound issue as a native form", async () => {
+      const fixture = await seedBoundIssue(["slack"]);
+      const interaction = await issueThreadInteractionService(db).create(
+        { id: fixture.issueId, companyId: fixture.companyId },
+        {
+          kind: "ask_user_questions",
+          payload: {
+            version: 1,
+            questions: [
+              {
+                id: "token",
+                prompt: "Which token should the build use?",
+                selectionMode: "single",
+                allowOther: false,
+                options: [
+                  { id: "existing", label: "The existing one" },
+                  { id: "new", label: "A new one" },
+                ],
+              },
+            ],
+          },
+        },
+        { userId: "board-user" },
+      );
+
+      const publications = await publicationsForInteraction(
+        fixture.companyId,
+        interaction.id,
+      );
+      expect(publications).toHaveLength(1);
+      expect(publications[0].endpointId).toBe(fixture.endpointIds.slack);
+      // Answerable in the thread, not a link out of it.
+      expect(publications[0].payload.card?.actions).toEqual([
+        expect.objectContaining({
+          type: "callback",
+          label: "The existing one",
+        }),
+        expect.objectContaining({ type: "callback", label: "A new one" }),
+      ]);
+      const actions = await db
+        .select()
+        .from(chatActions)
+        .where(
+          and(
+            eq(chatActions.companyId, fixture.companyId),
+            eq(chatActions.conversationId, publications[0].conversationId),
+          ),
+        );
+      expect(actions.length).toBeGreaterThan(0);
     });
 
     it("keeps unsupported governance interactions authoritative in Paperclip", async () => {
