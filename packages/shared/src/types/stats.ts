@@ -90,3 +90,50 @@ export interface StatsProjectPerformance {
 export interface StatsByProject {
   projects: StatsProjectPerformance[];
 }
+
+/** Rolling lookback windows the token-usage view reports. */
+export type StatsTokenWindowKey = "1d" | "5d" | "7d" | "30d";
+
+export interface StatsTokenTotals {
+  inputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
+  /** input + cached input + output */
+  totalTokens: number;
+  costCents: number;
+  runCount: number;
+}
+
+export interface StatsTokenAgentUsage extends StatsTokenTotals {
+  agentId: string;
+  agentName: string;
+}
+
+/**
+ * Tokens one cloud login served. `accountLabel` is the login's email; null groups
+ * the events recorded before accounts were tracked, or by providers without one.
+ */
+export interface StatsTokenAccountUsage extends StatsTokenTotals {
+  accountLabel: string | null;
+  provider: string;
+  /** every agent that used this account in the window, largest first */
+  agents: StatsTokenAgentUsage[];
+}
+
+export interface StatsTokenWindow {
+  window: StatsTokenWindowKey;
+  hours: number;
+  since: string;
+  totals: StatsTokenTotals;
+  /** per account, largest first */
+  accounts: StatsTokenAccountUsage[];
+  /** per agent across all accounts, largest first */
+  agents: StatsTokenAgentUsage[];
+}
+
+export interface StatsTokenUsage {
+  generatedAt: string;
+  /** the login the server's runs currently inherit, null when unknown */
+  activeAccountLabel: string | null;
+  windows: StatsTokenWindow[];
+}

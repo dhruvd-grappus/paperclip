@@ -696,6 +696,7 @@ export const queryKeys = {
       ["stats", "overview", companyId, from, to] as const,
     byProject: (companyId: string, from?: string, to?: string) =>
       ["stats", "by-project", companyId, from, to] as const,
+    tokenUsage: (companyId: string) => ["stats", "token-usage", companyId] as const,
   },
   usageByProvider: (companyId: string, from?: string, to?: string) =>
     ["usage-by-provider", companyId, from, to] as const,

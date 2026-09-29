@@ -271,6 +271,7 @@ import {
   MAX_EXCERPT_BYTES,
 } from "../adapters/utils.js";
 import { costService } from "./costs.js";
+import { readActiveClaudeAccountLabel } from "./claude-account.js";
 import {
   authorizeChatConversationForBoundRun,
   isExternalChatWaitAuthorizationContention,
@@ -5149,6 +5150,10 @@ function normalizeLedgerBillingType(value: unknown): BillingType {
     default:
       return "unknown";
   }
+}
+
+function hasTokenUsageForLedger(inputTokens: number, cachedInputTokens: number, outputTokens: number): boolean {
+  return inputTokens > 0 || cachedInputTokens > 0 || outputTokens > 0;
 }
 
 function resolveLedgerBiller(result: AdapterExecutionResult): string {
@@ -19399,6 +19404,12 @@ export function heartbeatService(
     });
     const provider = result.provider ?? "unknown";
     const biller = resolveLedgerBiller(result);
+    // Which cloud login served the run. claude-swap rotates the host login between
+    // accounts, so the ledger records the one active when the run's usage lands.
+    const accountLabel =
+      provider === "anthropic" && hasTokenUsageForLedger(inputTokens, cachedInputTokens, outputTokens)
+        ? await readActiveClaudeAccountLabel()
+        : null;
     const ledgerScope = await resolveLedgerScopeForRun(
       db,
       agent.companyId,
@@ -19434,6 +19445,7 @@ export function heartbeatService(
         billingType,
         costStatus,
         model: result.model ?? "unknown",
+        accountLabel,
         inputTokens,
         cachedInputTokens,
         outputTokens,

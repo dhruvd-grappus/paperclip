@@ -22,6 +22,8 @@ export const costEvents = pgTable(
     billingType: text("billing_type").notNull().default("unknown"),
     costStatus: text("cost_status").notNull().default("reported"),
     model: text("model").notNull(),
+    /** Cloud login (e.g. Claude account email) that served the run; null when unknown. */
+    accountLabel: text("account_label"),
     inputTokens: integer("input_tokens").notNull().default(0),
     cachedInputTokens: integer("cached_input_tokens").notNull().default(0),
     outputTokens: integer("output_tokens").notNull().default(0),
@@ -44,6 +46,11 @@ export const costEvents = pgTable(
     companyBillerOccurredIdx: index("cost_events_company_biller_occurred_idx").on(
       table.companyId,
       table.biller,
+      table.occurredAt,
+    ),
+    companyAccountOccurredIdx: index("cost_events_company_account_occurred_idx").on(
+      table.companyId,
+      table.accountLabel,
       table.occurredAt,
     ),
     companyHeartbeatRunIdx: index("cost_events_company_heartbeat_run_idx").on(

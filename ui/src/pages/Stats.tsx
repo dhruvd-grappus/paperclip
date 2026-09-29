@@ -1,8 +1,16 @@
-import { useEffect, type ComponentType } from "react";
+import { Fragment, useEffect, useState, type ComponentType } from "react";
 import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import type { StatsTaskExtreme, StatsTimeBurnDay, StatsThroughputDay } from "@paperclipai/shared";
-import { Activity, BarChart3, CircleDashed, Gauge, Hourglass, Rabbit, Timer, Turtle } from "lucide-react";
+import type {
+  StatsTaskExtreme,
+  StatsTimeBurnDay,
+  StatsThroughputDay,
+  StatsTokenAgentUsage,
+  StatsTokenTotals,
+  StatsTokenUsage,
+  StatsTokenWindowKey,
+} from "@paperclipai/shared";
+import { Activity, BarChart3, CircleDashed, Cloud, Gauge, Hourglass, Rabbit, Timer, Turtle } from "lucide-react";
 import { statsApi } from "../api/stats";
 import { ChartCard } from "../components/ActivityCharts";
 import { EmptyState } from "../components/EmptyState";
@@ -11,7 +19,7 @@ import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useCompany } from "../context/CompanyContext";
 import { useDateRange, PRESET_KEYS, PRESET_LABELS } from "../hooks/useDateRange";
 import { queryKeys } from "../lib/queryKeys";
-import { formatCents, formatDurationMs } from "../lib/utils";
+import { formatCents, formatDurationMs, formatTokens } from "../lib/utils";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 
@@ -53,6 +61,30 @@ const COPY = {
   fastest: { title: "Fastest task", description: "Shortest start-to-done time in the range, at any level." },
   slowest: { title: "Slowest task", description: "Longest start-to-done time in the range, at any level." },
   noExtreme: "No task in this range has a measurable start-to-done time.",
+  tokens: {
+    title: "Token usage by cloud account",
+    description:
+      "Tokens each agent used, split by the Claude login that served the run. Windows are rolling and end now, independent of the date range above.",
+    active: (label: string) => `Runs currently land on ${label}.`,
+    activeUnknown: "The active login could not be read.",
+    empty: "No token usage recorded in this window.",
+    untracked: "Untracked account",
+    untrackedHint: "Recorded before account tracking, or by a provider without a login.",
+    agentsHeading: "All agents",
+    accountsHeading: "Accounts",
+    windowLabels: { "1d": "1 day", "5d": "5 days", "7d": "7 days", "30d": "30 days" } as Record<StatsTokenWindowKey, string>,
+    columns: {
+      name: "Name",
+      input: "Input",
+      cached: "Cached",
+      output: "Output",
+      total: "Total",
+      share: "Share",
+      runs: "Runs",
+      spend: "Spend",
+    },
+    totalRow: "Total",
+  },
   projects: {
     title: "Project performance",
     description: "Completed work, delivery speed and spend, by project.",
@@ -196,6 +228,155 @@ function ExtremeTaskCard({
   );
 }
 
+function TokenTotalsCells({ row, denominator }: { row: StatsTokenTotals; denominator: number }) {
+  const share = denominator > 0 ? Math.round((row.totalTokens / denominator) * 100) : 0;
+  return (
+    <>
+      <td className="px-3 py-2 text-right tabular-nums">{formatTokens(row.inputTokens)}</td>
+      <td className="px-3 py-2 text-right tabular-nums">{formatTokens(row.cachedInputTokens)}</td>
+      <td className="px-3 py-2 text-right tabular-nums">{formatTokens(row.outputTokens)}</td>
+      <td className="px-3 py-2 text-right font-medium tabular-nums">{formatTokens(row.totalTokens)}</td>
+      <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">{share}%</td>
+      <td className="px-3 py-2 text-right tabular-nums">{row.runCount}</td>
+      <td className="px-3 py-2 text-right tabular-nums">{row.costCents > 0 ? formatCents(row.costCents) : "—"}</td>
+    </>
+  );
+}
+
+function TokenTableHead({ nameLabel }: { nameLabel: string }) {
+  const c = COPY.tokens.columns;
+  return (
+    <thead>
+      <tr className="border-b border-border text-muted-foreground">
+        <th className="px-3 py-2 font-medium">{nameLabel}</th>
+        <th className="px-3 py-2 text-right font-medium">{c.input}</th>
+        <th className="px-3 py-2 text-right font-medium">{c.cached}</th>
+        <th className="px-3 py-2 text-right font-medium">{c.output}</th>
+        <th className="px-3 py-2 text-right font-medium">{c.total}</th>
+        <th className="px-3 py-2 text-right font-medium">{c.share}</th>
+        <th className="px-3 py-2 text-right font-medium">{c.runs}</th>
+        <th className="px-3 py-2 text-right font-medium">{c.spend}</th>
+      </tr>
+    </thead>
+  );
+}
+
+function AgentRows({ agents, denominator, indent }: { agents: StatsTokenAgentUsage[]; denominator: number; indent?: boolean }) {
+  return (
+    <>
+      {agents.map((agent) => (
+        <tr key={agent.agentId} className="border-b border-border/60 last:border-b-0">
+          <td className={`px-3 py-2 ${indent ? "pl-7 text-muted-foreground" : "font-medium"}`}>
+            <Link to={`/agents/${agent.agentId}`} className="hover:underline">{agent.agentName}</Link>
+          </td>
+          <TokenTotalsCells row={agent} denominator={denominator} />
+        </tr>
+      ))}
+    </>
+  );
+}
+
+/**
+ * Tokens per cloud login per agent over rolling windows. claude-swap rotates the
+ * host login between several Claude accounts, so each account gets its own block
+ * with the agents that ran on it, plus an all-accounts agent table.
+ */
+export function TokenUsageByAccount({ usage }: { usage: StatsTokenUsage }) {
+  const [windowKey, setWindowKey] = useState<StatsTokenWindowKey>("7d");
+  const window = usage.windows.find((entry) => entry.window === windowKey) ?? usage.windows[0];
+  const denominator = window?.totals.totalTokens ?? 0;
+  return (
+    <Card>
+      <CardHeader className="px-5 pt-5 pb-2">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <CardTitle className="flex items-center gap-2 text-base">
+              <Cloud className="h-4 w-4 text-muted-foreground" />
+              {COPY.tokens.title}
+            </CardTitle>
+            <CardDescription>{COPY.tokens.description}</CardDescription>
+          </div>
+          <div className="flex flex-wrap items-center gap-1" role="group" aria-label="Token usage window">
+            {usage.windows.map((entry) => (
+              <Button
+                key={entry.window}
+                variant={entry.window === window?.window ? "secondary" : "ghost"}
+                size="sm"
+                onClick={() => setWindowKey(entry.window)}
+                aria-pressed={entry.window === window?.window}
+              >
+                {COPY.tokens.windowLabels[entry.window]}
+              </Button>
+            ))}
+          </div>
+        </div>
+        <p className="text-xs text-muted-foreground">
+          {usage.activeAccountLabel ? COPY.tokens.active(usage.activeAccountLabel) : COPY.tokens.activeUnknown}
+        </p>
+      </CardHeader>
+      <CardContent className="space-y-5 px-5 pb-5 pt-2">
+        {!window || window.totals.totalTokens === 0 && window.totals.runCount === 0 ? (
+          <p className="text-sm text-muted-foreground">{COPY.tokens.empty}</p>
+        ) : (
+          <>
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+              {window.accounts.map((account) => {
+                const label = account.accountLabel ?? COPY.tokens.untracked;
+                const isActive = !!account.accountLabel && account.accountLabel === usage.activeAccountLabel;
+                const share = denominator > 0 ? Math.round((account.totalTokens / denominator) * 100) : 0;
+                return (
+                  <Card key={`${account.provider}:${account.accountLabel ?? ""}`} className="block p-4">
+                    <div className="truncate text-xs font-medium" title={account.accountLabel ?? COPY.tokens.untrackedHint}>
+                      {label}{isActive ? " · active" : ""}
+                    </div>
+                    <div className="mt-2 text-2xl font-semibold tabular-nums">{formatTokens(account.totalTokens)}</div>
+                    <div className="mt-1 text-xs text-muted-foreground tabular-nums">
+                      {share}% · {account.runCount} run{account.runCount === 1 ? "" : "s"} · {account.agents.length} agent{account.agents.length === 1 ? "" : "s"}
+                    </div>
+                  </Card>
+                );
+              })}
+            </div>
+
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-(--sz-44rem) text-left text-sm" aria-label={COPY.tokens.accountsHeading}>
+                <TokenTableHead nameLabel={COPY.tokens.accountsHeading} />
+                <tbody>
+                  {window.accounts.map((account) => (
+                    <Fragment key={`${account.provider}:${account.accountLabel ?? ""}`}>
+                      <tr className="border-b border-border bg-muted/30">
+                        <td className="px-3 py-2 font-medium" title={account.accountLabel ? undefined : COPY.tokens.untrackedHint}>
+                          {account.accountLabel ?? COPY.tokens.untracked}
+                          <span className="ml-2 text-xs font-normal text-muted-foreground">{account.provider}</span>
+                        </td>
+                        <TokenTotalsCells row={account} denominator={denominator} />
+                      </tr>
+                      <AgentRows agents={account.agents} denominator={denominator} indent />
+                    </Fragment>
+                  ))}
+                  <tr className="border-t border-border font-medium">
+                    <td className="px-3 py-2">{COPY.tokens.totalRow}</td>
+                    <TokenTotalsCells row={window.totals} denominator={denominator} />
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-(--sz-44rem) text-left text-sm" aria-label={COPY.tokens.agentsHeading}>
+                <TokenTableHead nameLabel={COPY.tokens.agentsHeading} />
+                <tbody>
+                  <AgentRows agents={window.agents} denominator={denominator} />
+                </tbody>
+              </table>
+            </div>
+          </>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 export function Stats() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
@@ -238,6 +419,14 @@ export function Stats() {
     queryFn: () => statsApi.byProject(companyId, from || undefined, to || undefined),
     enabled,
     staleTime: 30_000,
+  });
+
+  const { data: tokenUsage } = useQuery({
+    queryKey: queryKeys.stats.tokenUsage(companyId),
+    queryFn: () => statsApi.tokenUsage(companyId),
+    enabled: !!selectedCompanyId,
+    staleTime: 30_000,
+    refetchInterval: 60_000,
   });
 
   if (!selectedCompanyId) {
@@ -310,7 +499,10 @@ export function Stats() {
       ) : error ? (
         <p className="text-sm text-destructive">{(error as Error).message}</p>
       ) : isEmpty ? (
-        <EmptyState icon={BarChart3} message={COPY.empty} description={COPY.emptyHint} />
+        <>
+          <EmptyState icon={BarChart3} message={COPY.empty} description={COPY.emptyHint} />
+          {tokenUsage ? <TokenUsageByAccount usage={tokenUsage} /> : null}
+        </>
       ) : (
         <>
           <div className="grid gap-3 lg:grid-cols-4">
@@ -434,6 +626,8 @@ export function Stats() {
               </div>
             </CardContent>
           </Card>
+
+          {tokenUsage ? <TokenUsageByAccount usage={tokenUsage} /> : null}
         </>
       )}
     </div>

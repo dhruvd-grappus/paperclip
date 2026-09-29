@@ -1,4 +1,7 @@
 import { execFile } from "node:child_process";
+import { readFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
@@ -51,4 +54,60 @@ export async function readClaudeAccount(
 
 export function resetClaudeAccountCacheForTests() {
   cache = null;
+}
+
+/**
+ * Email of the login in Claude Code's global config (`oauthAccount.emailAddress`
+ * in `$CLAUDE_CONFIG_DIR/.claude.json`, else `~/.claude.json`). This is the file
+ * claude-swap rewrites on every rotation, so it names the account an agent run
+ * inherits without spawning the CLI.
+ */
+export function parseClaudeConfigAccountLabel(raw: string): string | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== "object") return null;
+  const account = (parsed as Record<string, unknown>).oauthAccount;
+  if (!account || typeof account !== "object") return null;
+  const email = (account as Record<string, unknown>).emailAddress;
+  return typeof email === "string" && email.trim() ? email.trim().toLowerCase() : null;
+}
+
+export function claudeConfigPath(env: NodeJS.ProcessEnv = process.env): string {
+  const base = env.CLAUDE_CONFIG_DIR?.trim() || env.HOME?.trim() || os.homedir();
+  return path.join(base, ".claude.json");
+}
+
+const LABEL_CACHE_MS = 15_000;
+let labelCache: { at: number; label: string | null } | null = null;
+
+/**
+ * The account label to stamp on a cost event. Reads the config file (cached for
+ * 15s so a burst of run completions costs one read) and falls back to
+ * `claude auth status` when the file has no login.
+ */
+export async function readActiveClaudeAccountLabel(
+  read: () => Promise<string> = () => readFile(claudeConfigPath(), "utf8"),
+  now: () => number = Date.now,
+): Promise<string | null> {
+  if (labelCache && now() - labelCache.at < LABEL_CACHE_MS) return labelCache.label;
+  let label: string | null = null;
+  try {
+    label = parseClaudeConfigAccountLabel(await read());
+  } catch {
+    label = null;
+  }
+  if (!label) {
+    const account = await readClaudeAccount();
+    label = account?.email ? account.email.trim().toLowerCase() : null;
+  }
+  labelCache = { at: now(), label };
+  return label;
+}
+
+export function resetClaudeAccountLabelCacheForTests() {
+  labelCache = null;
 }

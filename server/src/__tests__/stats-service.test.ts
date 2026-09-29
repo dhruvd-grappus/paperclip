@@ -11,7 +11,7 @@ import {
   issues,
   projects,
 } from "@paperclipai/db";
-import { statsService } from "../services/stats.ts";
+import { foldTokenUsageWindow, statsService } from "../services/stats.ts";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -30,6 +30,7 @@ const OVERVIEW_FIXTURE = {
 const mockStatsService = vi.hoisted(() => ({
   overview: vi.fn(),
   byProject: vi.fn(),
+  tokenUsage: vi.fn(),
 }));
 const mockAccessService = vi.hoisted(() => ({ decide: vi.fn() }));
 
@@ -101,6 +102,16 @@ describe("stats routes", () => {
     });
   });
 
+  it("serves token usage by account for the company", async () => {
+    mockAccessService.decide.mockResolvedValue({ allowed: true });
+    const payload = { generatedAt: "2026-09-29T12:00:00.000Z", activeAccountLabel: "a@b.c", windows: [] };
+    mockStatsService.tokenUsage.mockResolvedValue(payload);
+    const res = await request(createApp()).get("/api/companies/company-1/stats/token-usage");
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual(payload);
+    expect(mockStatsService.tokenUsage).toHaveBeenCalledWith("company-1");
+  });
+
   it("rejects an unparsable range", async () => {
     const res = await request(createApp()).get("/api/companies/company-1/stats/overview?from=yesterday");
 
@@ -134,6 +145,49 @@ describe("stats routes", () => {
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
+
+describe("foldTokenUsageWindow", () => {
+  const row = (accountLabel: string | null, agentId: string, input: number, output: number, cached = 0, runs = 1) => ({
+    accountLabel,
+    provider: "anthropic",
+    agentId,
+    agentName: `Agent ${agentId}`,
+    inputTokens: input,
+    cachedInputTokens: cached,
+    outputTokens: output,
+    costCents: 0,
+    runCount: runs,
+  });
+
+  it("totals per account, per agent inside each account, and per agent overall, largest first", () => {
+    const since = new Date("2026-09-22T00:00:00.000Z");
+    const window = foldTokenUsageWindow("7d", 168, since, [
+      row("levelup@grappus.com", "a1", 100, 10, 5, 2),
+      row("levelup@grappus.com", "a2", 300, 30, 0, 1),
+      row("minion@unberry.com", "a1", 50, 5, 0, 1),
+      row(null, "a3", 1, 1, 0, 1),
+    ]);
+    expect(window.since).toBe(since.toISOString());
+    expect(window.totals).toEqual({ inputTokens: 451, cachedInputTokens: 5, outputTokens: 46, totalTokens: 502, costCents: 0, runCount: 5 });
+    expect(window.accounts.map((a) => [a.accountLabel, a.totalTokens, a.agents.map((g) => g.agentId)])).toEqual([
+      ["levelup@grappus.com", 445, ["a2", "a1"]],
+      ["minion@unberry.com", 55, ["a1"]],
+      [null, 2, ["a3"]],
+    ]);
+    expect(window.agents.map((a) => [a.agentId, a.totalTokens, a.runCount])).toEqual([
+      ["a2", 330, 1],
+      ["a1", 170, 3],
+      ["a3", 2, 1],
+    ]);
+  });
+
+  it("returns empty structures for a quiet window", () => {
+    const window = foldTokenUsageWindow("1d", 24, new Date(), []);
+    expect(window.totals.totalTokens).toBe(0);
+    expect(window.accounts).toEqual([]);
+    expect(window.agents).toEqual([]);
+  });
+});
 
 describeEmbeddedPostgres("stats service", () => {
   const RANGE = {
@@ -222,19 +276,30 @@ describeEmbeddedPostgres("stats service", () => {
         });
         return id;
       },
-      async cost(values: { costCents: number; projectId?: string; issueId?: string; occurredAt: Date }) {
+      async cost(values: {
+        costCents: number;
+        projectId?: string;
+        issueId?: string;
+        occurredAt: Date;
+        accountLabel?: string | null;
+        inputTokens?: number;
+        outputTokens?: number;
+        heartbeatRunId?: string;
+      }) {
         await db.insert(costEvents).values({
           companyId,
           agentId,
           projectId: values.projectId ?? null,
           issueId: values.issueId ?? null,
+          heartbeatRunId: values.heartbeatRunId ?? null,
           provider: "anthropic",
           biller: "anthropic",
           billingType: "metered_api",
           model: "claude-opus-5",
-          inputTokens: 0,
+          accountLabel: values.accountLabel ?? null,
+          inputTokens: values.inputTokens ?? 0,
           cachedInputTokens: 0,
-          outputTokens: 0,
+          outputTokens: values.outputTokens ?? 0,
           costCents: values.costCents,
           occurredAt: values.occurredAt,
         });
@@ -362,6 +427,39 @@ describeEmbeddedPostgres("stats service", () => {
       { date: "2026-04-03", ms: 0, runCount: 0 },
     ]);
     expect(overview.throughput.donePerDay.every((day) => day.count === 0)).toBe(true);
+  });
+
+  it("splits token usage by cloud account and agent over rolling windows", async () => {
+    const now = new Date("2026-09-29T12:00:00.000Z");
+    const hoursAgo = (h: number) => new Date(now.getTime() - h * 60 * 60 * 1000);
+    const company = await seedCompany("Tokens");
+    const other = await seedCompany("Elsewhere");
+    const runA = await company.run({ startedAt: hoursAgo(2), finishedAt: hoursAgo(1) });
+    const runB = await company.run({ startedAt: hoursAgo(50), finishedAt: hoursAgo(49) });
+    await company.cost({ costCents: 0, occurredAt: hoursAgo(1), accountLabel: "levelup@grappus.com", inputTokens: 100, outputTokens: 10, heartbeatRunId: runA });
+    await company.cost({ costCents: 0, occurredAt: hoursAgo(49), accountLabel: "minion@unberry.com", inputTokens: 200, outputTokens: 20, heartbeatRunId: runB });
+    await company.cost({ costCents: 0, occurredAt: hoursAgo(24 * 10), accountLabel: null, inputTokens: 1000, outputTokens: 100 });
+    await company.cost({ costCents: 0, occurredAt: hoursAgo(24 * 40), accountLabel: "levelup@grappus.com", inputTokens: 5000, outputTokens: 500 });
+    await other.cost({ costCents: 0, occurredAt: hoursAgo(1), accountLabel: "levelup@grappus.com", inputTokens: 7, outputTokens: 7 });
+
+    const usage = await stats.tokenUsage(company.companyId, now);
+    expect(usage.windows.map((w) => w.window)).toEqual(["1d", "5d", "7d", "30d"]);
+    const byWindow = Object.fromEntries(usage.windows.map((w) => [w.window, w]));
+
+    expect(byWindow["1d"]!.totals.totalTokens).toBe(110);
+    expect(byWindow["1d"]!.accounts.map((a) => [a.accountLabel, a.totalTokens, a.runCount])).toEqual([["levelup@grappus.com", 110, 1]]);
+    expect(byWindow["1d"]!.accounts[0]!.agents[0]).toMatchObject({ agentId: company.agentId, agentName: "Tokens Agent", totalTokens: 110 });
+
+    expect(byWindow["5d"]!.totals.totalTokens).toBe(330);
+    expect(byWindow["5d"]!.accounts.map((a) => [a.accountLabel, a.totalTokens])).toEqual([
+      ["minion@unberry.com", 220],
+      ["levelup@grappus.com", 110],
+    ]);
+    expect(byWindow["5d"]!.agents).toHaveLength(1);
+    expect(byWindow["5d"]!.agents[0]!.runCount).toBe(2);
+
+    expect(byWindow["30d"]!.totals.totalTokens).toBe(1430);
+    expect(byWindow["30d"]!.accounts.map((a) => a.accountLabel)).toEqual([null, "minion@unberry.com", "levelup@grappus.com"]);
   });
 
   it("keeps one company's numbers out of another's", async () => {

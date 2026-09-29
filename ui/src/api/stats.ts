@@ -1,4 +1,4 @@
-import type { StatsByProject, StatsOverview } from "@paperclipai/shared";
+import type { StatsByProject, StatsOverview, StatsTokenUsage } from "@paperclipai/shared";
 import { api } from "./client";
 
 function statsParams(from?: string, to?: string, projectId?: string): string {
@@ -15,4 +15,6 @@ export const statsApi = {
     api.get<StatsOverview>(`/companies/${companyId}/stats/overview${statsParams(from, to, projectId)}`),
   byProject: (companyId: string, from?: string, to?: string) =>
     api.get<StatsByProject>(`/companies/${companyId}/stats/by-project${statsParams(from, to)}`),
+  tokenUsage: (companyId: string) =>
+    api.get<StatsTokenUsage>(`/companies/${companyId}/stats/token-usage`),
 };

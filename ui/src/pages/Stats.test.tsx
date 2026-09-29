@@ -4,7 +4,7 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { StatsByProject, StatsOverview } from "@paperclipai/shared";
+import type { StatsByProject, StatsOverview, StatsTokenUsage } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Stats } from "./Stats";
 
@@ -12,6 +12,7 @@ const setBreadcrumbsMock = vi.hoisted(() => vi.fn());
 const statsApiMocks = vi.hoisted(() => ({
   overview: vi.fn(),
   byProject: vi.fn(),
+  tokenUsage: vi.fn(),
 }));
 
 vi.mock("../api/stats", () => ({ statsApi: statsApiMocks }));
@@ -98,6 +99,47 @@ const byProjectFixture: StatsByProject = {
   ],
 };
 
+const totals = (input: number, output: number, runs: number) => ({
+  inputTokens: input,
+  cachedInputTokens: 0,
+  outputTokens: output,
+  totalTokens: input + output,
+  costCents: 0,
+  runCount: runs,
+});
+
+const tokenUsageFixture: StatsTokenUsage = {
+  generatedAt: "2026-09-29T12:00:00.000Z",
+  activeAccountLabel: "levelup@grappus.com",
+  windows: [
+    { window: "1d", hours: 24, since: "2026-09-28T12:00:00.000Z", totals: totals(0, 0, 0), accounts: [], agents: [] },
+    {
+      window: "7d",
+      hours: 168,
+      since: "2026-09-22T12:00:00.000Z",
+      totals: totals(3_000_000, 300_000, 3),
+      accounts: [
+        {
+          accountLabel: "levelup@grappus.com",
+          provider: "anthropic",
+          ...totals(2_000_000, 200_000, 2),
+          agents: [{ agentId: "agent-1", agentName: "PaperClipFixer", ...totals(2_000_000, 200_000, 2) }],
+        },
+        {
+          accountLabel: "minion@unberry.com",
+          provider: "anthropic",
+          ...totals(1_000_000, 100_000, 1),
+          agents: [{ agentId: "agent-2", agentName: "Clarifier", ...totals(1_000_000, 100_000, 1) }],
+        },
+      ],
+      agents: [
+        { agentId: "agent-1", agentName: "PaperClipFixer", ...totals(2_000_000, 200_000, 2) },
+        { agentId: "agent-2", agentName: "Clarifier", ...totals(1_000_000, 100_000, 1) },
+      ],
+    },
+  ],
+};
+
 describe("Stats page", () => {
   let container: HTMLDivElement;
   let root: ReturnType<typeof createRoot>;
@@ -122,12 +164,36 @@ describe("Stats page", () => {
     document.body.appendChild(container);
     statsApiMocks.overview.mockResolvedValue(overviewFixture());
     statsApiMocks.byProject.mockResolvedValue(byProjectFixture);
+    statsApiMocks.tokenUsage.mockResolvedValue(tokenUsageFixture);
   });
 
   afterEach(() => {
     act(() => root?.unmount());
     container.remove();
     vi.clearAllMocks();
+  });
+
+  it("shows token usage per cloud account and agent, with the active login and a window switch", async () => {
+    await render();
+    await act(async () => {
+      await vi.waitFor(() => {
+        expect(container.textContent).toContain("Token usage by cloud account");
+      });
+    });
+    const text = container.textContent ?? "";
+    expect(text).toContain("Runs currently land on levelup@grappus.com.");
+    expect(text).toContain("levelup@grappus.com · active");
+    expect(text).toContain("minion@unberry.com");
+    expect(text).toContain("PaperClipFixer");
+    expect(text).toContain("Clarifier");
+    expect(text).toContain("2.2M");
+    expect(text).toContain("3.3M");
+
+    const oneDay = Array.from(container.querySelectorAll("button")).find((b) => b.textContent === "1 day")!;
+    await act(async () => {
+      oneDay.click();
+    });
+    expect(container.textContent).toContain("No token usage recorded in this window.");
   });
 
   it("renders every metric once both endpoints resolve", async () => {

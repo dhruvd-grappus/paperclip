@@ -1,7 +1,7 @@
 import { sql, type SQL } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import type { Db } from "@paperclipai/db";
-import { costEvents, heartbeatRuns, issues, projects } from "@paperclipai/db";
+import { agents, costEvents, heartbeatRuns, issues, projects } from "@paperclipai/db";
 import type {
   StatsByProject,
   StatsOverview,
@@ -9,7 +9,14 @@ import type {
   StatsTaskExtreme,
   StatsThroughputDay,
   StatsTimeBurnDay,
+  StatsTokenAccountUsage,
+  StatsTokenAgentUsage,
+  StatsTokenTotals,
+  StatsTokenUsage,
+  StatsTokenWindow,
+  StatsTokenWindowKey,
 } from "@paperclipai/shared";
+import { readActiveClaudeAccountLabel } from "./claude-account.js";
 
 export interface StatsRangeInput {
   from?: Date;
@@ -122,6 +129,86 @@ function projectFilter(projectId?: string): SQL {
 /** One row per UTC calendar day in the range, so a chart never has to guess a gap. */
 function dayScaffold(range: ResolvedStatsRange): SQL {
   return sql`select generate_series(${range.fromDay}::date, ${range.toDay}::date, interval '1 day')::date as day`;
+}
+
+/** Lookback windows for the token-usage view, shortest first. */
+export const TOKEN_USAGE_WINDOWS: ReadonlyArray<{ window: StatsTokenWindowKey; hours: number }> = [
+  { window: "1d", hours: 24 },
+  { window: "5d", hours: 5 * 24 },
+  { window: "7d", hours: 7 * 24 },
+  { window: "30d", hours: 30 * 24 },
+];
+
+interface TokenUsageRow {
+  accountLabel: string | null;
+  provider: string;
+  agentId: string;
+  agentName: string;
+  inputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
+  costCents: number;
+  runCount: number;
+}
+
+function emptyTokenTotals(): StatsTokenTotals {
+  return { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, totalTokens: 0, costCents: 0, runCount: 0 };
+}
+
+function addTokenTotals(target: StatsTokenTotals, row: TokenUsageRow) {
+  target.inputTokens += row.inputTokens;
+  target.cachedInputTokens += row.cachedInputTokens;
+  target.outputTokens += row.outputTokens;
+  target.totalTokens += row.inputTokens + row.cachedInputTokens + row.outputTokens;
+  target.costCents += row.costCents;
+  target.runCount += row.runCount;
+}
+
+function byTotalTokensDesc(a: StatsTokenTotals, b: StatsTokenTotals) {
+  return b.totalTokens - a.totalTokens || b.costCents - a.costCents;
+}
+
+/**
+ * Folds account × agent rows into one window: totals, per-account (with the agents
+ * inside each account) and per-agent across accounts. Pure so it can be unit tested.
+ */
+export function foldTokenUsageWindow(
+  window: StatsTokenWindowKey,
+  hours: number,
+  since: Date,
+  rows: TokenUsageRow[],
+): StatsTokenWindow {
+  const totals = emptyTokenTotals();
+  const accountMap = new Map<string, StatsTokenAccountUsage>();
+  const agentMap = new Map<string, StatsTokenAgentUsage>();
+  for (const row of rows) {
+    addTokenTotals(totals, row);
+    const accountKey = `${row.provider}\u0000${row.accountLabel ?? ""}`;
+    let account = accountMap.get(accountKey);
+    if (!account) {
+      account = { ...emptyTokenTotals(), accountLabel: row.accountLabel, provider: row.provider, agents: [] };
+      accountMap.set(accountKey, account);
+    }
+    addTokenTotals(account, row);
+    account.agents.push({ ...emptyTokenTotals(), agentId: row.agentId, agentName: row.agentName });
+    addTokenTotals(account.agents[account.agents.length - 1]!, row);
+    let agent = agentMap.get(row.agentId);
+    if (!agent) {
+      agent = { ...emptyTokenTotals(), agentId: row.agentId, agentName: row.agentName };
+      agentMap.set(row.agentId, agent);
+    }
+    addTokenTotals(agent, row);
+  }
+  const accounts = [...accountMap.values()].sort(byTotalTokensDesc);
+  for (const account of accounts) account.agents.sort(byTotalTokensDesc);
+  return {
+    window,
+    hours,
+    since: since.toISOString(),
+    totals,
+    accounts,
+    agents: [...agentMap.values()].sort(byTotalTokensDesc),
+  };
 }
 
 export function statsService(db: Db) {
@@ -296,8 +383,55 @@ export function statsService(db: Db) {
     };
   }
 
+  async function tokenUsageRows(companyId: string, since: Date): Promise<TokenUsageRow[]> {
+    const statement = sql`
+      select ${costEvents.accountLabel} as "accountLabel",
+             ${costEvents.provider} as provider,
+             ${costEvents.agentId} as "agentId",
+             coalesce(${agents.name}, 'Unknown agent') as "agentName",
+             coalesce(sum(${costEvents.inputTokens}), 0)::bigint as "inputTokens",
+             coalesce(sum(${costEvents.cachedInputTokens}), 0)::bigint as "cachedInputTokens",
+             coalesce(sum(${costEvents.outputTokens}), 0)::bigint as "outputTokens",
+             coalesce(sum(${costEvents.costCents}), 0)::bigint as "costCents",
+             count(distinct ${costEvents.heartbeatRunId})::int as "runCount"
+      from ${costEvents}
+      left join ${agents} on ${agents.id} = ${costEvents.agentId}
+      where ${costEvents.companyId} = ${companyId}
+        and ${costEvents.occurredAt} >= ${since.toISOString()}::timestamptz
+      group by ${costEvents.accountLabel}, ${costEvents.provider}, ${costEvents.agentId}, ${agents.name}
+    `;
+    return rowsOf<Record<string, unknown>>(await db.execute(statement)).map((row) => ({
+      accountLabel: typeof row.accountLabel === "string" ? row.accountLabel : null,
+      provider: String(row.provider ?? "unknown"),
+      agentId: String(row.agentId),
+      agentName: String(row.agentName ?? "Unknown agent"),
+      inputTokens: Number(row.inputTokens ?? 0),
+      cachedInputTokens: Number(row.cachedInputTokens ?? 0),
+      outputTokens: Number(row.outputTokens ?? 0),
+      costCents: Number(row.costCents ?? 0),
+      runCount: Number(row.runCount ?? 0),
+    }));
+  }
+
   return {
     resolveRange: resolveStatsRange,
+
+    /**
+     * Tokens per cloud login, per agent, over fixed rolling windows. One query per
+     * window; the fold is in memory so accounts and agents share one row set.
+     */
+    tokenUsage: async (companyId: string, now: Date = new Date()): Promise<StatsTokenUsage> => {
+      const [activeAccountLabel, windows] = await Promise.all([
+        readActiveClaudeAccountLabel(),
+        Promise.all(
+          TOKEN_USAGE_WINDOWS.map(async ({ window, hours }) => {
+            const since = new Date(now.getTime() - hours * 60 * 60 * 1000);
+            return foldTokenUsageWindow(window, hours, since, await tokenUsageRows(companyId, since));
+          }),
+        ),
+      ]);
+      return { generatedAt: now.toISOString(), activeAccountLabel, windows };
+    },
 
     overview: async (companyId: string, options: StatsOverviewInput = {}): Promise<StatsOverview> => {
       const range = resolveStatsRange(options);

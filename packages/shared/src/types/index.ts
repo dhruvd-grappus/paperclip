@@ -887,6 +887,12 @@ export type {
   StatsOverview,
   StatsProjectPerformance,
   StatsByProject,
+  StatsTokenWindowKey,
+  StatsTokenTotals,
+  StatsTokenAgentUsage,
+  StatsTokenAccountUsage,
+  StatsTokenWindow,
+  StatsTokenUsage,
 } from "./stats.js";
 export type {
   AgentWakeupResponse,
