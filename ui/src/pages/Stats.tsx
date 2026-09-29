@@ -13,6 +13,7 @@ import type {
 import { Activity, BarChart3, CircleDashed, Cloud, Gauge, Hourglass, Rabbit, Timer, Turtle } from "lucide-react";
 import { statsApi } from "../api/stats";
 import { ChartCard } from "../components/ActivityCharts";
+import { cn } from "@/lib/utils";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
@@ -165,7 +166,7 @@ function DayBarChart({
   const midIndex = Math.floor(lastIndex / 2);
   return (
     <div>
-      <div className="flex items-end gap-(--sz-3px) h-20">
+      <div className="flex items-end gap-(--sz-3px) h-20 min-w-0 overflow-hidden">
         {days.map((day) => (
           <div key={day.date} className="flex-1 h-full flex flex-col justify-end" title={tooltip(day)}>
             {day.value > 0 ? (
@@ -176,11 +177,18 @@ function DayBarChart({
           </div>
         ))}
       </div>
-      <div className="flex gap-(--sz-3px) mt-1.5">
+      <div className="flex gap-(--sz-3px) mt-1.5 min-w-0">
         {days.map((day, i) => (
-          <div key={day.date} className="flex-1 text-center">
+          <div key={day.date} className="relative h-3 min-w-0 flex-1">
             {i === 0 || i === midIndex || i === lastIndex ? (
-              <span className="text-(length:--text-nano) text-muted-foreground tabular-nums">{formatDayLabel(day.date)}</span>
+              <span
+                className={cn(
+                  "absolute top-0 whitespace-nowrap text-(length:--text-nano) text-muted-foreground tabular-nums",
+                  i === 0 ? "left-0" : i === lastIndex ? "right-0" : "left-1/2 -translate-x-1/2",
+                )}
+              >
+                {formatDayLabel(day.date)}
+              </span>
             ) : null}
           </div>
         ))}
@@ -201,7 +209,7 @@ function ExtremeTaskCard({
   icon: ComponentType<{ className?: string }>;
 }) {
   return (
-    <Card>
+    <Card className="min-w-0">
       <CardHeader className="px-5 pt-5 pb-2">
         <CardTitle className="flex items-center gap-2 text-base">
           <Icon className="h-4 w-4 text-muted-foreground" />
@@ -542,7 +550,7 @@ export function Stats() {
             </span>
           </p>
 
-          <div className="grid gap-4 xl:grid-cols-2">
+          <div className="grid gap-4 xl:grid-cols-2 [&>*]:min-w-0">
             <ChartCard title={COPY.burn.chartTitle} subtitle={COPY.burn.chartSubtitle}>
               <DayBarChart
                 days={burnDays.map((day) => ({ date: day.date, value: day.ms }))}
@@ -567,7 +575,7 @@ export function Stats() {
             </ChartCard>
           </div>
 
-          <div className="grid gap-4 xl:grid-cols-2">
+          <div className="grid gap-4 xl:grid-cols-2 [&>*]:min-w-0">
             <ExtremeTaskCard
               title={COPY.fastest.title}
               description={COPY.fastest.description}

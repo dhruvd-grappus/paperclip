@@ -454,6 +454,41 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
 
   useCompanyPageMemory();
 
+  // Mobile drawer focus model: when it opens, move focus inside it; Escape closes
+  // it; on close, return focus to whatever had it before. While closed the panel
+  // is `inert`, so its links leave the tab order and the accessibility tree.
+  const mobileDrawerRef = useRef<HTMLDivElement | null>(null);
+  const mobileDrawerOpenerRef = useRef<HTMLElement | null>(null);
+  useEffect(() => {
+    if (!isMobile) return;
+    const drawer = mobileDrawerRef.current;
+    if (!drawer) return;
+    if (sidebarOpen) {
+      const active = document.activeElement;
+      mobileDrawerOpenerRef.current = active instanceof HTMLElement && !drawer.contains(active) ? active : null;
+      const first = drawer.querySelector<HTMLElement>(
+        'a[href], button:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex="-1"])',
+      );
+      first?.focus({ preventScroll: true });
+      const onKeyDown = (event: KeyboardEvent) => {
+        if (event.key === "Escape") {
+          event.preventDefault();
+          setSidebarOpen(false);
+        }
+      };
+      window.addEventListener("keydown", onKeyDown);
+      return () => window.removeEventListener("keydown", onKeyDown);
+    }
+    const opener = mobileDrawerOpenerRef.current;
+    mobileDrawerOpenerRef.current = null;
+    if (opener && opener.isConnected && drawer.contains(document.activeElement)) {
+      opener.focus({ preventScroll: true });
+    } else if (drawer.contains(document.activeElement)) {
+      (document.activeElement as HTMLElement | null)?.blur?.();
+    }
+    return undefined;
+  }, [isMobile, sidebarOpen, setSidebarOpen]);
+
   useKeyboardShortcuts({
     enabled: keyboardShortcutsEnabled,
     onNewIssue: () => openNewIssue(),
@@ -650,6 +685,12 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
 
         {isMobile ? (
           <div
+            ref={mobileDrawerRef}
+            role="dialog"
+            aria-modal="true"
+            aria-label="Navigation"
+            inert={!sidebarOpen}
+            aria-hidden={!sidebarOpen}
             className={cn(
               "fixed inset-y-0 left-0 z-50 flex flex-col overflow-hidden pt-(--sz-safe-top) transition-transform duration-100 ease-out",
               sidebarOpen ? "translate-x-0" : "-translate-x-full"

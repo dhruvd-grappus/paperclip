@@ -76,8 +76,12 @@ export function HintIcon({ text }: { text: string }) {
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <button type="button" className="inline-flex text-muted-foreground/50 hover:text-muted-foreground transition-colors">
-          <HelpCircle className="h-3 w-3" />
+        <button
+          type="button"
+          aria-label={text}
+          className="relative inline-flex text-muted-foreground/50 hover:text-muted-foreground transition-colors before:absolute before:-inset-1.5 before:content-[''] pointer-coarse:before:-inset-3"
+        >
+          <HelpCircle className="h-3 w-3" aria-hidden="true" />
         </button>
       </TooltipTrigger>
       <TooltipContent side="top" className="max-w-xs">
@@ -87,11 +91,11 @@ export function HintIcon({ text }: { text: string }) {
   );
 }
 
-export function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode; configSection?: import("../adapters/types").AdapterConfigSection }) {
+export function Field({ label, hint, htmlFor, children }: { label: string; hint?: string; htmlFor?: string; children: React.ReactNode; configSection?: import("../adapters/types").AdapterConfigSection }) {
   return (
     <div>
       <div className="flex items-center gap-1.5 mb-1">
-        <label className="text-xs text-muted-foreground">{label}</label>
+        <label htmlFor={htmlFor} className="text-xs text-muted-foreground">{label}</label>
         {hint && <HintIcon text={hint} />}
       </div>
       {children}

@@ -44,11 +44,11 @@ function runDayTooltip(entry: DashboardRunActivityDay): string {
 
 function DateLabels({ days }: { days: string[] }) {
   return (
-    <div className="flex gap-(--sz-3px) mt-1.5">
+    <div className="flex gap-(--sz-3px) mt-1.5 min-w-0">
       {days.map((day, i) => (
-        <div key={day} className="flex-1 text-center">
+        <div key={day} className="relative h-3 min-w-0 flex-1">
           {(i === 0 || i === 6 || i === 13) ? (
-            <span className="text-(length:--text-nano) text-muted-foreground tabular-nums">{formatDayLabel(day)}</span>
+            <span className={`absolute top-0 whitespace-nowrap text-(length:--text-nano) text-muted-foreground tabular-nums ${i === 0 ? "left-0" : i === 13 ? "right-0" : "left-1/2 -translate-x-1/2"}`}>{formatDayLabel(day)}</span>
           ) : null}
         </div>
       ))}
@@ -71,7 +71,7 @@ function ChartLegend({ items }: { items: { color: string; label: string }[] }) {
 
 export function ChartCard({ title, subtitle, children }: { title: string; subtitle?: string; children: React.ReactNode }) {
   return (
-    <div className="border border-border rounded-lg p-4 space-y-3">
+    <div className="min-w-0 overflow-hidden border border-border rounded-lg p-4 space-y-3">
       <div>
         <h3 className="text-xs font-medium text-muted-foreground">{title}</h3>
         {subtitle && <span className="text-(length:--text-nano) text-muted-foreground/60">{subtitle}</span>}

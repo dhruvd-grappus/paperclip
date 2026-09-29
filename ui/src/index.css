@@ -2587,7 +2587,7 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
   --sz-8_5rem: 8.5rem; /* Extracted from ui/src/components/NewIssueDialog.tsx (min-w-[8.5rem]). */
   --sz-160px: 160px; /* Extracted from ui/src/components/NewProjectDialog.tsx (max-w-[160px]). */
   --sz-80px: 80px; /* Extracted from ui/src/components/OnboardingWizard.tsx (min-h-[80px]). */
-  --sz-calc-17: calc(100vh - 4rem); /* Extracted from ui/src/components/PageSkeleton.tsx (h-[calc(100vh-4rem)]). */
+  --sz-calc-17: calc(100dvh - 4rem); /* Extracted from ui/src/components/PageSkeleton.tsx (h-[calc(100vh-4rem)]). */
   --sz-2px: 2px; /* Extracted from ui/src/components/QuotaBar.tsx (w-[2px]). */
   --sz-calc-18: calc(100dvh - 2rem); /* Extracted from ui/src/components/RoutineRunVariablesDialog.test.tsx (max-h-[calc(100dvh-2rem)]). */
   --sz-calc-19: calc(1rem + env(safe-area-inset-bottom)); /* Extracted from ui/src/components/RoutineRunVariablesDialog.test.tsx (pb-[calc(1rem+env(safe-area-inset-bottom))]). */
@@ -2624,8 +2624,8 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
   --sz-560px: 560px; /* Extracted from ui/src/pages/CompanyExport.tsx (min-h-[560px]). */
   --sz-520px: 520px; /* Extracted from ui/src/pages/CompanyExport.tsx (min-h-[520px]). */
   --sz-480px: 480px; /* Extracted from ui/src/pages/CompanyExport.tsx (max-h-[480px]). */
-  --sz-calc-30: calc(100vh - 12rem); /* Extracted from ui/src/pages/CompanyExport.tsx (h-[calc(100vh-12rem)]). */
-  --sz-calc-31: calc(100vh - 16rem); /* Extracted from ui/src/pages/CompanyImport.tsx (h-[calc(100vh-16rem)]). */
+  --sz-calc-30: calc(100dvh - 12rem); /* Extracted from ui/src/pages/CompanyExport.tsx (h-[calc(100vh-12rem)]). */
+  --sz-calc-31: calc(100dvh - 16rem); /* Extracted from ui/src/pages/CompanyImport.tsx (h-[calc(100vh-16rem)]). */
   --sz-calc-32: min(28rem,70vh); /* Extracted from ui/src/pages/CompanySkills.tsx (max-h-[min(28rem,70vh)]). */
   --sz-11_5rem: 11.5rem; /* Extracted from ui/src/pages/CompanySkills.tsx (min-h-[11.5rem]). */
   --sz-11_75rem: 11.75rem; /* SkillStudio.tsx file/input browser cap: five min-h-9 rows plus p-1 vertical padding. */

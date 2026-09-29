@@ -134,7 +134,7 @@ export function StatusIcon({ status, blockerAttention, onChange, className, show
       type="button"
       data-slot="icon-button"
       aria-label={`Change status (current: ${ariaLabel})`}
-      className="inline-flex cursor-pointer items-center justify-center rounded-sm focus-visible:outline-none focus-visible:ring-(length:--rad-3) focus-visible:ring-ring"
+      className="relative inline-flex cursor-pointer items-center justify-center rounded-sm focus-visible:outline-none focus-visible:ring-(length:--rad-3) focus-visible:ring-ring pointer-coarse:before:absolute pointer-coarse:before:-inset-3.5 pointer-coarse:before:content-['']"
     >
       {glyph}
     </button>

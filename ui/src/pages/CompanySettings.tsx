@@ -217,8 +217,9 @@ export function CompanySettings() {
           General
         </div>
         <div className="space-y-3">
-          <Field label="Organization name" hint="The display name for your organization.">
+          <Field label="Organization name" htmlFor="company-settings-name" hint="The display name for your organization.">
             <input
+              id="company-settings-name"
               className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
               type="text"
               value={companyName}
@@ -233,9 +234,11 @@ export function CompanySettings() {
           </Field>
           <Field
             label="Description"
+            htmlFor="company-settings-description"
             hint="Optional description shown in the organization profile."
           >
             <input
+              id="company-settings-description"
               className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
               type="text"
               value={description}
@@ -263,10 +266,12 @@ export function CompanySettings() {
             <div className="flex-1 space-y-3">
               <Field
                 label="Logo"
+                htmlFor="company-settings-logo"
                 hint="Upload a PNG, JPEG, WEBP, GIF, or SVG logo image."
               >
                 <div className="space-y-2">
                   <input
+                    id="company-settings-logo"
                     type="file"
                     accept="image/png,image/jpeg,image/webp,image/gif,image/svg+xml"
                     onChange={handleLogoFileChange}
