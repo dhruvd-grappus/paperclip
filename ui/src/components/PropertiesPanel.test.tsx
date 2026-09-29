@@ -101,15 +101,19 @@ describe("PropertiesPanel", () => {
       });
     });
 
-    it("renders the fixed-width panel with no grip and no maximize button", async () => {
+    it("renders the classic panel at its default width with a grip and no maximize button", async () => {
       await renderPanel();
       const aside = container.querySelector("aside");
       expect(aside).not.toBeNull();
-      expect(aside!.style.width).toBe("320px");
-      expect(aside!.querySelector('[role="separator"]')).toBeNull();
+      expect(aside!.style.width).toBe("380px");
+      expect(aside!.querySelector('[role="separator"][aria-label="Resize panel"]')).not.toBeNull();
       expect(container.querySelector('[aria-label="Maximize side panel"]')).toBeNull();
-      // Inner wrapper keeps the hardcoded width classes exactly as today.
-      expect(aside!.querySelector(".w-80")).not.toBeNull();
+    });
+
+    it("restores a remembered classic width, clamped to the 320px minimum", async () => {
+      window.localStorage.setItem("classicTaskInterface.propertiesPaneWidth", "200");
+      await renderPanel();
+      expect(container.querySelector("aside")!.style.width).toBe("320px");
     });
 
     it("collapses to width 0 when the panel is hidden", async () => {
@@ -132,12 +136,12 @@ describe("PropertiesPanel", () => {
       await renderPanel({ taskDetailLayout: true });
       const aside = container.querySelector("aside");
       expect(aside).not.toBeNull();
-      expect(aside!.style.width).toBe("434px");
+      expect(aside!.style.width).toBe("480px");
       expect(aside!.querySelector('[role="separator"][aria-label="Resize panel"]')).not.toBeNull();
       expect(container.querySelector('[aria-label="Maximize side panel"]')).not.toBeNull();
       const inner = aside!.querySelector<HTMLDivElement>(":scope > div:not([role])");
-      expect(inner!.style.width).toBe("434px");
-      expect(inner!.style.minWidth).toBe("434px");
+      expect(inner!.style.width).toBe("480px");
+      expect(inner!.style.minWidth).toBe("480px");
       expect(aside!.querySelector("header")?.className).toContain(
         "h-(--side-panel-header-height)",
       );
@@ -193,21 +197,21 @@ describe("PropertiesPanel", () => {
     });
 
     it("restores a remembered width from localStorage (clamped to the minimum)", async () => {
-      window.localStorage.setItem("taskChatRedesign.propertiesPaneWidth", "300");
+      window.localStorage.setItem("taskChatRedesign.propertiesPaneWidth", "350");
       await renderPanel();
-      expect(container.querySelector("aside")!.style.width).toBe("300px");
+      expect(container.querySelector("aside")!.style.width).toBe("350px");
     });
 
-    it("clamps a stored width below the 260px minimum", async () => {
+    it("clamps a stored width below the 320px minimum", async () => {
       window.localStorage.setItem("taskChatRedesign.propertiesPaneWidth", "100");
       await renderPanel();
-      expect(container.querySelector("aside")!.style.width).toBe("260px");
+      expect(container.querySelector("aside")!.style.width).toBe("320px");
     });
 
     it("falls back to the default width when the stored value is garbage", async () => {
       window.localStorage.setItem("taskChatRedesign.propertiesPaneWidth", "not-a-number");
       await renderPanel();
-      expect(container.querySelector("aside")!.style.width).toBe("322px");
+      expect(container.querySelector("aside")!.style.width).toBe("380px");
     });
 
     it("keeps the collapse-to-0 behavior when the panel is hidden", async () => {
@@ -232,7 +236,7 @@ describe("PropertiesPanel", () => {
       await renderPanel({ taskDetailLayout: true });
       const aside = container.querySelector("aside");
       expect(aside).not.toBeNull();
-      expect(aside!.style.width).toBe("322px");
+      expect(aside!.style.width).toBe("380px");
       expect(aside!.querySelector('[role="separator"][aria-label="Resize panel"]')).not.toBeNull();
       expect(container.querySelector('[aria-label="Maximize side panel"]')).not.toBeNull();
     });
@@ -244,8 +248,8 @@ describe("PropertiesPanel", () => {
       });
       await renderPanel({ taskDetailLayout: true });
       const aside = container.querySelector("aside");
-      expect(aside!.style.width).toBe("320px");
-      expect(aside!.querySelector('[role="separator"]')).toBeNull();
+      expect(aside!.style.width).toBe("380px");
+      expect(container.querySelector('[aria-label="Maximize side panel"]')).toBeNull();
     });
   });
 });
