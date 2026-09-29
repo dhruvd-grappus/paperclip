@@ -1,6 +1,6 @@
 import type { AttentionItem, Issue } from "@paperclipai/shared";
 import { describe, expect, it } from "vitest";
-import { waitingOnHumanRows } from "./waiting-on-human";
+import { waitingOnHumanRows } from "./waiting-on-human.js";
 
 const NOW = Date.parse("2026-09-28T12:00:00.000Z");
 const minutesAgo = (n: number) => new Date(NOW - n * 60_000).toISOString();
@@ -299,5 +299,70 @@ describe("waitingOnHumanRows", () => {
     // Oldest signal on the task is what it has been waiting on.
     expect(rows[0].waitingSince).toBe(minutesAgo(90));
     expect(rows[1].identifier).toBe("GRA-41");
+  });
+});
+
+describe("waitingOnHumanRows — routines and owner filter (GRA-328)", () => {
+  it("leaves routine executions off the list, status rows and pending cards alike", () => {
+    const rows = waitingOnHumanRows(
+      [item({ id: "q", relatedIssue: relatedIssue("routine-1", "GRA-90", "Nightly sweep") })],
+      [
+        issue({ id: "routine-1", identifier: "GRA-90", originKind: "routine_execution", status: "in_review" } as never),
+        issue({ id: "routine-2", identifier: "GRA-91", originKind: "routine_execution", status: "done" } as never),
+        issue({ id: "real-1", identifier: "GRA-92", status: "done" } as never),
+      ],
+      { now: NOW },
+    );
+    expect(rows.map((row) => row.issueId)).toEqual(["real-1"]);
+  });
+
+  const filterIssues = () => [
+    issue({ id: "a", identifier: "GRA-1", status: "done", createdByUserId: "user-1", projectId: "proj-1" } as never),
+    issue({ id: "b", identifier: "GRA-2", status: "done", createdByUserId: "user-2", projectId: "proj-2" } as never),
+    issue({ id: "c", identifier: "GRA-3", status: "done" } as never),
+  ];
+
+  it("filters to the selected owners, including the rows nobody owns", () => {
+    const issues = filterIssues();
+    expect(
+      waitingOnHumanRows([], issues, { now: NOW, ownerUserIds: ["user-1"] }).map((r) => r.issueId),
+    ).toEqual(["a"]);
+    // Multi-select: two people, and the ownerless bucket ticked alongside them.
+    expect(
+      waitingOnHumanRows([], issues, {
+        now: NOW,
+        ownerUserIds: ["user-1", "unassigned"],
+      }).map((r) => r.issueId),
+    ).toEqual(["a", "c"]);
+
+    // An empty selection is "no filter", not "nothing matches".
+    expect(waitingOnHumanRows([], issues, { now: NOW, ownerUserIds: [] })).toHaveLength(3);
+    expect(waitingOnHumanRows([], issues, { now: NOW })).toHaveLength(3);
+  });
+
+  it("filters to the selected projects, and ANDs the two axes", () => {
+    const issues = filterIssues();
+    expect(
+      waitingOnHumanRows([], issues, { now: NOW, projectIds: ["proj-1", "proj-2"] }).map((r) => r.issueId),
+    ).toEqual(["a", "b"]);
+    expect(
+      waitingOnHumanRows([], issues, { now: NOW, projectIds: ["unfiled"] }).map((r) => r.issueId),
+    ).toEqual(["c"]);
+    expect(
+      waitingOnHumanRows([], issues, {
+        now: NOW,
+        ownerUserIds: ["user-1", "user-2"],
+        projectIds: ["proj-2"],
+      }).map((r) => r.issueId),
+    ).toEqual(["b"]);
+  });
+
+  it("still accepts a bare `now` as its third argument", () => {
+    const rows = waitingOnHumanRows(
+      [],
+      [issue({ id: "a", identifier: "GRA-1", status: "done" } as never)],
+      NOW,
+    );
+    expect(rows).toHaveLength(1);
   });
 });

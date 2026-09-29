@@ -5,6 +5,7 @@ import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AttentionItem, Issue } from "@paperclipai/shared";
+import { waitingOnHumanRows } from "@paperclipai/shared";
 import { WaitingOnYouPanel } from "./WaitingOnYouPanel";
 
 vi.mock("@/lib/router", () => ({
@@ -112,7 +113,9 @@ describe("WaitingOnYouPanel", () => {
     } = {},
   ) {
     flushSync(() => {
-      root.render(<WaitingOnYouPanel attentionItems={items} issues={issues} {...props} />);
+      // The panel takes rows now; the server builds them with this same
+      // function, so the fixtures still describe the two sources they come from.
+      root.render(<WaitingOnYouPanel rows={waitingOnHumanRows(items, issues)} {...props} />);
     });
   }
 

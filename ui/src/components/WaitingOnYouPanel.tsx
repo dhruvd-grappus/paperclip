@@ -1,11 +1,10 @@
-import { useMemo } from "react";
-import type { AttentionItem, Issue } from "@paperclipai/shared";
+import type { WaitingOnHumanRow, WaitingReason } from "@paperclipai/shared";
+import { waitingReasonLabel } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
 import { Card } from "@/components/ui/card";
 import { StatusGlyph } from "./StatusGlyph";
 import { StatusIcon } from "./StatusIcon";
 import { timeAgo } from "../lib/timeAgo";
-import { waitingOnHumanRows, waitingReasonLabel, type WaitingReason } from "../lib/waiting-on-human";
 
 /** How many rows the widget shows before collapsing into a "+N more" line. */
 const VISIBLE_ROWS = 8;
@@ -28,7 +27,7 @@ function glyphStatus(reasons: readonly WaitingReason[]): "in_review" | "done" | 
  * Dashboard: "Waiting on you" — every parent task whose next move is a
  * person's, oldest wait first. Pending questions, pending confirmations, tasks
  * parked in review, and tasks marked `done` that nobody has approved yet. See
- * `lib/waiting-on-human` for what qualifies and why.
+ * `waiting-on-human` in `@paperclipai/shared` for what qualifies and why.
  *
  * The dashboard shows the first {@link VISIBLE_ROWS} and links the rest to
  * `/waiting-on-you`, which renders this same component with `showAll` — one
@@ -40,15 +39,19 @@ function glyphStatus(reasons: readonly WaitingReason[]): "in_review" | "done" | 
  * lists tasks of any origin that cannot move until a human answers.
  */
 export function WaitingOnYouPanel({
-  attentionItems,
-  issues,
+  rows,
   userName,
   onUpdateIssue,
   showAll = false,
   showHeading = true,
 }: {
-  attentionItems: readonly AttentionItem[];
-  issues: readonly Issue[];
+  /**
+   * The rows, as the server built them (`GET /companies/:id/waiting-on-you`).
+   * The panel no longer derives the list from the task list and the attention
+   * feed: the rule runs where the data is, so the dashboard and the page show
+   * the same rows without either one loading the whole company to do it.
+   */
+  rows: readonly WaitingOnHumanRow[];
   /** Resolves a row's owner id to a name; omitted, rows show no owner. */
   userName?: (userId: string | null | undefined) => string | null;
   /**
@@ -61,7 +64,6 @@ export function WaitingOnYouPanel({
   showAll?: boolean;
   showHeading?: boolean;
 }) {
-  const rows = useMemo(() => waitingOnHumanRows(attentionItems, issues), [attentionItems, issues]);
   const visibleRows = showAll ? rows : rows.slice(0, VISIBLE_ROWS);
 
   return (

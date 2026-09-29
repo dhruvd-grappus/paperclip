@@ -199,6 +199,22 @@ export type {
   AttentionWorkspaceRef,
 } from "./types/attention.js";
 export { ATTENTION_SOURCE_KINDS } from "./types/attention.js";
+export { attentionDetailLine, attentionTaskRef } from "./attention-rows.js";
+export {
+  isVisibleTask,
+  isVisibleWorkTask,
+  visibleWorkTasks,
+  type VisibilityFields,
+} from "./task-visibility.js";
+export {
+  WAITING_ON_HUMAN_UNASSIGNED,
+  WAITING_ON_HUMAN_UNFILED,
+  waitingOnHumanRows,
+  waitingReasonLabel,
+  type WaitingOnHumanOptions,
+  type WaitingOnHumanRow,
+  type WaitingReason,
+} from "./waiting-on-human.js";
 export type {
   DecisionQueue,
   DecisionQueueItem,

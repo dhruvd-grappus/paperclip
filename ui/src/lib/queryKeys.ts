@@ -650,6 +650,21 @@ export const queryKeys = {
   },
   dashboard: (companyId: string) => ["dashboard", companyId] as const,
   attention: (companyId: string) => ["attention", companyId] as const,
+  // The filters are part of the key: the server applies them, so a filtered
+  // list is a different response rather than a client-side slice of one. Both
+  // selections are sorted so the same set in a different tick order is one
+  // cache entry, not two.
+  waitingOnYou: (
+    companyId: string,
+    users: readonly string[] = [],
+    projects: readonly string[] = [],
+  ) =>
+    [
+      "waiting-on-you",
+      companyId,
+      [...users].sort().join(",") || "__all-owners__",
+      [...projects].sort().join(",") || "__all-projects__",
+    ] as const,
   decisions: {
     list: (companyId: string, status?: string) =>
       ["decisions", companyId, status ?? "__all-statuses__"] as const,

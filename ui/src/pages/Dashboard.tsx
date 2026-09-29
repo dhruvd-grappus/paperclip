@@ -11,7 +11,6 @@ import { dashboardApi } from "../api/dashboard";
 import { accessApi } from "../api/access";
 import { issuesApi } from "../api/issues";
 import { agentsApi } from "../api/agents";
-import { attentionApi } from "../api/attention";
 import { projectsApi } from "../api/projects";
 import { buildCompanyUserProfileMap } from "../lib/company-members";
 import { useCompany } from "../context/CompanyContext";
@@ -26,6 +25,7 @@ import { Bot, CircleCheck, CircleDot, OctagonAlert, LayoutDashboard, PauseCircle
 import { RunningByProjectPanel } from "../components/RunningByProjectPanel";
 import { HumanInterventionPanel } from "../components/HumanInterventionPanel";
 import { WaitingOnYouPanel } from "../components/WaitingOnYouPanel";
+import { waitingOnYouApi } from "../api/waiting-on-you";
 import { ClaudeUsagePanel } from "../components/ClaudeUsagePanel";
 import { dashboardTaskMetrics } from "../lib/dashboard-task-metrics";
 import { visibleWorkTasks } from "../lib/task-visibility";
@@ -172,14 +172,13 @@ export function Dashboard() {
     enabled: !!selectedCompanyId,
   });
 
-  // Pending questions and confirmations for the "Waiting on you" panel. Same
-  // query key and cadence as the sidebar badge and the OS notifier, so the
-  // three share one cache entry instead of each polling the feed. Board-only
-  // endpoint: a non-board viewer gets no items and the panel falls back to the
-  // in-review tasks it derives from the issue list.
-  const { data: attentionFeed } = useQuery({
-    queryKey: queryKeys.attention(selectedCompanyId!),
-    queryFn: () => attentionApi.list(selectedCompanyId!),
+  // The "Waiting on you" rows, built by the server (GRA-328). The widget used
+  // to union the attention feed with the task list here; the server does that
+  // now, so the dashboard and `/waiting-on-you` read one endpoint on one query
+  // key. Board-only: a non-board viewer gets no rows.
+  const { data: waitingOnYou } = useQuery({
+    queryKey: queryKeys.waitingOnYou(selectedCompanyId!),
+    queryFn: () => waitingOnYouApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
     refetchInterval: 60_000,
   });
@@ -200,6 +199,7 @@ export function Dashboard() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(selectedCompanyId!) });
       queryClient.invalidateQueries({ queryKey: queryKeys.attention(selectedCompanyId!) });
+      queryClient.invalidateQueries({ queryKey: ["waiting-on-you", selectedCompanyId] });
       queryClient.invalidateQueries({ queryKey: queryKeys.dashboard(selectedCompanyId!) });
     },
   });
@@ -406,11 +406,10 @@ export function Dashboard() {
           </div>
 
           <WaitingOnYouPanel
-            attentionItems={attentionFeed?.items ?? []}
-            // The unfiltered list on purpose: the row builder needs to tell a
-            // hidden task from one it has never heard of, so it applies the
-            // visibility rule itself.
-            issues={issues ?? []}
+            // Server-built rows (GRA-328): the widget no longer derives the
+            // list from the whole task list and the whole attention feed, so
+            // it shows exactly what `/waiting-on-you` shows.
+            rows={waitingOnYou?.items ?? []}
             userName={(userId) => (userId ? userProfileMap.get(userId)?.label ?? null : null)}
             onUpdateIssue={(issueId, data) => updateIssueStatus.mutate({ issueId, data })}
           />
