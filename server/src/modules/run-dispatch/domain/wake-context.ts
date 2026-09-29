@@ -89,6 +89,27 @@ export function allowsIssueInteractionWake(
   return Boolean(deriveCommentId(contextSnapshot));
 }
 
+export const ISSUE_CHILD_BLOCKED_WAKE_REASON = "issue_child_blocked";
+
+/**
+ * Whether a wake may run on an issue whose dependencies are unresolved. Human
+ * comment wakes may (bounded interaction mode). So may `issue_child_blocked`
+ * when the child that just blocked is one of those unresolved blockers: a
+ * parent waiting on its child is dependency-blocked by that very child, and it
+ * is the only party that can relay the child's ask (a token, a decision) to
+ * the requester. Without this the wake is skipped and both wait forever.
+ */
+export function allowsDependencyBlockedWake(
+  contextSnapshot: Record<string, unknown> | null | undefined,
+  allowedWakeReasons: ReadonlySet<string>,
+  unresolvedBlockerIssueIds: readonly string[],
+): boolean {
+  if (allowsIssueInteractionWake(contextSnapshot, allowedWakeReasons)) return true;
+  if (readNonEmptyString(contextSnapshot?.wakeReason) !== ISSUE_CHILD_BLOCKED_WAKE_REASON) return false;
+  const blockedChildIssueId = readNonEmptyString(contextSnapshot?.blockedChildIssueId);
+  return blockedChildIssueId !== null && unresolvedBlockerIssueIds.includes(blockedChildIssueId);
+}
+
 export function isResolvedInteractionContinuationWakeContext(contextSnapshot: unknown): boolean {
   const context = parseObject(contextSnapshot);
   const interactionId = readNonEmptyString(context.interactionId);

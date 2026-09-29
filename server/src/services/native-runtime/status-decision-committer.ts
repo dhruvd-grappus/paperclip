@@ -1992,6 +1992,40 @@ export async function commitNativeStatusDecision(input: {
       }
     }
 
+    // Parity with the PATCH route: a child that blocks (it needs a person, or
+    // access) wakes its parent, which owns the requester's thread and is the
+    // only one who can relay the ask. One wake per blocking decision.
+    if (
+      input.decision.toStatus === "blocked" &&
+      issue.status !== "blocked" &&
+      issue.parentId
+    ) {
+      const parent = await issueService(
+        tx as unknown as Db,
+      ).getWakeableParentForChildEvent(issue.parentId);
+      if (parent) {
+        const wakeId = await enqueueWake({
+          tx: tx as unknown as Db,
+          companyId: input.companyId,
+          issueId: parent.id,
+          agentId: parent.assigneeAgentId,
+          reason: "issue_child_blocked",
+          idempotencyKey: `issue_child_blocked:${parent.id}:${input.issueId}:${decisionRow.id}`,
+          payload: { blockedChildIssueId: input.issueId },
+          contextSnapshot: { blockedChildIssueId: input.issueId },
+        });
+        materialized.push({
+          effectKind: "parent_wake",
+          targetType: "agent_wakeup_request",
+          targetId: wakeId,
+          payload: {
+            parentIssueId: parent.id,
+            blockedChildIssueId: input.issueId,
+          },
+        });
+      }
+    }
+
     for (const [index, effect] of materialized.entries()) {
       await tx
         .insert(statusDecisionEffects)

@@ -266,6 +266,116 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
     expect(dispatchedRequests[0]).toMatchObject({ runId: dispatchedRun!.id });
   });
 
+  async function seedParentBlockedByBlockedChild() {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const parentId = randomUUID();
+    const childId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `B${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "NativeParentRunner",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: parentId,
+      companyId,
+      title: "Task waiting on its build",
+      status: "blocked",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      responsibleUserId: "responsible-user",
+    });
+    await db.insert(issues).values({
+      id: childId,
+      companyId,
+      parentId,
+      title: "Build: needs a token from a person",
+      status: "blocked",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      responsibleUserId: "responsible-user",
+    });
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: childId,
+      relatedIssueId: parentId,
+      type: "blocks",
+    });
+    return { companyId, agentId, parentId, childId };
+  }
+
+  async function dispatchChildBlockedIntent(input: {
+    companyId: string;
+    agentId: string;
+    parentId: string;
+    blockedChildIssueId: string;
+  }) {
+    await db.insert(agentWakeupRequests).values({
+      companyId: input.companyId,
+      agentId: input.agentId,
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_child_blocked",
+      payload: {
+        issueId: input.parentId,
+        taskId: input.parentId,
+        blockedChildIssueId: input.blockedChildIssueId,
+        _paperclipWakeContext: {
+          issueId: input.parentId,
+          taskId: input.parentId,
+          blockedChildIssueId: input.blockedChildIssueId,
+          wakeReason: "issue_child_blocked",
+          source: "native_status_decision",
+        },
+      },
+      requestedByActorType: "system",
+      requestedByActorId: "native-status-committer",
+      idempotencyKey: `issue_child_blocked:${input.parentId}:${input.blockedChildIssueId}:1`,
+    });
+    await heartbeat.dispatchPendingNativeStatusWakeups({ companyId: input.companyId });
+    await heartbeat.drainActiveRunExecutions();
+    return db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, input.companyId));
+  }
+
+  it("runs a parent woken because the child it waits on blocked", async () => {
+    const seeded = await seedParentBlockedByBlockedChild();
+    const runs = await dispatchChildBlockedIntent({ ...seeded, blockedChildIssueId: seeded.childId });
+    expect(runs).toHaveLength(1);
+    expect(runs[0]).toMatchObject({
+      status: "succeeded",
+      agentId: seeded.agentId,
+      contextSnapshot: {
+        issueId: seeded.parentId,
+        wakeReason: "issue_child_blocked",
+        blockedChildIssueId: seeded.childId,
+        dependencyBlockedInteraction: true,
+      },
+    });
+  });
+
+  it("keeps a dependency-blocked parent idle for a child-blocked wake naming another issue", async () => {
+    const seeded = await seedParentBlockedByBlockedChild();
+    const runs = await dispatchChildBlockedIntent({ ...seeded, blockedChildIssueId: randomUUID() });
+    expect(runs).toHaveLength(0);
+    const skipped = await db.select().from(agentWakeupRequests).where(and(
+      eq(agentWakeupRequests.companyId, seeded.companyId),
+      eq(agentWakeupRequests.reason, "issue_dependencies_blocked"),
+    ));
+    expect(skipped.length).toBeGreaterThan(0);
+  });
+
   it("keeps blocked descendants idle until their blockers resolve", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();
