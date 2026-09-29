@@ -208,6 +208,7 @@ export {
 } from "./task-visibility.js";
 export {
   WAITING_ON_HUMAN_UNASSIGNED,
+  WAITING_ON_HUMAN_UNFILED,
   waitingOnHumanRows,
   waitingReasonLabel,
   type WaitingOnHumanOptions,

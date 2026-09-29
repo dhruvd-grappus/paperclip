@@ -2,7 +2,6 @@ import { and, eq, inArray, isNull, ne, or, type SQL } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { issues } from "@paperclipai/db";
 import {
-  WAITING_ON_HUMAN_UNASSIGNED,
   waitingOnHumanRows,
   type IssueStatus,
   type WaitingOnHumanRow,
@@ -47,6 +46,7 @@ const rowSelect = {
   conversationAgentId: issues.conversationAgentId,
   originKind: issues.originKind,
   parentId: issues.parentId,
+  projectId: issues.projectId,
   createdByUserId: issues.createdByUserId,
   responsibleUserId: issues.responsibleUserId,
   assigneeUserId: issues.assigneeUserId,
@@ -56,10 +56,16 @@ export interface WaitingOnYouOptions {
   /** The board user whose feed the pending cards are read from. */
   userId: string;
   /**
-   * Owner filter, matching {@link WaitingOnHumanRow.ownerUserId}: a user id, or
-   * `"unassigned"` for the rows no person owns. Omitted, nothing is filtered.
+   * Owner filter, matching {@link WaitingOnHumanRow.ownerUserId}: any number of
+   * user ids, plus `"unassigned"` for the rows no person owns. Empty or
+   * omitted, nothing is filtered.
    */
-  ownerUserId?: string | null;
+  ownerUserIds?: readonly string[] | null;
+  /**
+   * Project filter: any number of project ids, plus `"unfiled"` for the rows
+   * filed under no project. Empty or omitted, nothing is filtered.
+   */
+  projectIds?: readonly string[] | null;
   now?: number;
 }
 
@@ -69,11 +75,19 @@ export interface WaitingOnYouOwner {
   count: number;
 }
 
+export interface WaitingOnYouProject {
+  /** Null for the rows filed under no project — the "unfiled" bucket. */
+  projectId: string | null;
+  count: number;
+}
+
 export interface WaitingOnYouFeed {
   companyId: string;
   items: WaitingOnHumanRow[];
   /** Every owner present in the *unfiltered* list, so the picker keeps its options. */
   owners: WaitingOnYouOwner[];
+  /** Every project present in the *unfiltered* list, for the same reason. */
+  projects: WaitingOnYouProject[];
   /** Size of the unfiltered list, for the badge and the "N of M" line. */
   totalCount: number;
 }
@@ -143,16 +157,26 @@ export function waitingOnYouService(db: Db) {
         .map(([userId, count]) => ({ userId, count }))
         .sort((a, b) => b.count - a.count);
 
-      const ownerUserId = options.ownerUserId ?? null;
-      const items = ownerUserId
-        ? all.filter((row) =>
-            ownerUserId === WAITING_ON_HUMAN_UNASSIGNED
-              ? row.ownerUserId == null
-              : row.ownerUserId === ownerUserId,
-          )
-        : all;
+      const projectCounts = new Map<string | null, number>();
+      for (const row of all) {
+        projectCounts.set(row.projectId, (projectCounts.get(row.projectId) ?? 0) + 1);
+      }
+      const projects = [...projectCounts.entries()]
+        .map(([projectId, count]) => ({ projectId, count }))
+        .sort((a, b) => b.count - a.count);
 
-      return { companyId, items, owners, totalCount: all.length };
+      // Filtering runs through the shared rule rather than being re-expressed
+      // here, so the endpoint and any client that builds rows locally narrow
+      // the list identically. The facets above stay unfiltered on purpose: a
+      // picker that loses its own options the moment you use it cannot be used
+      // twice, and a multi-select is meant to be used twice.
+      const items = waitingOnHumanRows(feed.items, issueRows, {
+        now: options.now,
+        ownerUserIds: options.ownerUserIds,
+        projectIds: options.projectIds,
+      });
+
+      return { companyId, items, owners, projects, totalCount: all.length };
     },
   };
 }

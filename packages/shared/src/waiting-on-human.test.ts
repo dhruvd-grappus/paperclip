@@ -316,19 +316,45 @@ describe("waitingOnHumanRows — routines and owner filter (GRA-328)", () => {
     expect(rows.map((row) => row.issueId)).toEqual(["real-1"]);
   });
 
-  it("filters to one owner, and to the rows nobody owns", () => {
-    const issues = [
-      issue({ id: "a", identifier: "GRA-1", status: "done", createdByUserId: "user-1" } as never),
-      issue({ id: "b", identifier: "GRA-2", status: "done", createdByUserId: "user-2" } as never),
-      issue({ id: "c", identifier: "GRA-3", status: "done" } as never),
-    ];
-    const owned = waitingOnHumanRows([], issues, { now: NOW, ownerUserId: "user-1" });
-    expect(owned.map((row) => row.issueId)).toEqual(["a"]);
+  const filterIssues = () => [
+    issue({ id: "a", identifier: "GRA-1", status: "done", createdByUserId: "user-1", projectId: "proj-1" } as never),
+    issue({ id: "b", identifier: "GRA-2", status: "done", createdByUserId: "user-2", projectId: "proj-2" } as never),
+    issue({ id: "c", identifier: "GRA-3", status: "done" } as never),
+  ];
 
-    const unowned = waitingOnHumanRows([], issues, { now: NOW, ownerUserId: "unassigned" });
-    expect(unowned.map((row) => row.issueId)).toEqual(["c"]);
+  it("filters to the selected owners, including the rows nobody owns", () => {
+    const issues = filterIssues();
+    expect(
+      waitingOnHumanRows([], issues, { now: NOW, ownerUserIds: ["user-1"] }).map((r) => r.issueId),
+    ).toEqual(["a"]);
+    // Multi-select: two people, and the ownerless bucket ticked alongside them.
+    expect(
+      waitingOnHumanRows([], issues, {
+        now: NOW,
+        ownerUserIds: ["user-1", "unassigned"],
+      }).map((r) => r.issueId),
+    ).toEqual(["a", "c"]);
 
+    // An empty selection is "no filter", not "nothing matches".
+    expect(waitingOnHumanRows([], issues, { now: NOW, ownerUserIds: [] })).toHaveLength(3);
     expect(waitingOnHumanRows([], issues, { now: NOW })).toHaveLength(3);
+  });
+
+  it("filters to the selected projects, and ANDs the two axes", () => {
+    const issues = filterIssues();
+    expect(
+      waitingOnHumanRows([], issues, { now: NOW, projectIds: ["proj-1", "proj-2"] }).map((r) => r.issueId),
+    ).toEqual(["a", "b"]);
+    expect(
+      waitingOnHumanRows([], issues, { now: NOW, projectIds: ["unfiled"] }).map((r) => r.issueId),
+    ).toEqual(["c"]);
+    expect(
+      waitingOnHumanRows([], issues, {
+        now: NOW,
+        ownerUserIds: ["user-1", "user-2"],
+        projectIds: ["proj-2"],
+      }).map((r) => r.issueId),
+    ).toEqual(["b"]);
   });
 
   it("still accepts a bare `now` as its third argument", () => {

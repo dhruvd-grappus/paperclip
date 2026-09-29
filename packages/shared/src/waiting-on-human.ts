@@ -77,6 +77,13 @@ export interface WaitingOnHumanRow {
    */
   ownerUserId: string | null;
   /**
+   * The project the task belongs to, for a caller to filter or label by. Null
+   * for an unfiled task, and for a pending card whose task the rows were not
+   * built from — the feed row carries no project of its own that is guaranteed
+   * to be the *task's*.
+   */
+  projectId: string | null;
+  /**
    * The task's own status, when the row came from a task the caller loaded —
    * what an inline status control has to edit. Null for a pending card whose
    * task is outside that list, where there is nothing to edit against.
@@ -117,6 +124,7 @@ const HUMAN_REVIEW_PATH_KINDS = new Set(["human_reviewer", "interaction", "appro
 type ReviewIssue = Pick<Issue, "id" | "status" | "title" | "updatedAt"> & {
   identifier?: string | null;
   parentId?: string | null;
+  projectId?: string | null;
   hiddenAt?: Date | string | null;
   harnessKind?: string | null;
   conversationAgentId?: string | null;
@@ -215,12 +223,40 @@ interface Draft extends WaitingOnHumanRow {
 export interface WaitingOnHumanOptions {
   now?: number;
   /**
-   * Keep only rows this person owns (see {@link WaitingOnHumanRow.ownerUserId}).
-   * Undefined/null leaves the list unfiltered; {@link WAITING_ON_HUMAN_UNASSIGNED}
+   * Keep only rows owned by one of these people (see
+   * {@link WaitingOnHumanRow.ownerUserId}). Empty or omitted leaves the list
+   * unfiltered; {@link WAITING_ON_HUMAN_UNASSIGNED} is a selectable value that
    * keeps the rows with no person on them at all.
    */
-  ownerUserId?: string | null;
+  ownerUserIds?: readonly string[] | null;
+  /**
+   * Keep only rows filed under one of these projects. Empty or omitted leaves
+   * the list unfiltered; {@link WAITING_ON_HUMAN_UNFILED} keeps the unfiled
+   * rows.
+   */
+  projectIds?: readonly string[] | null;
 }
+
+/**
+ * Does a row's facet value fall in the selection?
+ *
+ * An empty selection means "no filter" rather than "nothing matches": a picker
+ * with nothing ticked is how a person says they do not care about that axis,
+ * and reading it as an empty result would make clearing the filter blank the
+ * list. Null values match through the sentinel, so "no owner" is a choice you
+ * can tick beside a named one rather than a separate mode.
+ */
+function matchesFacet(
+  value: string | null,
+  selected: readonly string[] | null | undefined,
+  nullSentinel: string,
+): boolean {
+  if (!selected || selected.length === 0) return true;
+  return selected.includes(value ?? nullSentinel);
+}
+
+/** Sentinel project filter for rows filed under no project. */
+export const WAITING_ON_HUMAN_UNFILED = "unfiled";
 
 /** Sentinel owner filter for rows no person owns. */
 export const WAITING_ON_HUMAN_UNASSIGNED = "unassigned";
@@ -261,6 +297,7 @@ export function waitingOnHumanRows(
     detail: string | null;
     waitingSince: string | null;
     ownerUserId: string | null;
+    projectId: string | null;
     status: string | null;
   }) => {
     const existing = drafts.get(input.key);
@@ -276,6 +313,7 @@ export function waitingOnHumanRows(
         detail: input.detail,
         waitingSince: input.waitingSince,
         ownerUserId: input.ownerUserId,
+        projectId: input.projectId,
         status: input.status,
       });
       return;
@@ -285,6 +323,7 @@ export function waitingOnHumanRows(
     existing.href = existing.href ?? input.href;
     existing.identifier = existing.identifier ?? input.identifier;
     existing.ownerUserId = existing.ownerUserId ?? input.ownerUserId;
+    existing.projectId = existing.projectId ?? input.projectId;
     existing.status = existing.status ?? input.status;
     existing.waitingSince = earlier(existing.waitingSince, input.waitingSince);
   };
@@ -315,6 +354,7 @@ export function waitingOnHumanRows(
       // A feed row carries no parentage or ownership of its own; both come
       // from the task it points at, when the list covers it.
       ownerUserId: issueId ? ownerUserIdOf(issueById.get(issueId) ?? {} as ReviewIssue) : null,
+      projectId: (issueId ? issueById.get(issueId)?.projectId : null) ?? null,
       status: (issueId ? issueById.get(issueId)?.status : null) ?? null,
     });
   }
@@ -342,17 +382,20 @@ export function waitingOnHumanRows(
       detail: null,
       waitingSince: since ? new Date(since).toISOString() : null,
       ownerUserId: ownerUserIdOf(issue),
+      projectId: issue.projectId ?? null,
       status: issue.status,
     });
   }
 
-  const ownerFilter = opts.ownerUserId ?? null;
+  // The two axes are ANDed: ticking two people and one project asks for that
+  // project's rows owned by either of them, which is how every other filtered
+  // list in the product reads.
   return [...drafts.values()]
-    .filter((row) => {
-      if (!ownerFilter) return true;
-      if (ownerFilter === WAITING_ON_HUMAN_UNASSIGNED) return row.ownerUserId == null;
-      return row.ownerUserId === ownerFilter;
-    })
+    .filter(
+      (row) =>
+        matchesFacet(row.ownerUserId, opts.ownerUserIds, WAITING_ON_HUMAN_UNASSIGNED) &&
+        matchesFacet(row.projectId, opts.projectIds, WAITING_ON_HUMAN_UNFILED),
+    )
     .map(({ reasonSet, ...row }) => ({
       ...row,
       reasons: REASON_ORDER.filter((reason) => reasonSet.has(reason)),

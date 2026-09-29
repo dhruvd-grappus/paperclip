@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { companies, createDb, issues } from "@paperclipai/db";
+import { companies, createDb, issues, projects } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -18,9 +18,9 @@ if (!embeddedPostgresSupport.supported) {
 
 /**
  * GRA-328: the desk list is built server-side, skips routine executions, and
- * filters by owner. These cover the two facts the endpoint adds over the shared
- * row builder — which tasks it fetches, and what the owner filter does to the
- * counts it reports alongside them.
+ * takes multi-select owner and project filters. These cover the two facts the
+ * endpoint adds over the shared row builder — which tasks it fetches, and what
+ * the filters do (and do not do) to the facet counts it reports alongside them.
  */
 describeEmbeddedPostgres("waiting-on-you service", () => {
   let db!: ReturnType<typeof createDb>;
@@ -33,6 +33,7 @@ describeEmbeddedPostgres("waiting-on-you service", () => {
 
   afterEach(async () => {
     await db.delete(issues);
+    await db.delete(projects);
     await db.delete(companies);
   });
 
@@ -51,6 +52,12 @@ describeEmbeddedPostgres("waiting-on-you service", () => {
     return companyId;
   }
 
+  async function insertProject(companyId: string, name: string) {
+    const id = randomUUID();
+    await db.insert(projects).values({ id, companyId, name });
+    return id;
+  }
+
   async function insertIssue(input: {
     companyId: string;
     identifier: string;
@@ -58,6 +65,7 @@ describeEmbeddedPostgres("waiting-on-you service", () => {
     status: string;
     originKind?: string;
     createdByUserId?: string | null;
+    projectId?: string | null;
   }) {
     const id = randomUUID();
     await db.insert(issues).values({
@@ -69,6 +77,7 @@ describeEmbeddedPostgres("waiting-on-you service", () => {
       priority: "medium",
       originKind: input.originKind ?? "manual",
       createdByUserId: input.createdByUserId ?? null,
+      projectId: input.projectId ?? null,
     });
     return id;
   }
@@ -106,41 +115,84 @@ describeEmbeddedPostgres("waiting-on-you service", () => {
     expect(feed.totalCount).toBe(2);
   });
 
-  it("filters by owner while still reporting every owner and the full count", async () => {
+  it("takes several owners and projects at once, and ANDs the two axes", async () => {
     const companyId = await seed();
     const alice = randomUUID();
-    const mine = await insertIssue({
+    const bob = randomUUID();
+    const apollo = await insertProject(companyId, "Apollo");
+    const borealis = await insertProject(companyId, "Borealis");
+
+    const aliceApollo = await insertIssue({
       companyId,
       identifier: "WOY-1",
-      title: "Alice's review",
+      title: "Alice on Apollo",
       status: "in_review",
       createdByUserId: alice,
+      projectId: apollo,
+    });
+    const bobBorealis = await insertIssue({
+      companyId,
+      identifier: "WOY-2",
+      title: "Bob on Borealis",
+      status: "done",
+      createdByUserId: bob,
+      projectId: borealis,
     });
     await insertIssue({
       companyId,
-      identifier: "WOY-2",
-      title: "Somebody else's",
+      identifier: "WOY-3",
+      title: "Somebody else, no project",
       status: "done",
       createdByUserId: randomUUID(),
     });
     const unowned = await insertIssue({
       companyId,
-      identifier: "WOY-3",
-      title: "Nobody's",
+      identifier: "WOY-4",
+      title: "Nobody's, unfiled",
       status: "done",
     });
 
     const svc = waitingOnYouService(db);
-    const filtered = await svc.list(companyId, { userId: randomUUID(), ownerUserId: alice });
-    expect(filtered.items.map((row) => row.issueId)).toEqual([mine]);
-    // The picker's options survive the filter that narrowed the list.
-    expect(filtered.owners).toHaveLength(3);
-    expect(filtered.totalCount).toBe(3);
+    const userId = randomUUID();
 
-    const unassigned = await svc.list(companyId, {
-      userId: randomUUID(),
-      ownerUserId: "unassigned",
+    const twoPeople = await svc.list(companyId, {
+      userId,
+      ownerUserIds: [alice, bob],
     });
-    expect(unassigned.items.map((row) => row.issueId)).toEqual([unowned]);
+    expect(new Set(twoPeople.items.map((row) => row.issueId))).toEqual(
+      new Set([aliceApollo, bobBorealis]),
+    );
+    // Both pickers' options survive the filter that narrowed the list.
+    expect(twoPeople.owners).toHaveLength(4);
+    expect(twoPeople.projects).toHaveLength(3);
+    expect(twoPeople.totalCount).toBe(4);
+
+    const twoProjects = await svc.list(companyId, {
+      userId,
+      projectIds: [apollo, borealis],
+    });
+    expect(new Set(twoProjects.items.map((row) => row.issueId))).toEqual(
+      new Set([aliceApollo, bobBorealis]),
+    );
+
+    // ANDed: two people, one project.
+    const anded = await svc.list(companyId, {
+      userId,
+      ownerUserIds: [alice, bob],
+      projectIds: [borealis],
+    });
+    expect(anded.items.map((row) => row.issueId)).toEqual([bobBorealis]);
+
+    // The sentinels are ordinary selectable values.
+    const nobody = await svc.list(companyId, {
+      userId,
+      ownerUserIds: ["unassigned"],
+      projectIds: ["unfiled"],
+    });
+    expect(nobody.items.map((row) => row.issueId)).toEqual([unowned]);
+
+    // An empty selection means "no filter", not "nothing matches".
+    const empty = await svc.list(companyId, { userId, ownerUserIds: [], projectIds: [] });
+    expect(empty.items).toHaveLength(4);
   });
 });
