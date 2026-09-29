@@ -21,6 +21,7 @@ import {
   chatMessageLinks,
   chatPublications,
   issueComments,
+  issueRelations,
   issueRecoveryActions,
   issues,
   toolApplications,
@@ -910,6 +911,75 @@ describe("durable inbound chat scheduler receipts", () => {
         .from(heartbeatRuns)
         .where(eq(heartbeatRuns.wakeupRequestId, f.actionId)),
     ).toEqual([]);
+  });
+
+  it("admits a chat message on a dependency-blocked task instead of skipping it (grappus)", async () => {
+    const f = await fixture();
+    const blockerId = randomUUID();
+    await db.insert(issues).values({
+      id: blockerId,
+      companyId: f.companyId,
+      title: "Unfinished child",
+      status: "blocked",
+      responsibleUserId: "board-user",
+    });
+    await db.insert(issueRelations).values({
+      companyId: f.companyId,
+      issueId: blockerId,
+      relatedIssueId: f.issueId,
+      type: "blocks",
+    });
+    await db.update(issues).set({ status: "blocked" }).where(eq(issues.id, f.issueId));
+    // An unlinked Slack participant wakes as "system"; the task keeps its blocker.
+    const request = createDurableChatWakeupRequest({
+      id: randomUUID(),
+      companyId: f.companyId,
+      agentId: f.agentId,
+      issueId: f.issueId,
+      commentId: randomUUID(),
+      requestedByActorType: "system",
+      requestedByActorId: "chat-endpoint",
+      requestedAt: new Date(),
+      authorize: f.authorize,
+    });
+    await queueIssueAssignmentWakeup({
+      heartbeat: f.heartbeat,
+      issue: { id: f.issueId, assigneeAgentId: f.agentId, status: "blocked" },
+      reason: "External chat message received",
+      mutation: "chat_message_received",
+      contextSource: "chat:slack",
+      requestedByActorType: "system",
+      requestedByActorId: "chat-endpoint",
+      wakeCommentId: request.commentId,
+      durableChatRequest: request,
+      rethrowOnError: true,
+    });
+
+    const [receipt] = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, request.id));
+    expect(receipt).toMatchObject({ status: "queued" });
+    const [run] = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.wakeupRequestId, request.id));
+    expect(run?.contextSnapshot).toMatchObject({
+      issueId: f.issueId,
+      dependencyBlockedInteraction: true,
+      unresolvedBlockerIssueIds: [blockerId],
+    });
+    expect(
+      await db
+        .select()
+        .from(agentWakeupRequests)
+        .where(
+          and(
+            eq(agentWakeupRequests.companyId, f.companyId),
+            eq(agentWakeupRequests.reason, "issue_dependencies_blocked"),
+          ),
+        ),
+    ).toHaveLength(0);
   });
 
   it("retries and competing workers create one queued receipt and one run", async () => {
