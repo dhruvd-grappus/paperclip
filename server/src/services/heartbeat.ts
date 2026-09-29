@@ -17042,6 +17042,24 @@ export function heartbeatService(
     }
   }
 
+  /** The run was queued for an admitted chat message (its wake request is the
+   * inbound chat action's durable receipt, same id). */
+  async function isDurableChatInboundRun(run: typeof heartbeatRuns.$inferSelect) {
+    if (!run.wakeupRequestId) return false;
+    const [action] = await db
+      .select({ id: chatActions.id })
+      .from(chatActions)
+      .where(
+        and(
+          eq(chatActions.id, run.wakeupRequestId),
+          eq(chatActions.companyId, run.companyId),
+          eq(chatActions.kind, "inbound_wakeup"),
+        ),
+      )
+      .limit(1);
+    return Boolean(action);
+  }
+
   async function claimQueuedRun(
     run: typeof heartbeatRuns.$inferSelect,
     companyAgents?: AgentOrgRow[],
@@ -17152,7 +17170,8 @@ export function heartbeatService(
           context,
           ISSUE_TREE_CONTROL_INTERACTION_WAKE_REASONS,
           readiness?.unresolvedBlockerIssueIds ?? [],
-        )
+        ) &&
+        !(await isDurableChatInboundRun(run))
       ) {
         await cancelQueuedRunForBlockedDependencies(
           run,
@@ -26995,14 +27014,19 @@ export function heartbeatService(
           // Blocked descendants should stay idle until the final blocker resolves.
           // Human comment/mention wakes are the exception: they may run in a
           // bounded interaction mode so the assignee can answer or triage.
+          // Grappus: a chat message (a server-trusted durable request carrying
+          // its comment) is a human comment too. Skipping it would leave an
+          // unadmitted inbound action that holds the task against every later
+          // wake (chat_inbound_wakeup_unadmitted), children-completed included.
           const blockedInteractionWake =
             dependencyReadiness &&
             !dependencyReadiness.isDependencyReady &&
-            allowsDependencyBlockedWake(
+            (allowsDependencyBlockedWake(
               enrichedContextSnapshot,
               ISSUE_TREE_CONTROL_INTERACTION_WAKE_REASONS,
               dependencyReadiness.unresolvedBlockerIssueIds,
-            );
+            ) ||
+              Boolean(durableRequest && wakeCommentId));
 
           if (blockedInteractionWake) {
             enrichedContextSnapshot.dependencyBlockedInteraction = true;
