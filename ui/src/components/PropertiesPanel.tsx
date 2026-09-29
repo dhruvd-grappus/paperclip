@@ -25,22 +25,11 @@ export function PropertiesPanel({ taskDetailLayout = false }: { taskDetailLayout
 
   if (classicTaskInterfaceEnabled) {
     return (
-      <aside
-        className="hidden md:flex border-l border-border bg-card flex-col shrink-0 overflow-hidden transition-(--tp-width-opacity) duration-200 ease-in-out h-full"
-        style={{ width: panelVisible ? 320 : 0, opacity: panelVisible ? 1 : 0 }}
-      >
-        <div className="w-80 flex-1 flex flex-col min-w-(--sz-320px) min-h-0">
-          <div className="flex items-center justify-between px-4 py-2 border-b border-border">
-            <span className="text-sm font-medium">Properties</span>
-            <Button variant="ghost" size="icon-xs" onClick={() => setPanelVisible(false)}>
-              <X className="h-4 w-4" />
-            </Button>
-          </div>
-          <ScrollArea className="flex-1">
-            <div className="p-4">{panelContent}</div>
-          </ScrollArea>
-        </div>
-      </aside>
+      <ClassicPropertiesPanel
+        panelContent={panelContent}
+        panelVisible={panelVisible}
+        setPanelVisible={setPanelVisible}
+      />
     );
   }
 
@@ -80,9 +69,12 @@ export const PROPERTIES_PANE_FOOTER_SLOT_ID = "properties-pane-footer-slot";
 
 const WIDTH_STORAGE_KEY = "taskChatRedesign.propertiesPaneWidth";
 const TASK_DETAIL_WIDTH_STORAGE_KEY = "taskChatRedesign.taskDetailPropertiesPaneWidth";
-const DEFAULT_PANE_WIDTH = 322;
-const TASK_DETAIL_DEFAULT_PANE_WIDTH = 434;
-const MIN_PANE_WIDTH = 260;
+const CLASSIC_WIDTH_STORAGE_KEY = "classicTaskInterface.propertiesPaneWidth";
+const DEFAULT_PANE_WIDTH = 380;
+const TASK_DETAIL_DEFAULT_PANE_WIDTH = 480;
+const CLASSIC_DEFAULT_PANE_WIDTH = 380;
+/** Floor for every variant (GRA-353): below this the property rows wrap badly. */
+const MIN_PANE_WIDTH = 320;
 /** ~236px sidebar + ~420px minimum center column stay usable while resizing. */
 const RESERVED_LAYOUT_WIDTH = 656;
 /** Content cap while maximized so text doesn't span the full viewport. */
@@ -147,6 +139,163 @@ interface FixedPane {
   parentLeft: number;
 }
 
+/**
+ * Pointer-driven width state shared by every docked variant: the grip sits on
+ * the panel's LEFT border, so dragging left widens it. Width persists per
+ * storage key; double-clicking the grip resets to the default.
+ */
+function usePaneWidth(storageKey: string, defaultWidth: number) {
+  const [width, setWidth] = useState(() =>
+    clampPaneWidth(readStoredPaneWidth(storageKey, defaultWidth)),
+  );
+  const [dragging, setDragging] = useState(false);
+  const widthRef = useRef(width);
+  widthRef.current = width;
+  const dragStateRef = useRef<{ pointerId: number; startX: number; startWidth: number } | null>(
+    null,
+  );
+  const previousBodyUserSelectRef = useRef("");
+
+  useEffect(
+    () => () => {
+      if (dragStateRef.current !== null) {
+        document.body.style.userSelect = previousBodyUserSelectRef.current;
+      }
+    },
+    [],
+  );
+
+  const endDrag = useCallback(
+    (persist: boolean) => {
+      if (dragStateRef.current === null) return;
+      dragStateRef.current = null;
+      setDragging(false);
+      document.body.style.userSelect = previousBodyUserSelectRef.current;
+      if (persist) persistPaneWidth(storageKey, widthRef.current);
+    },
+    [storageKey],
+  );
+
+  const onPointerDown = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    // Primary button only (touch/pen report button 0 or -1 for down events).
+    if (event.pointerType === "mouse" && event.button !== 0) return;
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    dragStateRef.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startWidth: widthRef.current,
+    };
+    previousBodyUserSelectRef.current = document.body.style.userSelect;
+    document.body.style.userSelect = "none";
+    setDragging(true);
+  }, []);
+
+  const onPointerMove = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    const drag = dragStateRef.current;
+    if (drag === null || drag.pointerId !== event.pointerId) return;
+    setWidth(clampPaneWidth(drag.startWidth + (drag.startX - event.clientX)));
+  }, []);
+
+  const onPointerUp = useCallback(
+    (event: React.PointerEvent<HTMLDivElement>) => {
+      const drag = dragStateRef.current;
+      if (drag === null || drag.pointerId !== event.pointerId) return;
+      endDrag(true);
+    },
+    [endDrag],
+  );
+
+  const onLostPointerCapture = useCallback(() => {
+    endDrag(true);
+  }, [endDrag]);
+
+  const onDoubleClick = useCallback(() => {
+    setWidth(defaultWidth);
+    clearStoredPaneWidth(storageKey);
+  }, [defaultWidth, storageKey]);
+
+  return {
+    width,
+    widthRef,
+    dragging,
+    gripProps: {
+      onPointerDown,
+      onPointerMove,
+      onPointerUp,
+      onPointerCancel: onPointerUp,
+      onLostPointerCapture,
+      onDoubleClick,
+    },
+  };
+}
+
+function PaneResizeGrip({
+  dragging,
+  gripProps,
+}: {
+  dragging: boolean;
+  gripProps: ReturnType<typeof usePaneWidth>["gripProps"];
+}) {
+  return (
+    <div
+      role="separator"
+      aria-orientation="vertical"
+      aria-label="Resize panel"
+      data-dragging={dragging ? "" : undefined}
+      className="group absolute inset-y-0 z-10 cursor-col-resize touch-none"
+      style={{ left: -4, width: 8 }}
+      {...gripProps}
+    >
+      <div
+        className={cn(
+          "mx-auto h-full w-0.5 transition-colors",
+          dragging ? "bg-ring" : "bg-transparent group-hover:bg-ring",
+        )}
+      />
+    </div>
+  );
+}
+
+/** Classic Task Interface panel: fixed header, resizable and persisted width. */
+function ClassicPropertiesPanel({
+  panelContent,
+  panelVisible,
+  setPanelVisible,
+}: {
+  panelContent: ReactNode;
+  panelVisible: boolean;
+  setPanelVisible: (visible: boolean) => void;
+}) {
+  const { width, dragging, gripProps } = usePaneWidth(
+    CLASSIC_WIDTH_STORAGE_KEY,
+    CLASSIC_DEFAULT_PANE_WIDTH,
+  );
+  return (
+    <aside
+      className={cn(
+        "hidden md:flex relative border-l border-border bg-card flex-col shrink-0 h-full",
+        panelVisible ? "overflow-visible" : "overflow-hidden",
+        !dragging && "transition-(--tp-width-opacity) duration-200 ease-in-out",
+      )}
+      style={{ width: panelVisible ? width : 0, opacity: panelVisible ? 1 : 0 }}
+    >
+      {panelVisible ? <PaneResizeGrip dragging={dragging} gripProps={gripProps} /> : null}
+      <div className="flex-1 flex flex-col min-h-0" style={{ width, minWidth: width }}>
+        <div className="flex items-center justify-between px-4 py-2 border-b border-border">
+          <span className="text-sm font-medium">Properties</span>
+          <Button variant="ghost" size="icon-xs" onClick={() => setPanelVisible(false)}>
+            <X className="h-4 w-4" />
+          </Button>
+        </div>
+        <ScrollArea className="flex-1">
+          <div className="p-4">{panelContent}</div>
+        </ScrollArea>
+      </div>
+    </aside>
+  );
+}
+
 interface ResizablePropertiesPanelProps {
   panelContent: ReactNode;
   panelContentMode: "padded" | "prose" | "full-bleed";
@@ -173,20 +322,11 @@ function ResizablePropertiesPanel({
   const widthStorageKey = taskDetailLayout
     ? TASK_DETAIL_WIDTH_STORAGE_KEY
     : WIDTH_STORAGE_KEY;
-  const [width, setWidth] = useState(() =>
-    clampPaneWidth(readStoredPaneWidth(widthStorageKey, defaultPaneWidth)),
-  );
-  const [dragging, setDragging] = useState(false);
+  const { width, widthRef, dragging, gripProps } = usePaneWidth(widthStorageKey, defaultPaneWidth);
   const [maximized, setMaximized] = useState(false);
   const [fixedPane, setFixedPane] = useState<FixedPane | null>(null);
 
   const asideRef = useRef<HTMLElement | null>(null);
-  const widthRef = useRef(width);
-  widthRef.current = width;
-  const dragStateRef = useRef<{ pointerId: number; startX: number; startWidth: number } | null>(
-    null,
-  );
-  const previousBodyUserSelectRef = useRef("");
   const restoreTimerRef = useRef<number | null>(null);
 
   const clearRestoreTimer = useCallback(() => {
@@ -213,60 +353,9 @@ function ResizablePropertiesPanel({
   useEffect(
     () => () => {
       if (restoreTimerRef.current !== null) window.clearTimeout(restoreTimerRef.current);
-      if (dragStateRef.current !== null) {
-        document.body.style.userSelect = previousBodyUserSelectRef.current;
-      }
     },
     [],
   );
-
-  const endDrag = useCallback((persist: boolean) => {
-    if (dragStateRef.current === null) return;
-    dragStateRef.current = null;
-    setDragging(false);
-    document.body.style.userSelect = previousBodyUserSelectRef.current;
-    if (persist) persistPaneWidth(widthStorageKey, widthRef.current);
-  }, [widthStorageKey]);
-
-  const handleGripPointerDown = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
-    // Primary button only (touch/pen report button 0 or -1 for down events).
-    if (event.pointerType === "mouse" && event.button !== 0) return;
-    event.preventDefault();
-    event.currentTarget.setPointerCapture(event.pointerId);
-    dragStateRef.current = {
-      pointerId: event.pointerId,
-      startX: event.clientX,
-      startWidth: widthRef.current,
-    };
-    previousBodyUserSelectRef.current = document.body.style.userSelect;
-    document.body.style.userSelect = "none";
-    setDragging(true);
-  }, []);
-
-  const handleGripPointerMove = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
-    const drag = dragStateRef.current;
-    if (drag === null || drag.pointerId !== event.pointerId) return;
-    // The grip sits on the panel's LEFT border: moving left widens the panel.
-    setWidth(clampPaneWidth(drag.startWidth + (drag.startX - event.clientX)));
-  }, []);
-
-  const handleGripPointerUp = useCallback(
-    (event: React.PointerEvent<HTMLDivElement>) => {
-      const drag = dragStateRef.current;
-      if (drag === null || drag.pointerId !== event.pointerId) return;
-      endDrag(true);
-    },
-    [endDrag],
-  );
-
-  const handleGripLostPointerCapture = useCallback(() => {
-    endDrag(true);
-  }, [endDrag]);
-
-  const handleGripDoubleClick = useCallback(() => {
-    setWidth(defaultPaneWidth);
-    clearStoredPaneWidth(widthStorageKey);
-  }, [defaultPaneWidth, widthStorageKey]);
 
   const handleMaximize = useCallback(() => {
     const aside = asideRef.current;
@@ -375,27 +464,7 @@ function ResizablePropertiesPanel({
         onTransitionEnd={handleTransitionEnd}
       >
         {!isFixed && panelVisible ? (
-          <div
-            role="separator"
-            aria-orientation="vertical"
-            aria-label="Resize panel"
-            data-dragging={dragging ? "" : undefined}
-            className="group absolute inset-y-0 z-10 cursor-col-resize touch-none"
-            style={{ left: -4, width: 8 }}
-            onPointerDown={handleGripPointerDown}
-            onPointerMove={handleGripPointerMove}
-            onPointerUp={handleGripPointerUp}
-            onPointerCancel={handleGripPointerUp}
-            onLostPointerCapture={handleGripLostPointerCapture}
-            onDoubleClick={handleGripDoubleClick}
-          >
-            <div
-              className={cn(
-                "mx-auto h-full w-0.5 transition-colors",
-                dragging ? "bg-ring" : "bg-transparent group-hover:bg-ring",
-              )}
-            />
-          </div>
+          <PaneResizeGrip dragging={dragging} gripProps={gripProps} />
         ) : null}
         <div
           className={cn("flex-1 flex flex-col min-h-0", isFixed && "w-full")}
