@@ -650,6 +650,10 @@ export const queryKeys = {
   },
   dashboard: (companyId: string) => ["dashboard", companyId] as const,
   attention: (companyId: string) => ["attention", companyId] as const,
+  // The owner filter is part of the key: the server applies it, so a filtered
+  // list is a different response rather than a client-side slice of one.
+  waitingOnYou: (companyId: string, user?: string | null) =>
+    ["waiting-on-you", companyId, user ?? "__all-owners__"] as const,
   decisions: {
     list: (companyId: string, status?: string) =>
       ["decisions", companyId, status ?? "__all-statuses__"] as const,

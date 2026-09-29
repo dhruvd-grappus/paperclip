@@ -2,6 +2,7 @@ import { Router } from "express";
 import type { Db } from "@paperclipai/db";
 import type { AttentionSortMode } from "@paperclipai/shared";
 import { attentionService } from "../services/attention.js";
+import { waitingOnYouService } from "../services/waiting-on-you.js";
 import { badRequest } from "../errors.js";
 import { assertBoard, assertCompanyAccess } from "./authz.js";
 
@@ -14,6 +15,7 @@ function optionalQueryString(value: unknown, field: string) {
 export function attentionRoutes(db: Db) {
   const router = Router();
   const svc = attentionService(db);
+  const waitingOnYou = waitingOnYouService(db);
 
   router.get("/companies/:companyId/attention", async (req, res) => {
     const companyId = req.params.companyId as string;
@@ -50,6 +52,33 @@ export function attentionRoutes(db: Db) {
       cursor,
       sort: sortValue as AttentionSortMode | undefined,
       limit,
+    });
+    res.json(feed);
+  });
+
+  /**
+   * "Waiting on you" (GRA-328) — the desk list, built server-side. It lives
+   * beside the attention feed because it is half made of it: the pending
+   * questions and confirmations come from the same ranked queue, which is
+   * scoped to the calling board user, so this endpoint carries the same board
+   * requirement.
+   *
+   * `?user=` filters by the row's owner; `user=unassigned` keeps the rows no
+   * person owns. The response always reports the unfiltered owners and total,
+   * so the picker keeps its options after a filter narrows the list.
+   */
+  router.get("/companies/:companyId/waiting-on-you", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    assertBoard(req);
+    if (!req.actor.userId) {
+      res.status(403).json({ error: "Board user context required" });
+      return;
+    }
+    const ownerUserId = optionalQueryString(req.query.user, "user");
+    const feed = await waitingOnYou.list(companyId, {
+      userId: req.actor.userId,
+      ownerUserId,
     });
     res.json(feed);
   });

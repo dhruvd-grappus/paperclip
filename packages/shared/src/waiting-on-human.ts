@@ -1,6 +1,7 @@
-import type { AttentionItem, Issue } from "@paperclipai/shared";
-import { attentionDetailLine, attentionTaskRef } from "./attention";
-import { isVisibleWorkTask } from "./task-visibility";
+import type { AttentionItem } from "./types/attention.js";
+import type { Issue } from "./types/issue.js";
+import { attentionDetailLine, attentionTaskRef } from "./attention-rows.js";
+import { isVisibleWorkTask } from "./task-visibility.js";
 
 /**
  * "Waiting on you" (GRA-296): the tasks whose next move belongs to a person.
@@ -28,6 +29,10 @@ import { isVisibleWorkTask } from "./task-visibility";
  * cards raised on a hidden task, so in practice neither source offers one; the
  * check here is the last line of defence for a caller that passes a list from
  * somewhere else.
+ *
+ * Routine executions never appear (GRA-328): they recur on a schedule and the
+ * next firing supersedes the last, so they are the routine's ledger rather than
+ * a standing item on anyone's desk.
  *
  * Parent tasks only. A subtask's question or review is a step inside work the
  * parent already represents, so listing both turns one thing to look at into a
@@ -115,6 +120,7 @@ type ReviewIssue = Pick<Issue, "id" | "status" | "title" | "updatedAt"> & {
   hiddenAt?: Date | string | null;
   harnessKind?: string | null;
   conversationAgentId?: string | null;
+  originKind?: string | null;
   createdByUserId?: string | null;
   responsibleUserId?: string | null;
   assigneeUserId?: string | null;
@@ -176,6 +182,19 @@ function doneAwaitsApproval(issue: ReviewIssue): boolean {
   return issue.status === "done";
 }
 
+/**
+ * Routine executions (GRA-328). A routine task is the scheduler's own paperwork
+ * — it recurs on a timer, a new one lands whenever the routine fires, and the
+ * next one supersedes it. Leaving them in drowned the desk in rows nobody was
+ * ever going to act on individually, so the list is work a person actually
+ * owns; a routine's own surface (`/routines`) is where its runs belong.
+ */
+const ROUTINE_ORIGIN_KIND = "routine_execution";
+
+function isRoutineTask(issue: ReviewIssue | undefined): boolean {
+  return issue?.originKind === ROUTINE_ORIGIN_KIND;
+}
+
 const REASON_ORDER: WaitingReason[] = ["question", "confirmation", "in_review", "done_unapproved"];
 
 function earlier(a: string | null, b: string | null): string | null {
@@ -193,11 +212,27 @@ interface Draft extends WaitingOnHumanRow {
  * show what has been sitting the longest, so a three-day-old question outranks
  * a review that arrived a minute ago.
  */
+export interface WaitingOnHumanOptions {
+  now?: number;
+  /**
+   * Keep only rows this person owns (see {@link WaitingOnHumanRow.ownerUserId}).
+   * Undefined/null leaves the list unfiltered; {@link WAITING_ON_HUMAN_UNASSIGNED}
+   * keeps the rows with no person on them at all.
+   */
+  ownerUserId?: string | null;
+}
+
+/** Sentinel owner filter for rows no person owns. */
+export const WAITING_ON_HUMAN_UNASSIGNED = "unassigned";
+
 export function waitingOnHumanRows(
   items: readonly AttentionItem[],
   issues: readonly ReviewIssue[],
-  now = Date.now(),
+  options: WaitingOnHumanOptions | number = {},
 ): WaitingOnHumanRow[] {
+  // The third argument used to be a bare `now`; keep that call shape working.
+  const opts: WaitingOnHumanOptions = typeof options === "number" ? { now: options } : options;
+  const now = opts.now ?? Date.now();
   const drafts = new Map<string, Draft>();
 
   // Which task ids are subtasks, and which are not board-visible work. A feed
@@ -263,6 +298,9 @@ export function waitingOnHumanRows(
     const task = attentionTaskRef(item);
     const issueId = item.relatedIssue?.kind === "issue" ? item.relatedIssue.id : null;
     if (issueId && (childIssueIds.has(issueId) || invisibleIssueIds.has(issueId))) continue;
+    // A pending card on a routine execution is the routine's business, not a
+    // standing item on a person's desk.
+    if (issueId && isRoutineTask(issueById.get(issueId))) continue;
     merge({
       // Keyed on the task where there is one, so a second card on the same task
       // folds into its row instead of listing it twice.
@@ -284,6 +322,7 @@ export function waitingOnHumanRows(
   for (const issue of issues) {
     if (issue.parentId != null) continue;
     if (!isVisibleWorkTask(issue)) continue;
+    if (isRoutineTask(issue)) continue;
     const reason: WaitingReason | null = reviewAwaitsPerson(issue)
       ? "in_review"
       : doneAwaitsApproval(issue)
@@ -307,7 +346,13 @@ export function waitingOnHumanRows(
     });
   }
 
+  const ownerFilter = opts.ownerUserId ?? null;
   return [...drafts.values()]
+    .filter((row) => {
+      if (!ownerFilter) return true;
+      if (ownerFilter === WAITING_ON_HUMAN_UNASSIGNED) return row.ownerUserId == null;
+      return row.ownerUserId === ownerFilter;
+    })
     .map(({ reasonSet, ...row }) => ({
       ...row,
       reasons: REASON_ORDER.filter((reason) => reasonSet.has(reason)),

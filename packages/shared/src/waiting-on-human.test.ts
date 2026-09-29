@@ -1,6 +1,6 @@
 import type { AttentionItem, Issue } from "@paperclipai/shared";
 import { describe, expect, it } from "vitest";
-import { waitingOnHumanRows } from "./waiting-on-human";
+import { waitingOnHumanRows } from "./waiting-on-human.js";
 
 const NOW = Date.parse("2026-09-28T12:00:00.000Z");
 const minutesAgo = (n: number) => new Date(NOW - n * 60_000).toISOString();
@@ -299,5 +299,44 @@ describe("waitingOnHumanRows", () => {
     // Oldest signal on the task is what it has been waiting on.
     expect(rows[0].waitingSince).toBe(minutesAgo(90));
     expect(rows[1].identifier).toBe("GRA-41");
+  });
+});
+
+describe("waitingOnHumanRows — routines and owner filter (GRA-328)", () => {
+  it("leaves routine executions off the list, status rows and pending cards alike", () => {
+    const rows = waitingOnHumanRows(
+      [item({ id: "q", relatedIssue: relatedIssue("routine-1", "GRA-90", "Nightly sweep") })],
+      [
+        issue({ id: "routine-1", identifier: "GRA-90", originKind: "routine_execution", status: "in_review" } as never),
+        issue({ id: "routine-2", identifier: "GRA-91", originKind: "routine_execution", status: "done" } as never),
+        issue({ id: "real-1", identifier: "GRA-92", status: "done" } as never),
+      ],
+      { now: NOW },
+    );
+    expect(rows.map((row) => row.issueId)).toEqual(["real-1"]);
+  });
+
+  it("filters to one owner, and to the rows nobody owns", () => {
+    const issues = [
+      issue({ id: "a", identifier: "GRA-1", status: "done", createdByUserId: "user-1" } as never),
+      issue({ id: "b", identifier: "GRA-2", status: "done", createdByUserId: "user-2" } as never),
+      issue({ id: "c", identifier: "GRA-3", status: "done" } as never),
+    ];
+    const owned = waitingOnHumanRows([], issues, { now: NOW, ownerUserId: "user-1" });
+    expect(owned.map((row) => row.issueId)).toEqual(["a"]);
+
+    const unowned = waitingOnHumanRows([], issues, { now: NOW, ownerUserId: "unassigned" });
+    expect(unowned.map((row) => row.issueId)).toEqual(["c"]);
+
+    expect(waitingOnHumanRows([], issues, { now: NOW })).toHaveLength(3);
+  });
+
+  it("still accepts a bare `now` as its third argument", () => {
+    const rows = waitingOnHumanRows(
+      [],
+      [issue({ id: "a", identifier: "GRA-1", status: "done" } as never)],
+      NOW,
+    );
+    expect(rows).toHaveLength(1);
   });
 });
