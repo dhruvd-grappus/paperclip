@@ -27125,7 +27125,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
             eq(chatMessageLinks.conversationId, conversation.id),
             eq(chatMessageLinks.direction, "outbound"),
           ),
-        ),
+        )
+        .orderBy(asc(chatMessageLinks.providerMessageId)),
     ).toEqual([
       expect.objectContaining({
         providerMessageId: "outbound-1",
