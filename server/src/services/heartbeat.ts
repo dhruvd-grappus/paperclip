@@ -504,7 +504,7 @@ import {
   isNonAssigneeWorkspaceBusyRetry,
   extractWakeCommentIds,
   deriveCommentId,
-  allowsIssueInteractionWake,
+  allowsDependencyBlockedWake,
   isResolvedInteractionContinuationWakeContext,
 } from "../modules/run-dispatch/index.js";
 import {
@@ -17148,9 +17148,10 @@ export function heartbeatService(
       const unresolvedBlockerCount = readiness?.unresolvedBlockerCount ?? 0;
       if (
         unresolvedBlockerCount > 0 &&
-        !allowsIssueInteractionWake(
+        !allowsDependencyBlockedWake(
           context,
           ISSUE_TREE_CONTROL_INTERACTION_WAKE_REASONS,
+          readiness?.unresolvedBlockerIssueIds ?? [],
         )
       ) {
         await cancelQueuedRunForBlockedDependencies(
@@ -26997,9 +26998,10 @@ export function heartbeatService(
           const blockedInteractionWake =
             dependencyReadiness &&
             !dependencyReadiness.isDependencyReady &&
-            allowsIssueInteractionWake(
+            allowsDependencyBlockedWake(
               enrichedContextSnapshot,
               ISSUE_TREE_CONTROL_INTERACTION_WAKE_REASONS,
+              dependencyReadiness.unresolvedBlockerIssueIds,
             );
 
           if (blockedInteractionWake) {

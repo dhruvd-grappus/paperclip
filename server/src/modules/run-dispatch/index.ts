@@ -20,6 +20,7 @@ export {
   isNonAssigneeWorkspaceBusyRetry,
   extractWakeCommentIds,
   deriveCommentId,
+  allowsDependencyBlockedWake,
   allowsIssueInteractionWake,
   isResolvedInteractionContinuationWakeContext,
 } from "./domain/wake-context.js";
