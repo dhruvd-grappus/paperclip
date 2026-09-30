@@ -17,21 +17,7 @@ it.each(["workspace_git_scan_timeout", "workspace_git_scan_saturated"])("does no
   expect(legacyExecutionNeedsReconciliation({ ...run, resultJson: {
     executionRecovery: { kind: "bootstrap", providerWorkStarted: true },
   } })).toBe(true);
-  expect(legacyExecutionNeedsReconciliation({ ...run, errorCode: "setup_failed" })).toBe(false);
-});
-
-it("never holds a run whose bootstrap evidence proves the provider did not start, even after exhausted retries", () => {
-  // A hold here strands the task for non-conversation adapters: nothing can
-  // clear it, so every later comment or chat message stays deferred.
-  const run = { runtimeMode: "legacy", status: "failed", errorCode: "setup_failed", scheduledRetryAttempt: 3,
-    scheduledRetryReason: "transient_failure",
-    resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } } };
-  expect(legacyExecutionNeedsReconciliation(run)).toBe(false);
-  expect(legacyExecutionNeedsReconciliation({ ...run, scheduledRetryAttempt: 0 })).toBe(false);
-  expect(legacyExecutionNeedsReconciliation({ ...run, resultJson: {
-    executionRecovery: { kind: "bootstrap", providerWorkStarted: true },
-  } })).toBe(true);
-  expect(legacyExecutionNeedsReconciliation({ ...run, resultJson: {} })).toBe(true);
+  expect(legacyExecutionNeedsReconciliation({ ...run, errorCode: "setup_failed" })).toBe(true);
 });
 
 it("permits subscription waits only with explicit evidence that provider work never started", () => {

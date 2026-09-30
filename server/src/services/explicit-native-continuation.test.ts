@@ -493,6 +493,32 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(await admit(f)).toMatchObject({ previousRunId: f.sourceRunId });
   });
 
+  it.each([false, true])("admits a user message after a legacy setup failure only when bootstrap proves the provider never started (started=%s)", async started => {
+    // Exhausted setup retries on a non-conversation adapter become a
+    // legacy reconciliation hold with replay blocked (GRA-362). A bootstrap
+    // that never reached the provider has nothing to reconcile.
+    const f = await seed();
+    await db.delete(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.sourceRunId));
+    await db.update(heartbeatRuns).set({ runtimeMode: "legacy", nativeIssueId: null, processPid: null,
+      status: "failed", errorCode: "setup_failed", scheduledRetryAttempt: 2, scheduledRetryReason: "transient_failure",
+      startedAt: new Date("2026-09-11T09:59:59Z"),
+      resultJson: { stopReason: "adapter_failed", executionRecovery: { kind: "bootstrap", providerWorkStarted: started } },
+    }).where(eq(heartbeatRuns.id, f.sourceRunId));
+    await db.update(issueRecoveryActions).set({ cause: "legacy_execution_requires_reconciliation",
+      evidence: { runId: f.sourceRunId, originalFailureCode: "setup_failed",
+        automaticRecovery: { policy: "preserve_without_replay_v1", replay: "blocked", actionOutcome: "unknown" } },
+    }).where(eq(issueRecoveryActions.sourceIssueId, f.issueId));
+    if (started) {
+      expect(await admit(f)).toBeNull();
+      return;
+    }
+    expect(await admit(f, true)).toMatchObject({ previousRunId: f.sourceRunId });
+    expect(await admit(f)).toMatchObject({ previousRunId: f.sourceRunId });
+    const [action] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, f.issueId));
+    expect(action).toMatchObject({ status: "resolved", outcome: "cancelled",
+      evidence: { automaticRecovery: { replay: "explicit_user_continuation" } } });
+  });
+
   it.each(["attempt", "generation", "controller", "lease", "process", "launch", "provider", "cleanup", "remote", "preparing", "closed", "reassigned"])(
     "retains cancellation safeguards with %s evidence", async kind => {
       const f = await seedCancelledStartup();

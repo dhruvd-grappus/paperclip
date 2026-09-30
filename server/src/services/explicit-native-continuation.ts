@@ -16,6 +16,7 @@ import { persistActivity } from "./activity-log.js";
 
 import { historicalAdapterType, isConversationAdapter } from "./conversation-continuation.js";
 import { queuedCommentIdsFromWakePayload } from "./issue-queued-comment-queue.js";
+import { parseObject } from "../adapters/utils.js";
 
 type Run = typeof heartbeatRuns.$inferSelect;
 const terminal = ["failed", "interrupted", "timed_out", "cancelled"];
@@ -156,9 +157,18 @@ export async function admitExplicitNativeContinuation(input: {
         !run.finishedAt) return blocked("source_unavailable", "The previous execution has not finished or its owner changed. Your message is saved.");
     if (!queuedInterrupt && !queuedRequest && authorizedAt <= run.finishedAt) return blocked("message_predates_stop", "This message arrived before the previous run stopped. Send a new message to continue.");
     if (adapterExecutionControls.has(run.id)) return blocked("execution_settling", "Waiting for the previous run to stop. Your message will start automatically.");
-    const unusedAdmission = run.status === "cancelled" && !run.startedAt &&
+    const neverStartedAdmission = run.status === "cancelled" && !run.startedAt &&
       run.errorCode === "execution_reconciliation_required" &&
       !run.processPid && !run.processGroupId && !run.nativeSessionId;
+    // A legacy run whose bootstrap evidence proves the provider never started
+    // has no action outcomes to reconcile either. Without this, exhausted
+    // setup retries on a non-conversation adapter leave a hold that no user
+    // message can clear, and the task never wakes again.
+    const bootstrapNeverStarted = run.runtimeMode === "legacy" &&
+      parseObject(run.resultJson?.executionRecovery).kind === "bootstrap" &&
+      parseObject(run.resultJson?.executionRecovery).providerWorkStarted === false &&
+      !run.processPid && !run.processGroupId && !run.nativeSessionId;
+    const unusedAdmission = neverStartedAdmission || bootstrapNeverStarted;
     const legacyUserTurn = run.runtimeMode === "legacy" &&
       action.cause === "legacy_execution_requires_reconciliation" &&
       isConversationAdapter(agent.adapterType);
