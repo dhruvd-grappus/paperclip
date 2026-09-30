@@ -69,6 +69,30 @@ const ids = (value: unknown): string[] =>
     ? value.filter((id): id is string => typeof id === "string")
     : [];
 
+/**
+ * A question-response wake carries the source comment when the asking run was
+ * itself woken by a comment. A question raised from a wake without a comment
+ * (assignment, child completion, chat interaction) has no source comment; its
+ * continuation is then identified only by the interaction, delivery, and wake
+ * rows joined below, and must not carry any comment ids at all.
+ */
+function hasConsistentSourceComment(context: Record<string, unknown>): boolean {
+  const sourceCommentId = context.sourceCommentId;
+  const wakeCommentIds = ids(context.wakeCommentIds);
+  if (typeof sourceCommentId === "string") {
+    return (
+      context.wakeCommentId === sourceCommentId &&
+      wakeCommentIds.length === 1 &&
+      wakeCommentIds[0] === sourceCommentId
+    );
+  }
+  return (
+    (sourceCommentId === null || sourceCommentId === undefined) &&
+    (context.wakeCommentId === null || context.wakeCommentId === undefined) &&
+    wakeCommentIds.length === 0
+  );
+}
+
 function completedQuestionFormMatchesInteraction(
   interaction: AskUserQuestionsInteraction,
   action: typeof chatActions.$inferSelect,
@@ -204,10 +228,7 @@ async function resolveQuestionResponseChain(
     context.externalChatContinuation !== true ||
     typeof context.interactionId !== "string" ||
     typeof context.sourceRunId !== "string" ||
-    typeof context.sourceCommentId !== "string" ||
-    context.wakeCommentId !== context.sourceCommentId ||
-    ids(context.wakeCommentIds).length !== 1 ||
-    ids(context.wakeCommentIds)[0] !== context.sourceCommentId
+    !hasConsistentSourceComment(context)
   )
     return null;
 
@@ -365,8 +386,9 @@ async function resolveQuestionResponseChain(
       (sourceContext.paperclipExternalChatExecutionBound === true &&
         sourceWake.externalChatExecutionBound === true)
     ) ||
-    sourceIds.length !== 1 ||
-    sourceIds[0] !== context.sourceCommentId ||
+    (typeof context.sourceCommentId === "string"
+      ? sourceIds.length !== 1 || sourceIds[0] !== context.sourceCommentId
+      : sourceIds.length !== 0) ||
     (parent !== null &&
       parent.marker.sourceCommentId !== context.sourceCommentId) ||
     interaction.kind !== "ask_user_questions" ||

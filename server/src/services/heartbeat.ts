@@ -7449,11 +7449,20 @@ export async function attestReviewedExternalChatRun(input: {
         const admittedContext = parseObject(run.contextSnapshot);
         const admittedIds = extractWakeCommentIds(admittedContext);
         const suppliedIds = extractWakeCommentIds(input.contextSnapshot);
+        // A question-response continuation whose asking run was not itself
+        // woken by a comment carries no comment ids. Its identity is the
+        // interaction id, which resolveExternalChatQuestionResponse then
+        // proves against the interaction, delivery, wake, and source-run rows.
+        const commentFreeQuestionResponse =
+          admittedContext.source === "issue.interaction.respond" &&
+          admittedIds.length === 0 &&
+          typeof admittedContext.interactionId === "string" &&
+          admittedContext.interactionId === input.contextSnapshot.interactionId;
         if (
           admittedContext.issueId !== input.issueId ||
           input.contextSnapshot.issueId !== input.issueId ||
           admittedContext.source !== input.contextSnapshot.source ||
-          admittedIds.length === 0 ||
+          (admittedIds.length === 0 && !commentFreeQuestionResponse) ||
           admittedIds.length !== suppliedIds.length ||
           admittedIds.some((id, index) => id !== suppliedIds[index])
         )
@@ -7491,7 +7500,8 @@ export async function attestReviewedExternalChatRun(input: {
         } catch (error) {
           if (
             error instanceof Error &&
-            error.message === "paperclip_runner_chat_attachment_binding_denied"
+            error.message === "paperclip_runner_chat_attachment_binding_denied" &&
+            admittedIds.length > 0
           ) {
             // Inbound processing commits the message/link before dispatching its
             // wake, but completes subscription and marks delivery processed after

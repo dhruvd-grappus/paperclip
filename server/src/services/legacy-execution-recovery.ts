@@ -42,10 +42,14 @@ export function legacyExecutionNeedsReconciliation(
   // that the bootstrap evidence proves never started. Keep unknown outcomes held.
   if ((run.errorCode === "workspace_git_scan_timeout" || run.errorCode === "workspace_git_scan_saturated") &&
       evidence?.kind === "bootstrap" && evidence.providerWorkStarted === false) return false;
-  if (executionFailureRetryCount(run) >= 2) return true;
-  return !(
-    evidence?.kind === "bootstrap" && evidence.providerWorkStarted === false
-  );
+  // Bootstrap evidence that the provider never started proves there are no
+  // provider actions to reconcile, however many automatic retries ran. Holding
+  // such a run behind a reconciliation action strands the task: a
+  // non-conversation adapter has no explicit-continuation path that can clear
+  // the hold, so every later comment or chat message stays deferred forever.
+  // Exhausted retries surface as an ordinary failed run instead.
+  if (evidence?.kind === "bootstrap" && evidence.providerWorkStarted === false) return false;
+  return true;
 }
 
 /** Persist the failed legacy run, owned lock release and operator decision together. */
