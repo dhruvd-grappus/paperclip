@@ -93,6 +93,42 @@ function hasConsistentSourceComment(context: Record<string, unknown>): boolean {
   );
 }
 
+/**
+ * Latest inbound message of the conversation bound to this issue, committed
+ * before the answer. Anchors a question-response chain whose asking run was
+ * not woken by a comment.
+ */
+async function latestInboundCommentId(
+  tx: Db,
+  binding: Binding,
+  answeredAt: Date | null,
+): Promise<string | null> {
+  if (!answeredAt) return null;
+  const [row] = await tx
+    .select({ commentId: chatMessageLinks.commentId })
+    .from(chatMessageLinks)
+    .innerJoin(
+      chatConversations,
+      and(
+        eq(chatConversations.id, chatMessageLinks.conversationId),
+        eq(chatConversations.companyId, chatMessageLinks.companyId),
+        eq(chatConversations.endpointId, chatMessageLinks.endpointId),
+      ),
+    )
+    .where(
+      and(
+        eq(chatMessageLinks.companyId, binding.companyId),
+        eq(chatMessageLinks.direction, "inbound"),
+        eq(chatConversations.issueId, binding.issueId),
+        sql`${chatMessageLinks.commentId} is not null`,
+        sql`${chatMessageLinks.createdAt} <= ${answeredAt}`,
+      ),
+    )
+    .orderBy(sql`${chatMessageLinks.createdAt} desc`)
+    .limit(1);
+  return row?.commentId ?? null;
+}
+
 function completedQuestionFormMatchesInteraction(
   interaction: AskUserQuestionsInteraction,
   action: typeof chatActions.$inferSelect,
@@ -390,6 +426,7 @@ async function resolveQuestionResponseChain(
       ? sourceIds.length !== 1 || sourceIds[0] !== context.sourceCommentId
       : sourceIds.length !== 0) ||
     (parent !== null &&
+      typeof context.sourceCommentId === "string" &&
       parent.marker.sourceCommentId !== context.sourceCommentId) ||
     interaction.kind !== "ask_user_questions" ||
     interaction.status !== "answered" ||
@@ -433,6 +470,16 @@ async function resolveQuestionResponseChain(
   )
     return null;
 
+  // The evidence below is anchored on one inbound message of the bound
+  // conversation: the message that woke the asking run when the wake carried
+  // it, otherwise the latest inbound message committed before the answer. In
+  // both cases the answer must come from that message's linked author.
+  const anchorCommentId =
+    typeof context.sourceCommentId === "string"
+      ? context.sourceCommentId
+      : await latestInboundCommentId(tx, binding, interaction.resolvedAt);
+  if (!anchorCommentId) return null;
+
   const actionQuery = tx
     .select({
       action: chatActions,
@@ -460,7 +507,7 @@ async function resolveQuestionResponseChain(
         eq(chatMessageLinks.companyId, chatActions.companyId),
         eq(chatMessageLinks.endpointId, chatActions.endpointId),
         eq(chatMessageLinks.conversationId, chatActions.conversationId),
-        eq(chatMessageLinks.commentId, context.sourceCommentId),
+        eq(chatMessageLinks.commentId, anchorCommentId),
         eq(chatMessageLinks.direction, "inbound"),
       ),
     )
@@ -536,7 +583,7 @@ async function resolveQuestionResponseChain(
         eq(chatMessageLinks.companyId, chatPublications.companyId),
         eq(chatMessageLinks.endpointId, chatPublications.endpointId),
         eq(chatMessageLinks.conversationId, chatPublications.conversationId),
-        eq(chatMessageLinks.commentId, context.sourceCommentId),
+        eq(chatMessageLinks.commentId, anchorCommentId),
         eq(chatMessageLinks.direction, "inbound"),
       ),
     )
