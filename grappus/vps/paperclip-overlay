@@ -87,6 +87,35 @@ status() {
   [ -f "$b" ] && { echo "fork build:"; jq -c . "$b"; } || echo "fork build: none (upstream npm install)"
 }
 
+# Restore the pristine upstream install the overlay copies from, if something
+# (a disk-cleanup, `paperclipai`'s pruneInstallPayloads) removed it.
+# `paperclipai install` recreates $STORE/$base and (temporarily) points
+# `current` at it; runner-shim repairs it exactly as an upgrade would.
+ensure_pristine() {
+  local base=$1
+  [ -d "$STORE/$base" ] && return 0
+  echo "==> pristine upstream install $STORE/$base missing; restoring from npm"
+  su - paperclip -c "/home/paperclip/.local/bin/paperclipai install --version '$base' -y" \
+    || die "could not restore pristine $base from npm"
+  [ -d "$STORE/$base" ] || die "restore did not create $STORE/$base"
+  if [ -x /home/paperclip/runner-shim.sh ]; then
+    su - paperclip -c "bash /home/paperclip/runner-shim.sh" || die "runner-shim failed on restored pristine $base"
+  fi
+}
+
+# Keep the pristine base in the manifest so `paperclipai`'s own
+# pruneInstallPayloads (and any disk-cleanup that respects it) treat it as
+# in-use. Appended last so `rollback` still reads previous[0].
+pin_pristine() {
+  local base=$1 p="$STORE/$base"
+  [ -d "$p" ] || return 0
+  jq --arg p "$p" --arg v "$base" --arg t "$(date -u +%FT%T.000Z)" '
+    if ((.previous // []) | map(.payloadPath) | index($p)) then .
+    else .previous = ((.previous // []) + [{source:"npm", version:$v, channel:"pristine", payloadPath:$p, installedAt:$t}]) end' \
+    "$MANIFEST" > "$MANIFEST.tmp"
+  chown paperclip:paperclip "$MANIFEST.tmp"; chmod 600 "$MANIFEST.tmp"; mv "$MANIFEST.tmp" "$MANIFEST"
+}
+
 install_overlay() {
   local tgz=$1 force=${2:-}
   [ -f "$tgz" ] || die "no such tarball: $tgz"
@@ -98,7 +127,7 @@ install_overlay() {
   local base build sha version name
   base=$(jq -r .base "$tmp/GRAPPUS_BUILD"); build=$(jq -r .build "$tmp/GRAPPUS_BUILD"); sha=$(jq -r .sha "$tmp/GRAPPUS_BUILD")
   version="$base-grappus.$build"; name="$version"
-  [ -d "$STORE/$base" ] || die "pristine upstream install $STORE/$base missing"
+  ensure_pristine "$base"
   [ -f "$STORE/$base/GRAPPUS_BUILD" ] && die "$STORE/$base carries a fork build; it must stay pristine"
   if [ "$force" != --force ]; then
     local n; n=$(live_runs); [ "$n" = 0 ] || die "$n live run(s); retry when idle or pass --force"
@@ -143,6 +172,7 @@ install_overlay() {
   switch_to "$name" "$version"
   if restart_and_verify; then
     echo "==> running $version"
+    pin_pristine "$base"
     record_source "$sha"
   else
     echo "==> $version failed verification; rolling back to $prev_name"
