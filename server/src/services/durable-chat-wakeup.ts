@@ -128,10 +128,8 @@ export async function authorizeFailedChatRunRetryWake(
     }
     return false;
   }
-  const authority = failedChatRunRetryAuthorities.get(db);
   const selector = input.contextSnapshot.chatFailedRunRetry;
   if (
-    !authority ||
     action.companyId !== input.companyId ||
     !input.issueId ||
     !input.wakeupRequestId ||
@@ -151,11 +149,34 @@ export async function authorizeFailedChatRunRetryWake(
   ) {
     throw new FailedChatRunRetryAuthorizationError();
   }
-  await authority(tx, {
-    ...input,
-    issueId: input.issueId,
-    wakeupRequestId: input.wakeupRequestId,
-  });
+  // Local fork: a validated durable `failed_run_retry` action is sufficient
+  // authorization. Upstream additionally requires the live chat service to
+  // re-prove current access to the conversation (`failedChatRunRetryAuthorities`)
+  // and refuses a board/operator-triggered retry otherwise. We keep the action
+  // and selector validation above but no longer require that live authority, so
+  // a failed external-chat run can be retried from the board.
+  const authority = failedChatRunRetryAuthorities.get(db);
+  if (authority) {
+    try {
+      await authority(tx, {
+        ...input,
+        issueId: input.issueId,
+        wakeupRequestId: input.wakeupRequestId,
+      });
+    } catch (error) {
+      // A live-authority access decline no longer blocks the retry. Any other
+      // failure (e.g. an authorization-store outage) still propagates, so a
+      // deferred retry is never silently discarded.
+      const code = (error as { details?: { code?: string } } | undefined)
+        ?.details?.code;
+      if (
+        !(error instanceof FailedChatRunRetryAuthorizationError) &&
+        code !== "chat_failed_run_retry_not_authorized"
+      ) {
+        throw error;
+      }
+    }
+  }
   return true;
 }
 

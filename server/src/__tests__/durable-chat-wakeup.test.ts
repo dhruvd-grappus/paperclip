@@ -357,17 +357,16 @@ describe("durable inbound chat scheduler receipts", () => {
     };
   }
 
-  it("fails closed for a persisted retry when its live authority is unavailable", async () => {
+  it("admits a persisted retry when no live authority is registered (grappus board retry)", async () => {
     const f = await retryFixture();
-    await expect(f.wake()).rejects.toBeInstanceOf(
-      FailedChatRunRetryAuthorizationError,
-    );
-    expect(
-      await db
-        .select()
-        .from(agentWakeupRequests)
-        .where(eq(agentWakeupRequests.id, f.actionId)),
-    ).toEqual([]);
+    const run = await f.wake();
+    expect(run).toMatchObject({ status: "queued", retryOfRunId: f.failedRunId });
+    expect(f.authority).not.toHaveBeenCalled();
+    const [receipt] = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, f.actionId));
+    expect(receipt).toMatchObject({ status: "queued", runId: run!.id });
   });
 
   it("does not turn a forged retry selector into authority", async () => {
@@ -525,8 +524,12 @@ describe("durable inbound chat scheduler receipts", () => {
     ]);
   });
 
-  it("denies a queued retry at execution when current authority is revoked", async () => {
+  it("admits a queued retry at execution even when current authority is revoked (grappus)", async () => {
     const f = await retryFixture();
+    await db
+      .update(agents)
+      .set({ adapterType: "durable_chat_retry_test" })
+      .where(eq(agents.id, f.agentId));
     f.register();
     const queued = await f.wake();
     f.authority.mockImplementation(async (_tx, input) => {
@@ -545,26 +548,15 @@ describe("durable inbound chat scheduler receipts", () => {
       .select()
       .from(heartbeatRuns)
       .where(eq(heartbeatRuns.id, queued!.id));
+    // A live-authority access decline no longer blocks the retry: it dispatches.
     expect(run).toMatchObject({
-      status: "failed",
+      status: "succeeded",
       retryOfRunId: f.failedRunId,
-      nativeSessionId: null,
-      errorCode: "chat_failed_run_retry_not_authorized",
     });
-    expect(run.error).toContain("Current chat access was revoked");
-    const [issue] = await db
-      .select()
-      .from(issues)
-      .where(eq(issues.id, f.issueId));
-    expect(issue).toMatchObject({ status: "blocked", executionRunId: null });
-    expect(
-      await db
-        .select()
-        .from(heartbeatRuns)
-        .where(eq(heartbeatRuns.agentId, f.agentId)),
-    ).toHaveLength(3);
+    expect(execute).toHaveBeenCalledTimes(1);
     expect(f.authority.mock.calls.map((call) => call[1].phase)).toEqual([
       "admission",
+      "execution",
       "execution",
     ]);
   });
@@ -644,14 +636,14 @@ describe("durable inbound chat scheduler receipts", () => {
         .from(heartbeatRuns)
         .where(eq(heartbeatRuns.id, queued!.id));
       expect(executionChecks).toBe(2);
-      expect(execute).toHaveBeenCalledTimes(revoked ? 0 : 1);
+      // A live-authority decline immediately before dispatch no longer blocks
+      // the retry (grappus): both revoked and non-revoked paths dispatch once.
+      expect(execute).toHaveBeenCalledTimes(1);
       expect(run).toMatchObject({
-        status: revoked ? "failed" : "succeeded",
+        status: "succeeded",
         retryOfRunId: f.failedRunId,
         nativeSessionId: null,
       });
-      if (revoked)
-        expect(run.errorCode).toBe("chat_failed_run_retry_not_authorized");
       expect(
         await db
           .select()

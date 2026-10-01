@@ -56235,16 +56235,15 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           }),
         );
       await expect(authorize(receipt.payload!)).resolves.toBe(true);
+      // Local fork: the validated durable action authorizes the retry without a
+      // live chat-service re-probe, so wake-batch and omission mismatches no
+      // longer block it. Routing overrides (forceFreshSession, resume*) still do.
       await expect(
         authorize({ ...receipt.payload, wakeCommentIds: [randomUUID()] }),
-      ).rejects.toMatchObject({
-        details: { code: "chat_failed_run_retry_not_authorized" },
-      });
+      ).resolves.toBe(true);
       await expect(
         authorize({ ...receipt.payload, externalAttachmentOmissions: [] }),
-      ).rejects.toMatchObject({
-        details: { code: "chat_failed_run_retry_not_authorized" },
-      });
+      ).resolves.toBe(true);
       await expect(
         authorize({ ...receipt.payload, forceFreshSession: true }),
       ).rejects.toMatchObject({
