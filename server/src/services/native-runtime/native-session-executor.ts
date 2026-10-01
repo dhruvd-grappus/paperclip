@@ -11472,6 +11472,13 @@ async function createRunnerdBackendWithinSessionClaim(
   // Never let an agent, environment binding, or host variable disable the
   // Codex sandbox for a local runner by supplying the same key.
   delete effectiveRunnerEnvironmentBase.PAPERCLIP_RUNNER_EXTERNAL_SANDBOX;
+  // Local fork: explicit operator opt-in (read only from the server process,
+  // never from an agent/environment/host run variable) to run local Codex /
+  // OpenCode providers without the bwrap sandbox — i.e. the same posture as
+  // acpx/Claude. Defaults off; when set, the provider runs unsandboxed so it
+  // can reach HOME, the git credential helpers, and the system browser.
+  const unsandboxLocalRunner =
+    process.env.PAPERCLIP_RUNNER_LOCAL_UNSANDBOXED === "1";
   const effectiveRunnerEnvironment: NodeJS.ProcessEnv = remoteRuntimeRoot
     ? {
         ...effectiveRunnerEnvironmentBase,
@@ -11489,6 +11496,9 @@ async function createRunnerdBackendWithinSessionClaim(
     : {
         ...effectiveRunnerEnvironmentBase,
         PAPERCLIP_WORKSPACE_CWD: input.execution.workspace.cwd,
+        ...(unsandboxLocalRunner
+          ? { PAPERCLIP_RUNNER_EXTERNAL_SANDBOX: "1" }
+          : {}),
       };
   const archiveContinuityState = async () => {
     if (hasRetainedWarmTransitionEvidence(root)) {
