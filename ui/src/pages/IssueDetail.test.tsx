@@ -32,7 +32,7 @@ import {
   IssueDetail,
   TaskDetailSurface,
   readRecoveryReconcileWorkspaceId,
-  shouldScrollIssueDetailToTopOnNavigation,
+  shouldResetIssueDetailScrollOnNavigation,
 } from "./IssueDetail";
 import { queryKeys } from "../lib/queryKeys";
 import {
@@ -6282,10 +6282,10 @@ describe("readRecoveryReconcileWorkspaceId", () => {
   });
 });
 
-describe("shouldScrollIssueDetailToTopOnNavigation", () => {
+describe("shouldResetIssueDetailScrollOnNavigation", () => {
   it("does not scroll when only URL search params changed for the same issue", () => {
     expect(
-      shouldScrollIssueDetailToTopOnNavigation({
+      shouldResetIssueDetailScrollOnNavigation({
         previousIssueId: "PAP-10306",
         nextIssueId: "PAP-10306",
         navigationType: NavigationType.Push,
@@ -6293,9 +6293,9 @@ describe("shouldScrollIssueDetailToTopOnNavigation", () => {
     ).toBe(false);
   });
 
-  it("scrolls on forward navigation to a different issue", () => {
+  it("resets scroll on forward navigation to a different issue", () => {
     expect(
-      shouldScrollIssueDetailToTopOnNavigation({
+      shouldResetIssueDetailScrollOnNavigation({
         previousIssueId: "PAP-1",
         nextIssueId: "PAP-2",
         navigationType: NavigationType.Push,
@@ -6305,7 +6305,7 @@ describe("shouldScrollIssueDetailToTopOnNavigation", () => {
 
   it("does not scroll on browser back or forward restoration", () => {
     expect(
-      shouldScrollIssueDetailToTopOnNavigation({
+      shouldResetIssueDetailScrollOnNavigation({
         previousIssueId: "PAP-1",
         nextIssueId: "PAP-2",
         navigationType: NavigationType.Pop,

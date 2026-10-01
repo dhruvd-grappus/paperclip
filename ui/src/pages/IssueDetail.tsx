@@ -92,6 +92,7 @@ import {
   normalizeIssueQueuedCommentQueue,
 } from "../lib/issue-queued-comment-queue";
 import { collectLiveIssueIds } from "../lib/liveIssueIds";
+import { resolveIssueChatScrollTarget } from "../lib/issue-chat-scroll";
 import {
   hasLegacyIssueDetailQuery,
   createIssueDetailPath,
@@ -468,7 +469,7 @@ export function canBoardResolveRecoveryAction(
 // the imported bindings stay usable within this module.
 export { canBoardManageRuntime, readRecoveryReconcileWorkspaceId };
 
-export function shouldScrollIssueDetailToTopOnNavigation(input: {
+export function shouldResetIssueDetailScrollOnNavigation(input: {
   previousIssueId: string | undefined;
   nextIssueId: string | undefined;
   navigationType: ReturnType<typeof useNavigationType>;
@@ -5411,22 +5412,30 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
 
   const isFromInbox = resolvedIssueDetailState?.issueDetailSource === "inbox";
 
-  // Scroll to top on forward navigation (PUSH/REPLACE) so issue doesn't
-  // inherit the inbox/issues-list scroll position on mobile.
+  // Scroll to the bottom of the chat on forward navigation (PUSH/REPLACE) so
+  // the newest comment is visible when the user opens a task and the page
+  // doesn't inherit the inbox/issues-list scroll position on mobile.
   useEffect(() => {
     const previousIssueId = lastScrollIssueIdRef.current;
     lastScrollIssueIdRef.current = issueId;
     if (
-      !shouldScrollIssueDetailToTopOnNavigation({
+      !shouldResetIssueDetailScrollOnNavigation({
         previousIssueId,
         nextIssueId: issueId,
         navigationType,
       })
     )
       return;
-    window.scrollTo({ top: 0, left: 0, behavior: "auto" });
-    const main = document.getElementById("main-content");
-    if (main) main.scrollTop = 0;
+    const target = resolveIssueChatScrollTarget();
+    if (target.type === "element") {
+      target.element.scrollTop = target.element.scrollHeight;
+      return;
+    }
+    window.scrollTo({
+      top: document.documentElement.scrollHeight,
+      left: 0,
+      behavior: "auto",
+    });
   }, [issueId, navigationType]);
 
   // Resolve external UUID links and wrong-prefix task links from the loaded
