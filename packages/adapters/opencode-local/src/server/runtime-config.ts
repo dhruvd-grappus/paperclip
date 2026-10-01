@@ -216,6 +216,40 @@ export async function prepareOpenCodeRuntimeConfig(input: {
     nextConfig.provider = nextProvider;
   }
 
+  // Wire the Paperclip runtime-tools MCP server into OpenCode so the agent gets
+  // the native Paperclip tools (get_task_context, create_task, request_human_input,
+  // paperclip_finish, paperclip_block, …) ALONGSIDE OpenCode's own tools — the same
+  // tools the native paperclip_runner runtime exposes. The server already hands the
+  // adapter PAPERCLIP_RUNTIME_TOOLS_MCP_URL/TOKEN via buildRuntimeToolsEnv; without
+  // this block they were inert and the agent fell back to shell + curl.
+  const runtimeToolsUrl = (
+    input.env.PAPERCLIP_RUNTIME_TOOLS_MCP_URL ??
+    process.env.PAPERCLIP_RUNTIME_TOOLS_MCP_URL ??
+    ""
+  ).trim();
+  const runtimeToolsToken = (
+    input.env.PAPERCLIP_RUNTIME_TOOLS_TOKEN ??
+    process.env.PAPERCLIP_RUNTIME_TOOLS_TOKEN ??
+    ""
+  ).trim();
+  if (runtimeToolsUrl) {
+    const existingMcp = isPlainObject(existingConfig.mcp) ? existingConfig.mcp : {};
+    nextConfig.mcp = {
+      ...existingMcp,
+      paperclip: {
+        type: "remote",
+        url: runtimeToolsUrl,
+        enabled: true,
+        ...(runtimeToolsToken
+          ? { headers: { Authorization: `Bearer ${runtimeToolsToken}` } }
+          : {}),
+      },
+    };
+    notes.push(
+      "Injected the Paperclip runtime-tools MCP server as `paperclip` (native Paperclip tools available in OpenCode).",
+    );
+  }
+
   // Pin OpenCode's auxiliary "small" model (used for session-title generation and
   // other helper tasks) via PAPERCLIP_OPENCODE_SMALL_MODEL. OpenCode otherwise
   // defaults the small model to a built-in provider default (e.g. a claude-* model

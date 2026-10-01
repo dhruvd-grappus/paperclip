@@ -65,6 +65,33 @@ describe("prepareOpenCodeRuntimeConfig", () => {
     await expect(fs.access(prepared.env.XDG_CONFIG_HOME)).rejects.toThrow();
   });
 
+  it("injects the Paperclip runtime-tools MCP server alongside OpenCode's own tools", async () => {
+    const configHome = await makeConfigHome({ permission: { read: "allow" } });
+    const prepared = await prepareOpenCodeRuntimeConfig({
+      env: {
+        XDG_CONFIG_HOME: configHome,
+        PAPERCLIP_RUNTIME_TOOLS_MCP_URL: "https://paperclip.example/api/runtime-tools/mcp",
+        PAPERCLIP_RUNTIME_TOOLS_TOKEN: "pcp_runner_token",
+      },
+      config: {},
+    });
+    cleanupPaths.add(prepared.env.XDG_CONFIG_HOME);
+    const runtimeConfig = JSON.parse(
+      await fs.readFile(
+        path.join(prepared.env.XDG_CONFIG_HOME, "opencode", "opencode.json"),
+        "utf8",
+      ),
+    ) as Record<string, unknown>;
+    expect(runtimeConfig.mcp).toMatchObject({
+      paperclip: {
+        type: "remote",
+        url: "https://paperclip.example/api/runtime-tools/mcp",
+        enabled: true,
+        headers: { Authorization: "Bearer pcp_runner_token" },
+      },
+    });
+  });
+
   it("merges custom providers from PAPERCLIP_OPENCODE_PROVIDERS into the config", async () => {
     const configHome = await makeConfigHome({ permission: { read: "allow" } });
     const providers = {
