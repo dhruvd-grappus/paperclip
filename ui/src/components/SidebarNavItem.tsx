@@ -65,6 +65,12 @@ interface SidebarNavItemProps {
   trailingLabel?: string;
   /** Rendered inside the right-aligned status cluster, before the live dot. */
   liveAccessory?: ReactNode;
+  /**
+   * Navigation-intent hint, fired on hover and keyboard focus. Used to warm a
+   * destination's cache before the click, the way `IssueLinkQuicklook` warms an
+   * issue. Must be side-effect only — never navigate or change status.
+   */
+  onIntent?: () => void;
 }
 
 export function SidebarNavItem({
@@ -86,6 +92,7 @@ export function SidebarNavItem({
   trailing,
   trailingLabel,
   liveAccessory,
+  onIntent,
 }: SidebarNavItemProps) {
   const { isMobile, setSidebarOpen, collapsed, peeking } = useSidebar();
   // A contextual takeover forces full labels even when the saved global app
@@ -120,6 +127,8 @@ export function SidebarNavItem({
       end={end}
       aria-label={railAriaLabel}
       onClick={() => { if (isMobile) setSidebarOpen(false); }}
+      onMouseEnter={onIntent}
+      onFocus={onIntent}
       className={({ isActive }) =>
         cn(
           // One rhythm and one inset pill highlight: mx-2 floats the row off

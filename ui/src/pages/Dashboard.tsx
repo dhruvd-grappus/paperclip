@@ -17,6 +17,7 @@ import { useCompany } from "../context/CompanyContext";
 import { useDialogActions } from "../context/DialogContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
+import { queryPolicies } from "../lib/queryOptions";
 import { MetricCard } from "../components/MetricCard";
 import { EmptyState } from "../components/EmptyState";
 import { usePublishSharedQueryData, useSharedPollingQuery } from "../hooks/useSharedPolling";
@@ -75,6 +76,7 @@ export function Dashboard() {
     queryKey: queryKeys.agents.list(selectedCompanyId!),
     queryFn: () => agentsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
+    ...queryPolicies.reference,
   });
 
   // Bulk resume for agents parked by a company import. Sequential on purpose
@@ -157,6 +159,7 @@ export function Dashboard() {
     queryKey: dashboardQueryKey,
     queryFn: () => dashboardApi.summary(selectedCompanyId!),
     enabled: !!selectedCompanyId,
+    ...queryPolicies.warm,
   });
   usePublishSharedQueryData(sharedDashboard, data, dashboardUpdatedAt);
 
@@ -165,12 +168,14 @@ export function Dashboard() {
     queryKey: queryKeys.issues.list(selectedCompanyId!),
     queryFn: () => issuesApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
+    ...queryPolicies.warm,
   });
 
   const { data: projects } = useQuery({
     queryKey: queryKeys.projects.list(selectedCompanyId!, { includeArchived: true }),
     queryFn: () => projectsApi.list(selectedCompanyId!, { includeArchived: true }),
     enabled: !!selectedCompanyId,
+    ...queryPolicies.reference,
   });
 
   // The "Waiting on you" rows, built by the server (GRA-328), with the same
@@ -184,6 +189,7 @@ export function Dashboard() {
     queryKey: queryKeys.access.companyUserDirectory(selectedCompanyId!),
     queryFn: () => accessApi.listUserDirectory(selectedCompanyId!),
     enabled: !!selectedCompanyId,
+    ...queryPolicies.reference,
   });
 
   // Inline status changes from the two panels below. Both the task list and
@@ -211,6 +217,7 @@ export function Dashboard() {
     queryKey: queryKeys.liveRuns(selectedCompanyId!),
     queryFn: () => heartbeatsApi.liveRunsForCompany(selectedCompanyId!),
     enabled: !!selectedCompanyId,
+    ...queryPolicies.realtime,
   });
   const liveIssueIds = useMemo(
     () => new Set((liveRuns ?? []).flatMap((run) => (run.issueId ? [run.issueId] : []))),
