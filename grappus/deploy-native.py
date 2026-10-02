@@ -93,16 +93,14 @@ if os.path.isfile(bs):
 req("PUT", f"/api/agents/{CL}/instructions-bundle/file?companyId={C}", {"path": "AGENTS.md", "content": agents_md})
 print("AGENTS.md put", len(agents_md), "bytes")
 agent = req("GET", f"/api/agents/{CL}")
-cfg = {
-    "provider": "acpx", "acpxAgent": "claude", "acpxPermissionMode": "approve-all",
-    "model": "claude-opus-5", "cwd": "/home/paperclip/clarifier-sandbox",
-    "timeoutSec": 1500, "graceSec": 30, "maxTurnsPerRun": 150,
-}
-body = {"adapterConfig": cfg}
-if agent.get("adapterType") != "paperclip_runner":
-    body["adapterType"] = "paperclip_runner"
-res = req("PATCH", f"/api/agents/{CL}", body)
-print("Clarifier adapter:", res.get("adapterType"), {k: res.get("adapterConfig", {}).get(k) for k in ["provider", "acpxAgent", "acpxPermissionMode", "model", "timeoutSec", "maxTurnsPerRun"]})
+# The adapter belongs to whoever configured it (currently opencode_local +
+# opencode-go/deepseek-v4.1-flash, REST-only pipeline). Deploy never changes it:
+# an earlier hardcoded PATCH here silently reverted the live runtime.
+print(
+    "Clarifier adapter (left unchanged):",
+    agent.get("adapterType"),
+    (agent.get("adapterConfig") or {}).get("model"),
+)
 out = subprocess.run(["bash", f"{HOME}/native-token.sh", CL], capture_output=True, text=True, env={**os.environ, "FORCE": "1"})
 print("token sync:", (out.stdout + out.stderr).strip()[-300:])
 

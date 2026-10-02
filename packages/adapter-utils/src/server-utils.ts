@@ -2447,7 +2447,13 @@ function renderPaperclipWakePromptBody(
         ? "This is the missing or edited message delta since the named provider-session run, plus the required originating requests. Earlier delivered history remains in this resumed session."
         : "This snapshot includes the complete authorized task history through its coverage cursor. A summary has no certified message coverage; use the source messages to resolve omissions.",
       "Completed actions contain durable results from prior runs. Use those results as completed work; do not issue the same mutation again under a new call id.");
-    const { interactionOutcomes, completedActions, completedWork, recoveryOutcomes, ...requestContext } = continuation;
+    const { interactionOutcomes, completedActions, completedWork, recoveryOutcomes, objective, ...requestContext } = continuation;
+    // The continuation objective is a copy of the issue description. When the
+    // caller already delivered the task markdown, do not repeat it as escaped
+    // JSON (it doubled the brief and arrived newline-escaped).
+    if (options.suppressIssueDescription !== true) {
+      (requestContext as Record<string, unknown>).objective = objective;
+    }
     const encodeData = (data: unknown) => markdownFencedText(JSON.stringify(data, (_key, value) =>
       typeof value === "string" ? value.replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, "") : value,
     ).replace(/</g, "\\u003c").replace(/>/g, "\\u003e"));

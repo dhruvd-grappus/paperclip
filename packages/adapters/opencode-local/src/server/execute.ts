@@ -31,7 +31,6 @@ import {
   asStringArray,
   parseObject,
   buildPaperclipEnv,
-  buildRuntimeToolsEnv,
   joinPromptSections,
   buildInvocationEnvForLogs,
   ensureAbsoluteDirectory,
@@ -269,9 +268,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   }
 
   const envConfig = parseObject(config.env);
+  // No PAPERCLIP_RUNTIME_TOOLS_* env: this pipeline is REST-only, and the
+  // runtime-tools MCP credentials only fed a dead MCP injection.
   const env: Record<string, string> = {
     ...buildPaperclipEnv(agent),
-    ...buildRuntimeToolsEnv(ctx.runtimeTools),
   };
   env.PAPERCLIP_RUN_ID = runId;
   const wakeTaskId =
