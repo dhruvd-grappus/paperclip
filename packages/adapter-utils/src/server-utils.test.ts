@@ -1303,6 +1303,12 @@ describe("renderPaperclipWakePrompt", () => {
       commentWindow: { requestedCount: 0, includedCount: 0, missingCount: 0 },
       comments: [],
       fallbackFetchNeeded: false,
+      executionContinuation: {
+        version: 1,
+        objective:
+          "Update launch-card.svg and change the CTA to Try Team free.",
+        messages: [],
+      },
     };
 
     const prompt = renderPaperclipWakePrompt(payload, {
@@ -1311,6 +1317,12 @@ describe("renderPaperclipWakePrompt", () => {
     expect(prompt).not.toContain("Issue description:");
     expect(prompt).not.toContain("omitted from this resume delta");
     expect(prompt).toContain("- issue: PAP-15271 Preserve the task brief");
+    // The continuation objective duplicates the description; suppressed means
+    // gone from the snapshot JSON too, not just the rendered line.
+    expect(prompt).not.toContain("Update launch-card.svg");
+
+    const unsuppressed = renderPaperclipWakePrompt(payload);
+    expect(unsuppressed).toContain("Issue description:");
 
     const promptJson = stringifyPaperclipWakePayload(payload, {
       omitIssueDescription: true,
