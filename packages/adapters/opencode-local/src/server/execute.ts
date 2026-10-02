@@ -573,9 +573,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       !sessionId && bootstrapPromptTemplate.trim().length > 0
         ? renderTemplate(bootstrapPromptTemplate, templateData).trim()
         : "";
-    const taskContextNote = context.conversationMode === true
-      ? selectPaperclipTaskMarkdown(context, { resumedSession: Boolean(sessionId) })
-      : "";
+    // Embed the task-context markdown in every run's prompt (matching
+    // claude-local): full brief on a fresh session, the compact variant on a
+    // resumed one (the session history already holds the full brief from the
+    // earlier run). Previously gated on conversationMode, so ordinary issue
+    // runs carried no task brief and the agent had to re-pull it via
+    // get_task_context on every run — including continuations that already
+    // had the brief in session history.
+    const taskContextNote = selectPaperclipTaskMarkdown(context, {
+      resumedSession: Boolean(sessionId),
+    });
     const wakePrompt = renderPaperclipWakePrompt(context.paperclipWake, {
       conversationMode: context.conversationMode === true,
       resumedSession: Boolean(sessionId),
