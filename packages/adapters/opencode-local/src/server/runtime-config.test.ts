@@ -65,7 +65,7 @@ describe("prepareOpenCodeRuntimeConfig", () => {
     await expect(fs.access(prepared.env.XDG_CONFIG_HOME)).rejects.toThrow();
   });
 
-  it("injects the Paperclip runtime-tools MCP server alongside OpenCode's own tools", async () => {
+  it("never injects a Paperclip MCP server, even when runtime-tools env is present", async () => {
     const configHome = await makeConfigHome({ permission: { read: "allow" } });
     const prepared = await prepareOpenCodeRuntimeConfig({
       env: {
@@ -82,14 +82,10 @@ describe("prepareOpenCodeRuntimeConfig", () => {
         "utf8",
       ),
     ) as Record<string, unknown>;
-    expect(runtimeConfig.mcp).toMatchObject({
-      paperclip: {
-        type: "remote",
-        url: "https://paperclip.example/api/runtime-tools/mcp",
-        enabled: true,
-        headers: { Authorization: "Bearer pcp_runner_token" },
-      },
-    });
+    expect(runtimeConfig.mcp ?? {}).not.toHaveProperty("paperclip");
+    expect(prepared.notes).not.toContain(
+      "Injected the Paperclip runtime-tools MCP server as `paperclip` (native Paperclip tools available in OpenCode).",
+    );
   });
 
   it("merges custom providers from PAPERCLIP_OPENCODE_PROVIDERS into the config", async () => {
