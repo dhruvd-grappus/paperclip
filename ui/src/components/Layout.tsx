@@ -36,7 +36,6 @@ import { useSidebar } from "../context/SidebarContext";
 import { useKeyboardShortcuts } from "../hooks/useKeyboardShortcuts";
 import { useStreamlinedUiEnabled } from "../hooks/useStreamlinedUiEnabled";
 import { useCompanyPageMemory } from "../hooks/useCompanyPageMemory";
-import { useBrowserNotifications } from "../hooks/useBrowserNotifications";
 import { healthApi } from "../api/health";
 import { instanceSettingsApi } from "../api/instanceSettings";
 import { resolveArchivedCompanyBounce, shouldSyncCompanySelectionFromRoute } from "../lib/company-selection";
@@ -100,10 +99,6 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
     selectionSource,
     setSelectedCompanyId,
   } = useCompany();
-  // OS-level notifications for the attention feed (GRA-294). Inert until the
-  // user enables them and the browser grants permission, so this adds no
-  // polling for everyone else.
-  useBrowserNotifications(selectedCompanyId);
   const {
     companyPrefix,
     pluginRoutePath: matchedPluginRoutePath,
