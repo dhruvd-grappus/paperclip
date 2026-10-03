@@ -68,7 +68,8 @@ stack, end to end, never one repo alone: the frontend must call the new backend,
     preview-stack add GRA-300 api --dir /home/paperclip/worktrees/GRA-301-stats-api        # recipe fills cmd/env
     preview-stack add GRA-300 web --dir /home/paperclip/worktrees/GRA-302-stats-page --primary
     preview-stack plan GRA-300          # check: order, ports, which frontend keys get rewritten to the new API
-    preview-stack wait GRA-300 540      # Bash timeout 600000; run again if it prints "not ready yet"
+    preview-stack wait GRA-300 180      # Bash timeout 240000; repeat (up to 3x). A cold stack's rebuild
+                                        # prints a timeline (state changes + elapsed) when the call returns.
     preview-stack status GRA-300        # URLs; the primary one is what QA opens
 
 `--dev-url` (or the recipe's `devUrl`) on the backend makes every other member whose .env* value points at
@@ -518,8 +519,14 @@ def start_member(task, m, st, name):
 
 
 def up(task, only=None, wait=100):
-    deadline = time.time() + wait
+    began = time.time()
+    deadline = began + wait
     started, notes = set(), {}
+    # A cold stack (reaped overnight, or a member whose env changed) rebuilds
+    # inside this one call: api migrate+seed, admin `npm run build`. Without a
+    # timeline the whole wait is a silent hole in the run log, so record every
+    # member state change and print it with the total elapsed time.
+    transitions, last = [], {}
     while True:
         with locked(task):
             m = manifest(task)
@@ -538,6 +545,10 @@ def up(task, only=None, wait=100):
                         status[n] = (False, "waiting for " + ", ".join(d for d in deps))
                         continue
                 status[n] = ready(task, m, st, n)
+            for n, snapshot in status.items():
+                if last.get(n) != snapshot:
+                    last[n] = snapshot
+                    transitions.append("%s %s: %s" % (time.strftime("%H:%M:%S", time.gmtime()), n, snapshot[1]))
             save_state(task, st)
         if all(s[0] for s in status.values()) or time.time() > deadline:
             break
@@ -545,6 +556,8 @@ def up(task, only=None, wait=100):
             break
         time.sleep(3)
     print_status(task, m, st, status, notes)
+    if transitions:
+        print("timeline (%ds): %s" % (int(time.time() - began), " | ".join(transitions[-24:])))
     return all(s[0] for s in status.values())
 
 
