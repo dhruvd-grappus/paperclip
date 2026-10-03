@@ -74,14 +74,28 @@ export function useWaitingOnYouFilters(companyId: string | null | undefined, opt
     [feed?.owners, userName],
   );
 
-  const projectOptions = useMemo<FacetOption[]>(() => {
-    const names = new Map((projectList ?? []).map((project) => [project.id, project.name] as const));
-    return (feed?.projects ?? []).map((entry) => ({
-      value: entry.projectId ?? WAITING_ON_YOU_UNFILED,
-      label: entry.projectId ? names.get(entry.projectId) ?? "Unknown project" : "No project",
-      count: entry.count,
-    }));
-  }, [feed?.projects, projectList]);
+  const projectNameById = useMemo(
+    () => new Map((projectList ?? []).map((project) => [project.id, project.name] as const)),
+    [projectList],
+  );
+
+  // Group headers on the desk ("waiting on you, by project") need the name of
+  // a row's project, same source the project picker uses.
+  const projectName = useMemo(
+    () => (projectId: string | null | undefined) =>
+      projectId ? projectNameById.get(projectId) ?? "Unknown project" : null,
+    [projectNameById],
+  );
+
+  const projectOptions = useMemo<FacetOption[]>(
+    () =>
+      (feed?.projects ?? []).map((entry) => ({
+        value: entry.projectId ?? WAITING_ON_YOU_UNFILED,
+        label: entry.projectId ? projectName(entry.projectId) ?? "Unknown project" : "No project",
+        count: entry.count,
+      })),
+    [feed?.projects, projectName],
+  );
 
   // The query string that carries the current selection to `/waiting-on-you`,
   // so the widget's "+N more" opens the list you were looking at rather than
@@ -102,6 +116,7 @@ export function useWaitingOnYouFilters(companyId: string | null | undefined, opt
     setProjects,
     ownerOptions,
     projectOptions,
+    projectName,
     userName,
     filtering: owners.length > 0 || projects.length > 0,
     shownCount: feed?.items.length ?? 0,

@@ -1096,6 +1096,11 @@ function buildRunStatusToast(
       dedupeKey: `run-status:${runId}:${status}`,
     };
   }
+  // Run failures are routine on an unattended board (token expiry, provider
+  // limits, retries) and already land in the task, the live panels and the
+  // Waiting On You desk. A popup per failure only trains people to ignore
+  // toasts; only the actionable chat-connection warning above interrupts.
+  if (status === "failed" || status === "timed_out") return null;
   const tone =
     status === "succeeded"
       ? "success"

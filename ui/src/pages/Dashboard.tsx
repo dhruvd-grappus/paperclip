@@ -333,6 +333,54 @@ export function Dashboard() {
             </div>
           ) : null}
 
+
+
+
+
+          <RunningByProjectPanel issues={visibleIssues} projects={projects ?? []} liveIssueIds={liveIssueIds} />
+
+          <HumanInterventionPanel
+            issues={visibleIssues}
+            userName={(userId) => (userId ? userProfileMap.get(userId)?.label ?? null : null)}
+            onUpdateIssue={(issueId, data) => updateIssueStatus.mutate({ issueId, data })}
+          />
+
+          <WaitingOnYouPanel
+            // Server-built rows (GRA-328): the widget no longer derives the
+            // list from the whole task list and the whole attention feed, so
+            // it shows exactly what `/waiting-on-you` shows.
+            rows={waitingOnYou.rows}
+            projectName={waitingOnYou.projectName}
+            userName={(userId) => (userId ? userProfileMap.get(userId)?.label ?? null : null)}
+            onUpdateIssue={(issueId, data) => updateIssueStatus.mutate({ issueId, data })}
+            filtering={waitingOnYou.filtering}
+            // The filters ride along to the full list, so "+N more" opens the
+            // list you were looking at rather than the unfiltered one.
+            moreHref={`/waiting-on-you${waitingOnYou.search}`}
+            filters={
+              <>
+                <FacetMultiSelect
+                  label="people"
+                  allLabel={`Anyone · ${waitingOnYou.totalCount}`}
+                  options={waitingOnYou.ownerOptions}
+                  selected={waitingOnYou.owners}
+                  onChange={waitingOnYou.setOwners}
+                  className="w-44"
+                  testId="dashboard-waiting-on-you-owner-filter"
+                />
+                <FacetMultiSelect
+                  label="projects"
+                  allLabel="All projects"
+                  options={waitingOnYou.projectOptions}
+                  selected={waitingOnYou.projects}
+                  onChange={waitingOnYou.setProjects}
+                  className="w-44"
+                  testId="dashboard-waiting-on-you-project-filter"
+                />
+              </>
+            }
+          />
+
           {/*
             * Where each number comes from matters. `data.tasks` and
             * `data.humanApproved` are counted by the server over every task in
@@ -408,49 +456,6 @@ export function Dashboard() {
               }
             />
           </div>
-
-          <WaitingOnYouPanel
-            // Server-built rows (GRA-328): the widget no longer derives the
-            // list from the whole task list and the whole attention feed, so
-            // it shows exactly what `/waiting-on-you` shows.
-            rows={waitingOnYou.rows}
-            userName={(userId) => (userId ? userProfileMap.get(userId)?.label ?? null : null)}
-            onUpdateIssue={(issueId, data) => updateIssueStatus.mutate({ issueId, data })}
-            filtering={waitingOnYou.filtering}
-            // The filters ride along to the full list, so "+N more" opens the
-            // list you were looking at rather than the unfiltered one.
-            moreHref={`/waiting-on-you${waitingOnYou.search}`}
-            filters={
-              <>
-                <FacetMultiSelect
-                  label="people"
-                  allLabel={`Anyone · ${waitingOnYou.totalCount}`}
-                  options={waitingOnYou.ownerOptions}
-                  selected={waitingOnYou.owners}
-                  onChange={waitingOnYou.setOwners}
-                  className="w-44"
-                  testId="dashboard-waiting-on-you-owner-filter"
-                />
-                <FacetMultiSelect
-                  label="projects"
-                  allLabel="All projects"
-                  options={waitingOnYou.projectOptions}
-                  selected={waitingOnYou.projects}
-                  onChange={waitingOnYou.setProjects}
-                  className="w-44"
-                  testId="dashboard-waiting-on-you-project-filter"
-                />
-              </>
-            }
-          />
-
-          <HumanInterventionPanel
-            issues={visibleIssues}
-            userName={(userId) => (userId ? userProfileMap.get(userId)?.label ?? null : null)}
-            onUpdateIssue={(issueId, data) => updateIssueStatus.mutate({ issueId, data })}
-          />
-
-          <RunningByProjectPanel issues={visibleIssues} projects={projects ?? []} liveIssueIds={liveIssueIds} />
 
           <SmokeLabDashboardCard companyId={selectedCompanyId!} />
 

@@ -109,6 +109,7 @@ describe("WaitingOnYouPanel", () => {
     props: {
       showAll?: boolean;
       userName?: (userId: string | null | undefined) => string | null;
+      projectName?: (projectId: string | null | undefined) => string | null;
       onUpdateIssue?: (issueId: string, data: { status: string }) => void;
       filters?: ReactNode;
       filtering?: boolean;
@@ -242,6 +243,14 @@ describe("WaitingOnYouPanel", () => {
     );
     expect(container.querySelector("[aria-haspopup]")).toBeNull();
     expect(changes).toEqual([]);
+  });
+
+  it("groups rows by project and tags each wait reason", () => {
+    const issue = { ...reviewIssue("GRA-21"), projectId: "p1" } as unknown as Issue;
+    render([], [issue], { projectName: (id) => (id === "p1" ? "Unberry ATS" : null) });
+    const text = container.textContent ?? "";
+    expect(text).toContain("Unberry ATS · 1");
+    expect(text).toContain("in review");
   });
 
   it("names the owner when the caller can resolve one, and stays quiet otherwise", () => {
