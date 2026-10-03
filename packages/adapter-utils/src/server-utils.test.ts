@@ -1344,6 +1344,48 @@ describe("renderPaperclipWakePrompt", () => {
     });
   });
 
+  it("trims a long continuation history to the tail on a fresh session", () => {
+    const messages = Array.from({ length: 30 }, (_, i) => ({
+      id: `msg-${i}`,
+      authorType: "user",
+      authorId: "user-1",
+      body: `history message ${i}`,
+      createdAt: `2026-09-${String((i % 28) + 1).padStart(2, "0")}T10:00:00.000Z`,
+      updatedAt: `2026-09-${String((i % 28) + 1).padStart(2, "0")}T10:00:00.000Z`,
+      deleted: false,
+      sourceTrust: null,
+    }));
+    const payload = {
+      reason: "issue_commented",
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-15272",
+        title: "Long task",
+        description: "Do the long thing.",
+        descriptionTruncated: false,
+        status: "in_progress",
+      },
+      commentWindow: { requestedCount: 1, includedCount: 1, missingCount: 0 },
+      comments: [
+        { id: "c-1", authorType: "user", body: "latest ask", createdAt: "2026-10-03T06:00:00.000Z" },
+      ],
+      fallbackFetchNeeded: false,
+      executionContinuation: { version: 1, objective: "Do the long thing.", messages },
+    };
+
+    const prompt = renderPaperclipWakePrompt(payload, { suppressIssueDescription: true });
+    expect(prompt).toContain("History trimmed: only the last 12 of 30 messages");
+    expect(prompt).toContain('"messagesOmitted":18');
+    expect(prompt).toContain("history message 29");
+    expect(prompt).not.toContain("history message 0");
+    // A resumed session keeps the delta it was handed; only a fresh session trims.
+    const resumed = renderPaperclipWakePrompt(payload, {
+      suppressIssueDescription: true,
+      resumedSession: true,
+    });
+    expect(resumed).not.toContain("History trimmed");
+  });
+
   it("omits the issue description from non-assignment resume deltas and leaves a fetch breadcrumb", () => {
     const basePayload = {
       issue: {
