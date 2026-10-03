@@ -10,6 +10,14 @@ import { timeAgo } from "../lib/timeAgo";
 /** How many rows the widget shows before collapsing into a "+N more" line. */
 const VISIBLE_ROWS = 8;
 
+/** One chip per wait reason, so the desk reads at a glance. */
+const REASON_CHIP_CLASS: Record<WaitingReason, string> = {
+  question: "border-sky-500/40 bg-sky-500/10 text-sky-700 dark:text-sky-300",
+  confirmation: "border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-300",
+  in_review: "border-violet-500/40 bg-violet-500/10 text-violet-700 dark:text-violet-300",
+  done_unapproved: "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
+};
+
 /**
  * The glyph borrows the task status a reason renders as, so the vocabulary
  * matches the task list and the decision queue (see `lib/attention.ts`):
@@ -42,6 +50,7 @@ function glyphStatus(reasons: readonly WaitingReason[]): "in_review" | "done" | 
 export function WaitingOnYouPanel({
   rows,
   userName,
+  projectName,
   onUpdateIssue,
   showAll = false,
   showHeading = true,
@@ -58,6 +67,8 @@ export function WaitingOnYouPanel({
   rows: readonly WaitingOnHumanRow[];
   /** Resolves a row's owner id to a name; omitted, rows show no owner. */
   userName?: (userId: string | null | undefined) => string | null;
+  /** Resolves a row's project id to a name for the group header ("No project" when null). */
+  projectName?: (projectId: string | null | undefined) => string | null;
   /**
    * Given, each row whose task status is known becomes an inline status
    * picker, so a review can be approved or a question closed out from the desk
@@ -83,6 +94,24 @@ export function WaitingOnYouPanel({
   moreHref?: string;
 }) {
   const visibleRows = showAll ? rows : rows.slice(0, VISIBLE_ROWS);
+  // Rows grouped by project, in the order the rows arrive (oldest wait first),
+  // so the desk reads like "Running now, by project" does.
+  const groups: Array<{ key: string; label: string; rows: WaitingOnHumanRow[] }> = [];
+  const groupIndex = new Map<string, number>();
+  for (const row of visibleRows) {
+    const key = row.projectId ?? "__none__";
+    let at = groupIndex.get(key);
+    if (at === undefined) {
+      at = groups.length;
+      groupIndex.set(key, at);
+      groups.push({
+        key,
+        label: projectName?.(row.projectId ?? null) ?? (row.projectId ? "Unknown project" : "No project"),
+        rows: [],
+      });
+    }
+    groups[at].rows.push(row);
+  }
 
   return (
     <div className="min-w-0" data-testid="dashboard-waiting-on-you">
@@ -106,11 +135,23 @@ export function WaitingOnYouPanel({
         </Card>
       ) : (
         <Card className="@container block py-0 divide-y divide-border overflow-hidden border-violet-500/30">
-          {visibleRows.map((row) => {
-            const reasons = row.reasons.map(waitingReasonLabel).join(" · ");
+          {groups.map((group) => (
+            <div key={group.key} className="divide-y divide-border">
+              <div className="bg-muted/40 px-3 py-1 text-(length:--text-micro) font-semibold uppercase tracking-wide text-muted-foreground">
+                {group.label} · {group.rows.length}
+              </div>
+              {group.rows.map((row) => {
+            const reasonChips = row.reasons.map((reason) => (
+              <span
+                key={reason}
+                className={`shrink-0 rounded-full border px-2 py-0.5 text-(length:--text-micro) font-medium leading-4 ${REASON_CHIP_CLASS[reason]}`}
+              >
+                {waitingReasonLabel(reason)}
+              </span>
+            ));
             const waiting = row.waitingSince ? `waiting ${timeAgo(row.waitingSince)}` : null;
             const owner = userName?.(row.ownerUserId) ?? null;
-            const secondary = [reasons, owner ? `owner ${owner}` : null, row.detail, waiting]
+            const secondary = [owner ? `owner ${owner}` : null, row.detail, waiting]
               .filter(Boolean)
               .join(" · ");
             // The picker edits the task's real status, so it only appears when
@@ -120,7 +161,10 @@ export function WaitingOnYouPanel({
             const body = (
               <>
                 <span className="min-w-0 flex-1">
-                  <span className="block truncate" title={row.title}>{row.title}</span>
+                  <span className="flex min-w-0 items-center gap-2">
+                    <span className="truncate" title={row.title}>{row.title}</span>
+                    {reasonChips}
+                  </span>
                   <span className="block truncate text-xs text-muted-foreground" title={secondary}>
                     {secondary}
                   </span>
@@ -163,6 +207,8 @@ export function WaitingOnYouPanel({
               </div>
             );
           })}
+            </div>
+          ))}
           {!showAll && rows.length > VISIBLE_ROWS ? (
             <Link
               // The full list, not `/issues`: half of these rows are pending

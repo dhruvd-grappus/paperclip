@@ -59,7 +59,12 @@ export function HumanInterventionPanel({
                   className="flex min-w-0 flex-1 items-center gap-2 text-sm no-underline text-inherit"
                 >
                   <span className="min-w-0 flex-1">
-                    <span className="block truncate" title={issue.title}>{issue.title}</span>
+                    <span className="flex min-w-0 items-center gap-2">
+                      <span className="truncate" title={issue.title}>{issue.title}</span>
+                      <span className="shrink-0 rounded-full border border-red-500/40 bg-red-500/10 px-2 py-0.5 text-(length:--text-micro) font-medium leading-4 text-red-700 dark:text-red-300">
+                        Blocked
+                      </span>
+                    </span>
                     <span className="block truncate text-xs text-muted-foreground">
                       {[by ? `started by ${by}` : null, stuckOn ? `waiting on ${stuckOn}` : null, `blocked ${timeAgo(issue.updatedAt)}`]
                         .filter(Boolean)

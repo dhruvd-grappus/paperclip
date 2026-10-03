@@ -46,6 +46,7 @@ export function WaitingOnYou() {
     setProjects,
     ownerOptions,
     projectOptions,
+    projectName,
     userName,
     filtering,
     shownCount,
@@ -115,6 +116,7 @@ export function WaitingOnYou() {
       <WaitingOnYouPanel
         rows={rows}
         userName={userName}
+        projectName={projectName}
         filtering={filtering}
         onUpdateIssue={(issueId, data) => updateIssueStatus.mutate({ issueId, data })}
         showAll
