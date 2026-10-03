@@ -1210,7 +1210,7 @@ describe("LiveUpdatesProvider run lifecycle toasts", () => {
     }, () => "Assistant")).toBeNull();
   });
 
-  it("still builds failure toasts for agent errors and failed runs", () => {
+  it("still builds failure toasts for agent errors but not for failed runs", () => {
     const queryClient = {
       getQueryData: () => [
         {
@@ -1246,11 +1246,7 @@ describe("LiveUpdatesProvider run lifecycle toasts", () => {
         },
         () => "CodexCoder",
       ),
-    ).toMatchObject({
-      title: "CodexCoder run failed",
-      body: "boom",
-      tone: "error",
-    });
+    ).toBeNull();
   });
 
   it("turns an unlinked chat isolation precondition into one actionable warning without an agent UUID", () => {
@@ -1289,7 +1285,7 @@ describe("LiveUpdatesProvider run lifecycle toasts", () => {
     ).toBe("Agent couldn't start this chat");
   });
 
-  it("keeps non-chat and genuine runtime failures on the ordinary error path", () => {
+  it("keeps non-chat and genuine runtime failures silent", () => {
     expect(
       __liveUpdatesTestUtils.buildRunStatusToast(
         {
@@ -1302,11 +1298,7 @@ describe("LiveUpdatesProvider run lifecycle toasts", () => {
         },
         () => "CodexCoder",
       ),
-    ).toMatchObject({
-      title: "CodexCoder run failed",
-      tone: "error",
-      action: { label: "View run" },
-    });
+    ).toBeNull();
 
     expect(
       __liveUpdatesTestUtils.buildRunStatusToast(
@@ -1320,12 +1312,7 @@ describe("LiveUpdatesProvider run lifecycle toasts", () => {
         },
         () => "CodexCoder",
       ),
-    ).toMatchObject({
-      title: "CodexCoder run failed",
-      body: "Adapter process exited",
-      tone: "error",
-      action: { label: "View run" },
-    });
+    ).toBeNull();
   });
 });
 

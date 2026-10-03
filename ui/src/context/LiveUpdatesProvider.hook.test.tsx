@@ -199,14 +199,12 @@ describe("LiveUpdatesProvider socket run notification scope", () => {
     expect(invalidate).toHaveBeenCalledExactlyOnceWith({ type: "active" }, { cancelRefetch: false });
   });
 
-  it.each(["parent-agent", "child-agent"])("shows an unrelated retryable failure without issueId for %s", async (agentId) => {
+  it.each(["parent-agent", "child-agent"])("keeps an unrelated retryable failure silent for %s", async (agentId) => {
     // Match the retryable broadcast from execution-status-delivery.ts: it has
     // exact run identity but deliberately omits issueId and provider output.
+    // Failures no longer toast at all — they belong to the task, not a popup.
     await receiveStatus({ runId: "unrelated-run", agentId, status: "failed", startedAt: "2026-09-09T17:59:00.000Z", finishedAt: "2026-09-09T18:00:00.000Z", deliveryId: "status-delivery" });
-    expect(pushToast).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
-      title: "Agent run failed", dedupeKey: "run-status:unrelated-run:failed",
-      action: { label: "View run", href: `/agents/${agentId}/runs/unrelated-run` },
-    }));
+    expect(pushToast).not.toHaveBeenCalled();
   });
 
   it("retains the existing global no-success-toast policy independently of subtree membership", async () => {
@@ -326,9 +324,9 @@ describe("LiveUpdatesProvider socket run notification scope", () => {
     },
   );
 
-  it("does not suppress an explicit unrelated task even when its run is cached", async () => {
+  it("keeps an explicit unrelated task silent even when its run is cached", async () => {
     await receiveStatus({ issueId: "unrelated", runId: "child-run", agentId: "child-agent", status: "failed" });
-    expect(pushToast).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ dedupeKey: "run-status:child-run:failed" }));
+    expect(pushToast).not.toHaveBeenCalled();
   });
 
   it("keeps a stopped descendant quiet after its execution lock and live entry clear", async () => {
@@ -426,7 +424,7 @@ describe("LiveUpdatesProvider socket run notification scope", () => {
     "explicit unrelated issue",
     "unrelated same-agent run",
     "removed descendant",
-  ])("retains child-history notifications for %s", async (scope) => {
+  ])("keeps child-history run failures silent for %s", async (scope) => {
     queryClient.setQueryData(queryKeys.liveRuns("company-1"), []);
     queryClient.setQueryData(
       queryKeys.issues.listByDescendantRoot("company-1", "root"),
@@ -459,9 +457,7 @@ describe("LiveUpdatesProvider socket run notification scope", () => {
       deliveryId: "retryable-child-status",
       ...(scope === "explicit unrelated issue" ? { issueId: "unrelated" } : {}),
     });
-    expect(pushToast).toHaveBeenCalledExactlyOnceWith(
-      expect.objectContaining({ dedupeKey: `run-status:${runId}:failed` }),
-    );
+    expect(pushToast).not.toHaveBeenCalled();
   });
 
   it("cannot create a run toast from an agent-only status with no run receipt", async () => {
