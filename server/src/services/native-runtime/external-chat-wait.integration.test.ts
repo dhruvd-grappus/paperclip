@@ -2104,6 +2104,92 @@ describe("native external-chat response wait", () => {
     expect(wakeup).not.toHaveBeenCalled();
   });
 
+  it("rechecks linked identity immediately before retry dispatch", async () => {
+    const { fixture, failedRunId } =
+      await seedPreProviderQuestionResponseRetry();
+    const wakeup = vi.fn().mockResolvedValue({ id: randomUUID() });
+    const delivery = questionResponseDeliveryService(db, {
+      heartbeat: { wakeup } as never,
+    });
+    const interactionId = await db.transaction((tx) =>
+      delivery.prepareFailedExternalChatQuestionRetry(tx as never, {
+        companyId: fixture.companyId,
+        issueId: fixture.issueId,
+        agentId: fixture.agentId,
+        failedRunId,
+      }),
+    );
+    expect(interactionId).toBe(fixture.interactionId);
+    await db
+      .update(chatIdentityLinks)
+      .set({ status: "revoked" })
+      .where(eq(chatIdentityLinks.principalId, fixture.principalId));
+
+    await expect(delivery.deliver(interactionId!)).resolves.toMatchObject({
+      status: "failed",
+    });
+    const [responseDelivery] = await db
+      .select({ lastErrorCode: issueQuestionResponseDeliveries.lastErrorCode })
+      .from(issueQuestionResponseDeliveries)
+      .where(eq(issueQuestionResponseDeliveries.id, fixture.responseDeliveryId));
+    expect(responseDelivery?.lastErrorCode).toBe(
+      "question_response_retry_evidence_changed",
+    );
+    expect(wakeup).not.toHaveBeenCalled();
+  });
+
+  it("keeps pre-provider retry proof across transient wake delivery failure", async () => {
+    const { fixture, failedRunId } =
+      await seedPreProviderQuestionResponseRetry();
+    const wakeup = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("temporary wake failure"))
+      .mockResolvedValue({ id: randomUUID() });
+    const delivery = questionResponseDeliveryService(db, {
+      heartbeat: { wakeup } as never,
+    });
+    const interactionId = await db.transaction((tx) =>
+      delivery.prepareFailedExternalChatQuestionRetry(tx as never, {
+        companyId: fixture.companyId,
+        issueId: fixture.issueId,
+        agentId: fixture.agentId,
+        failedRunId,
+      }),
+    );
+    expect(interactionId).toBe(fixture.interactionId);
+
+    await expect(delivery.deliver(interactionId!)).resolves.toBeNull();
+    const [afterTransientFailure] = await db
+      .select({ lastErrorCode: issueQuestionResponseDeliveries.lastErrorCode })
+      .from(issueQuestionResponseDeliveries)
+      .where(eq(issueQuestionResponseDeliveries.id, fixture.responseDeliveryId));
+    expect(afterTransientFailure?.lastErrorCode).toBe(
+      `pre-provider-reviewed-chat-retry:${failedRunId}`,
+    );
+
+    await db.insert(heartbeatRunEvents).values({
+      companyId: fixture.companyId,
+      agentId: fixture.agentId,
+      runId: failedRunId,
+      seq: 2,
+      eventType: "tool_call",
+      stream: "system",
+      level: "info",
+      message: "Provider activity arrived after the transient delivery failure.",
+    });
+    await expect(delivery.deliver(interactionId!)).resolves.toMatchObject({
+      status: "failed",
+    });
+    const [afterNewProviderEvidence] = await db
+      .select({ lastErrorCode: issueQuestionResponseDeliveries.lastErrorCode })
+      .from(issueQuestionResponseDeliveries)
+      .where(eq(issueQuestionResponseDeliveries.id, fixture.responseDeliveryId));
+    expect(afterNewProviderEvidence?.lastErrorCode).toBe(
+      "question_response_retry_evidence_changed",
+    );
+    expect(wakeup).toHaveBeenCalledTimes(1);
+  });
+
   it("does not prepare a retry without control-plane bootstrap metadata", async () => {
     const { fixture, failedRunId } =
       await seedPreProviderQuestionResponseRetry();

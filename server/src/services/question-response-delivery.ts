@@ -611,13 +611,18 @@ export function questionResponseDeliveryService(
     const nextErrorCount = delivery.errorCount + (options.bounded ? 1 : 0);
     const exhausted =
       options.bounded && nextErrorCount >= MAX_DELIVERY_ATTEMPTS;
+    const retryMarker = delivery.lastErrorCode?.startsWith(
+      PRE_PROVIDER_REVIEWED_CHAT_RETRY_MARKER_PREFIX,
+    )
+      ? delivery.lastErrorCode
+      : null;
     await db
       .update(issueQuestionResponseDeliveries)
       .set({
         // Keep an exhausted claim owned until recordTerminal commits its outcome.
         status: exhausted ? "delivering" : "pending",
         ...(options.bounded ? { errorCount: nextErrorCount } : {}),
-        lastErrorCode: errorCode,
+        lastErrorCode: retryMarker ?? errorCode,
         updatedAt: at,
       })
       .where(
@@ -855,77 +860,75 @@ export function questionResponseDeliveryService(
           .then((rows) => rows[0] ?? null),
       ]);
     const adapter = agent?.adapterType ?? "unknown";
-    if (
-      claimed.lastErrorCode?.startsWith(
-        PRE_PROVIDER_REVIEWED_CHAT_RETRY_MARKER_PREFIX,
-      )
-    ) {
-      const failedRunId = claimed.lastErrorCode.slice(
-        PRE_PROVIDER_REVIEWED_CHAT_RETRY_MARKER_PREFIX.length,
-      );
+    const retryFailedRunId = claimed.lastErrorCode?.startsWith(
+      PRE_PROVIDER_REVIEWED_CHAT_RETRY_MARKER_PREFIX,
+    )
+      ? claimed.lastErrorCode.slice(
+          PRE_PROVIDER_REVIEWED_CHAT_RETRY_MARKER_PREFIX.length,
+        )
+      : null;
+    const retryEvidenceStillValid = async () => {
+      if (!retryFailedRunId) return true;
       const retryAgentId = interaction.createdByAgentId;
-      const retryEvidenceStillValid = Boolean(
-        retryAgentId &&
-          claimed.targetRunId === failedRunId &&
-          (await db.transaction(async (tx) => {
-            const [failedRun] = await tx
-              .select()
-              .from(heartbeatRuns)
-              .where(
-                and(
-                  eq(heartbeatRuns.id, failedRunId),
-                  eq(heartbeatRuns.companyId, claimed.companyId),
-                  eq(heartbeatRuns.agentId, retryAgentId),
-                ),
-              )
-              .for("update", { noWait: true })
-              .limit(1);
-            if (
-              !failedRun ||
-              failedRun.status !== "failed" ||
-              !(await isPreProviderReviewedChatFailure(tx, failedRun, {
-                requireDispatchMetadata: true,
-              }))
-            )
-              return false;
-            const retryContext = record(failedRun.contextSnapshot);
-            if (
-              retryContext.source !== "issue.interaction.respond" ||
-              retryContext.issueId !== interaction.issueId ||
-              retryContext.interactionId !== interaction.id ||
-              retryContext.sourceRunId !== interaction.sourceRunId ||
-              retryContext.externalChatContinuation !== true ||
-              retryContext.interactionKind !== "ask_user_questions" ||
-              retryContext.interactionStatus !== "answered"
-            )
-              return false;
-            const answer = await resolveExternalChatQuestionResponse(
-              tx as unknown as Db,
-              {
-                companyId: interaction.companyId,
-                issueId: interaction.issueId,
-                runId: failedRun.id,
-                agentId: retryAgentId,
-              },
-              retryContext,
-              "nonblocking",
-              true,
-            );
-            return answer !== null;
-          })),
-      );
-      if (!retryEvidenceStillValid) {
-        return recordTerminal({
-          delivery: claimed,
-          interaction,
-          status: "failed",
-          mode: null,
-          targetRunId: null,
-          adapter,
-          errorCode: "question_response_retry_evidence_changed",
-        });
-      }
-    }
+      if (!retryAgentId || claimed.targetRunId !== retryFailedRunId) return false;
+      return db.transaction(async (tx) => {
+        const [failedRun] = await tx
+          .select()
+          .from(heartbeatRuns)
+          .where(
+            and(
+              eq(heartbeatRuns.id, retryFailedRunId),
+              eq(heartbeatRuns.companyId, claimed.companyId),
+              eq(heartbeatRuns.agentId, retryAgentId),
+            ),
+          )
+          .for("update", { noWait: true })
+          .limit(1);
+        if (
+          !failedRun ||
+          failedRun.status !== "failed" ||
+          !(await isPreProviderReviewedChatFailure(tx, failedRun, {
+            requireDispatchMetadata: true,
+          }))
+        )
+          return false;
+        const retryContext = record(failedRun.contextSnapshot);
+        if (
+          retryContext.source !== "issue.interaction.respond" ||
+          retryContext.issueId !== interaction.issueId ||
+          retryContext.interactionId !== interaction.id ||
+          retryContext.sourceRunId !== interaction.sourceRunId ||
+          retryContext.externalChatContinuation !== true ||
+          retryContext.interactionKind !== "ask_user_questions" ||
+          retryContext.interactionStatus !== "answered"
+        )
+          return false;
+        const answer = await resolveExternalChatQuestionResponse(
+          tx as unknown as Db,
+          {
+            companyId: interaction.companyId,
+            issueId: interaction.issueId,
+            runId: failedRun.id,
+            agentId: retryAgentId,
+          },
+          retryContext,
+          "nonblocking",
+          true,
+        );
+        return answer !== null;
+      });
+    };
+    const retryEvidenceChanged = () =>
+      recordTerminal({
+        delivery: claimed,
+        interaction,
+        status: "failed",
+        mode: null,
+        targetRunId: null,
+        adapter,
+        errorCode: "question_response_retry_evidence_changed",
+      });
+    if (!(await retryEvidenceStillValid())) return retryEvidenceChanged();
     if (
       !issue ||
       !issue.assigneeAgentId ||
@@ -1274,6 +1277,9 @@ export function questionResponseDeliveryService(
         companyId: interaction.companyId,
         idempotencyKey: wakeIdempotencyKey,
       });
+      // Recheck at the enqueue boundary. The continuation run also attests
+      // before provider dispatch, so later access changes still fail closed.
+      if (!(await retryEvidenceStillValid())) return retryEvidenceChanged();
       const wakeRun =
         existingWake?.run ??
         (existingWake
