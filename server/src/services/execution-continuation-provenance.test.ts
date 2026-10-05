@@ -69,8 +69,8 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(envelope.objective).toBe("Keep the target direction.");
     // Upstream asserts on `humanResponses` (#13574, not picked); on this base
     // the resolved answer is exposed as `interactionOutcomes`.
-    expect(envelope.interactionOutcomes).toEqual([expect.objectContaining({ id: f.interactionId,
-      result: { answers: [{ questionId: "scope", optionIds: ["target"], otherText: undefined }] } })]);
+    expect(envelope.interactionOutcomes).toEqual([expect.objectContaining({ id: f.interactionId, status: "answered",
+      result: expect.objectContaining({ answers: [{ questionId: "scope", optionIds: ["target"] }] }) })]);
     expect(envelope.completedWork).toBeNull();
     expect(envelope.completedActions).toEqual([]);
     expect(JSON.stringify(envelope)).not.toContain("Unrelated");
