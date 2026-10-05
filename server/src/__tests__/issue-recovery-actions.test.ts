@@ -9,6 +9,9 @@ import {
   authUsers,
   agentWakeupRequests,
   activityLog,
+  chatConversations,
+  chatEndpointResources,
+  chatEndpoints,
   companies,
   createDb,
   environmentLeases,
@@ -19,6 +22,8 @@ import {
   issueRecoveryActions,
   issueRelations,
   issues,
+  toolApplications,
+  toolConnections,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -139,6 +144,11 @@ describeEmbeddedPostgres("issue recovery actions", () => {
 
   afterEach(async () => {
     await db.delete(issueRecoveryActions);
+    await db.delete(chatConversations);
+    await db.delete(chatEndpointResources);
+    await db.delete(chatEndpoints);
+    await db.delete(toolConnections);
+    await db.delete(toolApplications);
     await db.delete(issueComments);
     await db.delete(environmentLeases);
     await db.delete(activityLog);
@@ -2049,6 +2059,140 @@ describeEmbeddedPostgres("issue recovery actions", () => {
         payload: expect.objectContaining({ issueId: sourceIssueId, recoveryActionId: action.id }),
       }),
     );
+  });
+
+  it("requeues the exact answered Slack card when resolving its pre-provider recovery action", async () => {
+    const { companyId, coderId, sourceIssueId } = await seedCompany();
+    const endpointId = randomUUID();
+    const resourceId = randomUUID();
+    const conversationId = randomUUID();
+    const applicationId = randomUUID();
+    const connectionId = randomUUID();
+    const failedRunId = randomUUID();
+    const interactionId = randomUUID();
+    await db
+      .update(issues)
+      .set({ status: "blocked", assigneeAgentId: coderId })
+      .where(eq(issues.id, sourceIssueId));
+    await db.insert(toolApplications).values({
+      id: applicationId,
+      companyId,
+      applicationKey: `chat:slack:${endpointId}`,
+      name: "Slack",
+      type: "chat",
+      status: "active",
+    });
+    await db.insert(toolConnections).values({
+      id: connectionId,
+      companyId,
+      applicationId,
+      name: "Slack",
+      uid: `chat-slack-${endpointId}`,
+      connectionPurpose: "channel",
+      transport: "chat_sdk",
+      status: "active",
+      enabled: true,
+    });
+    await db.insert(chatEndpoints).values({
+      id: endpointId,
+      companyId,
+      connectionId,
+      provider: "slack",
+      publicId: randomUUID(),
+      assignedAgentId: coderId,
+      status: "active",
+      externalExecutionPolicy: "restricted",
+      providerAccountId: "workspace",
+      allowUnlinkedPeople: false,
+    });
+    await db.insert(chatEndpointResources).values({
+      id: resourceId,
+      companyId,
+      endpointId,
+      type: "channel",
+      providerResourceId: "channel-1",
+      label: "#mobile-work",
+      availability: "available",
+      enabled: true,
+    });
+    await db.insert(chatConversations).values({
+      id: conversationId,
+      companyId,
+      endpointId,
+      resourceId,
+      issueId: sourceIssueId,
+      externalConversationId: "channel-1",
+      externalThreadId: "thread-1",
+      externalLabel: "#mobile-work",
+      state: "active",
+    });
+    const action = await issueRecoveryActionService(db).upsertSourceScoped({
+      companyId,
+      sourceIssueId,
+      kind: "stranded_assigned_issue",
+      ownerType: "board",
+      previousOwnerAgentId: coderId,
+      returnOwnerAgentId: coderId,
+      cause: "stranded_assigned_issue",
+      fingerprint: "pre-provider-question-response",
+      evidence: { latestRunId: failedRunId },
+      nextAction: "Retry the answered question response.",
+      wakePolicy: { type: "board_escalation" },
+    });
+    const prepareRetry = vi.fn().mockResolvedValue(interactionId);
+    const deliverRetry = vi.fn().mockResolvedValue({
+      status: "fallback_queued",
+      targetRunId: randomUUID(),
+    });
+    const prepareRawChatRetry = vi.fn();
+    const processRawChatRetry = vi.fn();
+    const enqueueRecoveryActionWakeup = vi.fn();
+    const resolved = await request(
+      createApp(
+        { type: "board", source: "local_implicit", userId: "board-user" },
+        {
+          chatRunRetries: {
+            prepareFailedChatRunRetry: prepareRawChatRetry as never,
+            processFailedChatRunRetry: processRawChatRetry as never,
+          },
+          questionResponseDeliveries: {
+            prepareFailedExternalChatQuestionRetry: prepareRetry as never,
+            deliver: deliverRetry as never,
+          },
+          recoveryActionEnqueueWakeup: enqueueRecoveryActionWakeup as never,
+        },
+      ),
+    )
+      .post(`/api/issues/${sourceIssueId}/recovery-actions/resolve`)
+      .send({
+        actionId: action.id,
+        outcome: "restored",
+        sourceIssueStatus: "todo",
+        resolutionNote: "Retry the already-answered Slack card.",
+      })
+      .expect((response) => {
+        if (response.status !== 200)
+          throw new Error(JSON.stringify(response.body));
+      });
+
+    expect(resolved.body.issue).toMatchObject({
+      id: sourceIssueId,
+      status: "todo",
+      activeRecoveryAction: null,
+    });
+    expect(prepareRetry).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        companyId,
+        issueId: sourceIssueId,
+        agentId: coderId,
+        failedRunId,
+      }),
+    );
+    expect(deliverRetry).toHaveBeenCalledWith(interactionId);
+    expect(prepareRawChatRetry).not.toHaveBeenCalled();
+    expect(processRawChatRetry).not.toHaveBeenCalled();
+    expect(enqueueRecoveryActionWakeup).not.toHaveBeenCalled();
   });
 
   it("does not enqueue a restored wake when todo status and assignee are unchanged", async () => {

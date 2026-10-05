@@ -3470,6 +3470,10 @@ export function issueRoutes(
       ChatChannelService,
       "prepareFailedChatRunRetry" | "processFailedChatRunRetry"
     >;
+    questionResponseDeliveries?: Pick<
+      ReturnType<typeof questionResponseDeliveryService>,
+      "prepareFailedExternalChatQuestionRetry" | "deliver"
+    >;
     feedbackExportService?: {
       flushPendingFeedbackTraces(input?: {
         companyId?: string;
@@ -3567,11 +3571,13 @@ export function issueRoutes(
   const decisionTrainingSvc = decisionTrainingService(db);
   const issueReferencesSvc = issueReferenceService(db);
   const issueThreadInteractionsSvc = issueThreadInteractionService(db);
-  const questionResponseDeliveries = questionResponseDeliveryService(db, {
-    heartbeat,
-    resolveNativeQuestion: (interaction) =>
-      deliverNativeQuestionResponse(db, interaction),
-  });
+  const questionResponseDeliveries =
+    opts.questionResponseDeliveries ??
+    questionResponseDeliveryService(db, {
+      heartbeat,
+      resolveNativeQuestion: (interaction) =>
+        deliverNativeQuestionResponse(db, interaction),
+    });
   const runnerGoals = runnerGoalService(db, {
     enqueueOfflineControl: async ({ issueId, agentId, requestId, control }) => {
       const run = await heartbeat.wakeup(agentId, {
@@ -9262,6 +9268,7 @@ export function issueRoutes(
         }
 
         let chatRetry: { actionId: string; issueId: string } | null = null;
+        let questionResponseRetryInteractionId: string | null = null;
         if (outcome === "restored" && sourceIssueStatus === "todo") {
           const [chatBinding] = await tx
             .select({ id: chatConversations.id })
@@ -9279,9 +9286,10 @@ export function issueRoutes(
             // Admit the exact server-owned recovery evidence before resolving
             // either record. The durable worker, not a best-effort generic wake,
             // owns execution after commit and rechecks current chat access.
-            const failedRunId = activeRecoveryAction.evidence?.runId;
+            const failedRunId =
+              activeRecoveryAction.evidence?.runId ??
+              activeRecoveryAction.evidence?.latestRunId;
             if (
-              !opts.chatRunRetries ||
               req.actor.type !== "board" ||
               !req.actor.userId ||
               typeof failedRunId !== "string" ||
@@ -9293,16 +9301,34 @@ export function issueRoutes(
                 { code: "chat_recovery_requires_authorized_context" },
               );
             }
-            chatRetry = await opts.chatRunRetries.prepareFailedChatRunRetry(
-              tx,
-              {
-                companyId: lockedIssue.companyId,
-                issueId: lockedIssue.id,
-                agentId: lockedIssue.assigneeAgentId,
-                failedRunId,
-                initiatedByUserId: req.actor.userId,
-              },
-            );
+            questionResponseRetryInteractionId =
+              await questionResponseDeliveries.prepareFailedExternalChatQuestionRetry(
+                tx,
+                {
+                  companyId: lockedIssue.companyId,
+                  issueId: lockedIssue.id,
+                  agentId: lockedIssue.assigneeAgentId,
+                  failedRunId,
+                },
+              );
+            if (!questionResponseRetryInteractionId) {
+              if (!opts.chatRunRetries) {
+                throw conflict(
+                  "Restoring this task needs the exact failed chat request and current access. Send the request again in the current connected conversation; this recovery action has not been resolved.",
+                  { code: "chat_recovery_requires_authorized_context" },
+                );
+              }
+              chatRetry = await opts.chatRunRetries.prepareFailedChatRunRetry(
+                tx,
+                {
+                  companyId: lockedIssue.companyId,
+                  issueId: lockedIssue.id,
+                  agentId: lockedIssue.assigneeAgentId,
+                  failedRunId,
+                  initiatedByUserId: req.actor.userId,
+                },
+              );
+            }
           }
         }
 
@@ -9478,7 +9504,12 @@ export function issueRoutes(
         );
         if (!recoveryAction) throw notFound("Active recovery action not found");
 
-        return { issue, recoveryAction, chatRetry };
+        return {
+          issue,
+          recoveryAction,
+          chatRetry,
+          questionResponseRetryInteractionId,
+        };
       });
       if (result.replayed) {
         res.json({
@@ -9536,7 +9567,21 @@ export function issueRoutes(
         },
       });
 
-      if (result.chatRetry) {
+      if (result.questionResponseRetryInteractionId) {
+        try {
+          await questionResponseDeliveries.deliver(
+            result.questionResponseRetryInteractionId,
+          );
+        } catch {
+          logger.warn(
+            {
+              interactionId: result.questionResponseRetryInteractionId,
+              recoveryActionId: result.recoveryAction.id,
+            },
+            "external-chat question retry delivery deferred to durable worker",
+          );
+        }
+      } else if (result.chatRetry) {
         // The intent is committed with recovery resolution. A lost immediate
         // dispatch response cannot erase it; the durable sweep will continue.
         try {
