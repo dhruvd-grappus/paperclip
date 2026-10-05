@@ -14,6 +14,7 @@ import {
 } from "@paperclipai/shared";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { accessApi } from "../../api/access";
+import { activityApi, type RunForIssue } from "../../api/activity";
 import { agentsApi } from "../../api/agents";
 import { authApi } from "../../api/auth";
 import { executionWorkspacesApi } from "../../api/execution-workspaces";
@@ -752,6 +753,21 @@ export function IssueProperties({
     queryFn: () => agentsApi.adapterModels(companyId!, assigneeAdapterType!, { provider: catalogProvider }),
     enabled: Boolean(companyId) && showAssigneeAdapterOptions && supportsAssigneeOverrides,
   });
+  // GRA-550: the model used particularly for this task is the one recorded on
+  // its own runs, not the agent's currently selected primary model. Runs come
+  // back newest-first, so the first usable entry is the latest run's model.
+  const { data: assigneeRuns } = useQuery({
+    queryKey: queryKeys.issues.runs(issue.id),
+    queryFn: () => activityApi.runsForIssue(issue.id),
+    enabled: showAssigneeAdapterOptions,
+  });
+  const lastUsedRunModel = useMemo(() => {
+    const readRunModel = (run: RunForIssue): string => {
+      const model = asRecord(run.usageJson)?.model;
+      return typeof model === "string" && model.trim() && model !== "unknown" ? model : "";
+    };
+    return (assigneeRuns ?? []).map(readRunModel).find(Boolean) ?? "";
+  }, [assigneeRuns]);
   const modelOverrideOptions = useMemo<InlineEntityOption[]>(() => {
     const models = sortAdapterModels(assigneeAdapterModels ?? []);
     const options = models.map((model) => ({
@@ -840,14 +856,18 @@ export function IssueProperties({
         </span>
       );
     }
-    // GRA-550: name the model the task currently uses when it runs on the
-    // agent's primary lane instead of the anonymous "Primary model" label.
-    const currentModel = assigneePrimaryModel || assigneeOverrideModel;
+    // GRA-550: name the model used particularly for this task — the model
+    // recorded on the task's latest run — instead of the anonymous
+    // "Primary model" label. Before the task has run, fall back to the
+    // effective model (task override, else agent primary) it will run on.
+    const currentModel = lastUsedRunModel || effectiveAssigneeModel;
     if (currentModel) {
       return (
         <span
           className="min-w-0 truncate text-sm"
-          title={`Runs on the current primary model: ${currentModel}`}
+          title={lastUsedRunModel
+            ? `Used by this task's latest run: ${lastUsedRunModel}`
+            : `Runs on the agent's primary model: ${currentModel}`}
         >
           {currentModel}
         </span>
@@ -879,6 +899,10 @@ export function IssueProperties({
         {assigneeOverrideLane === "custom" ? (
           <p className="text-xs text-muted-foreground">
             Task-level model override — replaces the agent&apos;s primary model for this issue.
+          </p>
+        ) : lastUsedRunModel ? (
+          <p className="text-xs text-muted-foreground">
+            Used by this task&apos;s latest run: {lastUsedRunModel}.
           </p>
         ) : (
           <p className="text-xs text-muted-foreground">

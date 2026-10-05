@@ -155,6 +155,8 @@ describeEmbeddedPostgres("activity service", () => {
         cache_read_input_tokens: 3,
         billingType: "metered",
         costUsd: 0.42,
+        model: "glm-5.3-flash",
+        provider: "opencode-go",
         enormousBlob: "x".repeat(256_000),
       },
       resultJson: {
@@ -196,6 +198,8 @@ describeEmbeddedPostgres("activity service", () => {
       costUsd: 0.42,
       cost_usd: 0.42,
       total_cost_usd: 0.42,
+      model: "glm-5.3-flash",
+      provider: "opencode-go",
     });
     expect(runs[0]?.resultJson).toEqual({
       conversationReset: true,
