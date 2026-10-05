@@ -39,8 +39,11 @@ rsync -a ui/dist/ "$STAGE/ui-dist/"
 # which the old shared/dist did not export). Stage the full dist/ of every changed
 # @paperclipai/* workspace package (except server itself, shipped as dist/, and the
 # vendored runner, owned by runner-shim.sh). Unchanged packages ship nothing.
+# Adapters sit one level deeper (packages/adapters/<name>); before they were
+# listed here a changed adapter shipped only its UI half (build 121: the
+# opencode-local ACP bridge never reached the host).
 STAGED_PKGS=()
-for pkgdir in packages/*/; do
+for pkgdir in packages/*/ packages/adapters/*/; do
   [ -f "${pkgdir}package.json" ] || continue
   pname=$(node -p "require('./${pkgdir}package.json').name") || continue
   case "$pname" in @paperclipai/*) ;; *) continue ;; esac
