@@ -723,10 +723,12 @@ export function IssueProperties({
     : null;
   const assigneeAdapterType = assignee?.adapterType ?? null;
   const assigneeAdapterOverrides = issue.assigneeAdapterOverrides ?? null;
-  const showAssigneeAdapterOptions = assigneeAdapterOverrides !== null;
-  const supportsAssigneeOverrides = Boolean(
+  // GRA-550: show the Model row for any override-capable adapter so the
+  // properties pane always names the model this task currently runs on.
+  const showAssigneeAdapterOptions = Boolean(
     assigneeAdapterType && ISSUE_OVERRIDE_ADAPTER_TYPES.has(assigneeAdapterType),
   );
+  const supportsAssigneeOverrides = showAssigneeAdapterOptions;
   const assigneeOverrideLane = overrideLane(assigneeAdapterOverrides);
   const assigneeOverrideAdapterConfig = asRecord(assigneeAdapterOverrides?.adapterConfig);
   const assigneeOverrideModel =
@@ -838,6 +840,19 @@ export function IssueProperties({
         </span>
       );
     }
+    // GRA-550: name the model the task currently uses when it runs on the
+    // agent's primary lane instead of the anonymous "Primary model" label.
+    const currentModel = assigneePrimaryModel || assigneeOverrideModel;
+    if (currentModel) {
+      return (
+        <span
+          className="min-w-0 truncate text-sm"
+          title={`Runs on the current primary model: ${currentModel}`}
+        >
+          {currentModel}
+        </span>
+      );
+    }
     return <span className="text-sm text-muted-foreground">Primary model</span>;
   })();
   const assigneeOptionsContent = supportsAssigneeOverrides ? (
@@ -865,7 +880,13 @@ export function IssueProperties({
           <p className="text-xs text-muted-foreground">
             Task-level model override — replaces the agent&apos;s primary model for this issue.
           </p>
-        ) : null}
+        ) : (
+          <p className="text-xs text-muted-foreground">
+            {assigneePrimaryModel
+              ? `Runs on the agent's primary model: ${assigneePrimaryModel}.`
+              : "Runs on the agent's primary model."}
+          </p>
+        )}
       </div>
       {assigneeOverrideLane === "custom" ? (
         <>
