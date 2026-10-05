@@ -277,6 +277,8 @@ import {
   resolveChatActionSchema,
   resolveChatPublicationSchema,
   replaceChatEndpointResourcesSchema,
+  statsOverviewQuerySchema,
+  statsRangeQuerySchema,
   updateChatEndpointSchema,
 } from "@paperclipai/shared";
 import {
@@ -5172,6 +5174,26 @@ registry.registerPath({
   responses: { 200: r.ok(), 401: r.unauthorized },
 });
 
+// Stats page (fork): delivery and agent-time metrics.
+for (const [suffix, summary, query] of [
+  ["overview", "Delivery statistics overview", statsOverviewQuerySchema],
+  ["by-project", "Delivery statistics per project", statsRangeQuerySchema],
+  ["by-model", "Delivery statistics per model", statsRangeQuerySchema],
+  ["token-usage", "Token usage per cloud account and agent", undefined],
+] as const) {
+  registry.registerPath({
+    method: "get",
+    path: `/api/companies/{companyId}/stats/${suffix}`,
+    tags: ["dashboard"],
+    summary,
+    request: {
+      params: z.object({ companyId: z.string() }),
+      ...(query ? { query } : {}),
+    },
+    responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
+  });
+}
+
 registry.registerPath({
   method: "get",
   path: "/api/companies/{companyId}/recovery-observability",
@@ -5218,6 +5240,21 @@ registry.registerPath({
     }),
   },
   responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/waiting-on-you",
+  tags: ["inbox"],
+  summary: "List tasks waiting on a person, filtered by owner and project",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    query: z.object({
+      user: z.union([z.string(), z.array(z.string())]).optional(),
+      project: z.union([z.string(), z.array(z.string())]).optional(),
+    }),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
 });
 
 // ─── Decisions ──────────────────────────────────────────────────────────────
@@ -5970,6 +6007,67 @@ registry.registerPath({
   summary: "Update experimental instance settings",
   request: { body: jsonBody(patchInstanceExperimentalSettingsSchema) },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+});
+
+// Fork builds: running build, self-update and provider management
+// (services/instance-update.ts, services/instance-providers.ts).
+
+registry.registerPath({
+  method: "get",
+  path: "/api/instance/build",
+  tags: ["instance"],
+  summary: "Get the running build and its changelog since the upstream base",
+  responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/instance/build/update",
+  tags: ["instance"],
+  summary: "Get the latest available build and the state of any update request",
+  responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/instance/build/update",
+  tags: ["instance"],
+  summary: "Request installation of a released build",
+  request: { body: jsonBody(z.object({ tag: z.string().min(1) })) },
+  responses: {
+    202: r.ok(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    409: r.conflict,
+    422: r.unprocessable,
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/instance/providers",
+  tags: ["instance"],
+  summary: "Get the agent-run and host Claude Code versions and effort level",
+  request: { query: z.object({ refresh: z.enum(["1"]).optional() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/instance/providers/action",
+  tags: ["instance"],
+  summary: "Request a provider change (effort level, host CLI update)",
+  request: { body: jsonBody(z.record(z.string(), z.unknown())) },
+  responses: {
+    202: r.ok(),
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    409: r.conflict,
+    422: r.unprocessable,
+  },
 });
 
 registry.registerPath({
