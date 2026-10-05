@@ -54,6 +54,10 @@ const mockAccessApi = vi.hoisted(() => ({
   listUserDirectory: vi.fn(),
 }));
 
+const mockActivityApi = vi.hoisted(() => ({
+  runsForIssue: vi.fn(),
+}));
+
 const mockInstanceSettingsApi = vi.hoisted(() => ({
   getExperimental: vi.fn(),
 }));
@@ -94,6 +98,10 @@ vi.mock("../api/auth", () => ({
 
 vi.mock("../api/access", () => ({
   accessApi: mockAccessApi,
+}));
+
+vi.mock("../api/activity", () => ({
+  activityApi: mockActivityApi,
 }));
 
 vi.mock("../api/instanceSettings", () => ({
@@ -469,6 +477,7 @@ describe("IssueProperties", () => {
     document.body.appendChild(container);
     mockAgentsApi.list.mockResolvedValue([]);
     mockAgentsApi.adapterModels.mockResolvedValue([]);
+    mockActivityApi.runsForIssue.mockResolvedValue([]);
     mockProjectsApi.list.mockResolvedValue([]);
     mockExecutionWorkspacesApi.list.mockResolvedValue([]);
     mockExecutionWorkspacesApi.controlRuntimeCommands.mockReset();
@@ -2216,6 +2225,95 @@ describe("IssueProperties", () => {
         adapterType: "codex_local",
         adapterConfig: { model: "gpt-6-astra" },
         icon: null,
+      },
+    ]);
+
+    const root = renderProperties(container, {
+      issue: createIssue({
+        assigneeAgentId: "agent-1",
+        assigneeAdapterOverrides: null,
+      }),
+      childIssues: [],
+      onUpdate: vi.fn(),
+    });
+    await flush();
+    await flush();
+
+    await waitForAssertion(() => {
+      expect(findRowTrigger(container, "Model")?.textContent).toContain("gpt-6-astra");
+    });
+
+    act(() => root.unmount());
+  });
+
+  it("names the model recorded on the task's latest run instead of the selected primary model", async () => {
+    mockAgentsApi.list.mockResolvedValue([
+      {
+        id: "agent-1",
+        name: "Senior Product Engineer",
+        role: "engineer",
+        title: null,
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: { model: "gpt-6-astra" },
+        icon: null,
+      },
+    ]);
+    mockActivityApi.runsForIssue.mockResolvedValue([
+      {
+        runId: "run-newest",
+        status: "succeeded",
+        createdAt: "2026-10-05T10:00:00.000Z",
+        usageJson: { model: "glm-5.3-flash", provider: "opencode-go", inputTokens: 10 },
+      },
+      {
+        runId: "run-older",
+        status: "succeeded",
+        createdAt: "2026-10-05T09:00:00.000Z",
+        usageJson: { model: "gpt-6-astra", provider: "openai", inputTokens: 10 },
+      },
+    ]);
+
+    const root = renderProperties(container, {
+      issue: createIssue({
+        assigneeAgentId: "agent-1",
+        assigneeAdapterOverrides: null,
+      }),
+      childIssues: [],
+      onUpdate: vi.fn(),
+    });
+    await flush();
+    await flush();
+
+    // GRA-550: the row names the model the task actually ran on (its latest
+    // run), not the agent's currently selected primary model.
+    await waitForAssertion(() => {
+      expect(findRowTrigger(container, "Model")?.textContent).toContain("glm-5.3-flash");
+    });
+    expect(findRowTrigger(container, "Model")?.textContent).not.toContain("gpt-6-astra");
+
+    act(() => root.unmount());
+  });
+
+  it("falls back to the primary model when runs report no usable model", async () => {
+    mockAgentsApi.list.mockResolvedValue([
+      {
+        id: "agent-1",
+        name: "Senior Product Engineer",
+        role: "engineer",
+        title: null,
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: { model: "gpt-6-astra" },
+        icon: null,
+      },
+    ]);
+    mockActivityApi.runsForIssue.mockResolvedValue([
+      {
+        runId: "run-1",
+        status: "failed",
+        createdAt: "2026-10-05T10:00:00.000Z",
+        usageJson: { model: "unknown" },
       },
     ]);
 
