@@ -42,14 +42,16 @@ install-skills-sync:
 	  su - paperclip -c "crontab -l" | grep skills-sync'
 
 # make install-preview: preview-url (production build + serve, dev fallback), preview-stack (multi-repo
-# previews, recipes in ~/preview-stack.d), preview-reap and the preview router. Seed recipes never overwrite
-# one the agent already saved.
+# previews, recipes in ~/preview-stack.d), preview-reap, test-reap (+ its */5 cron) and the preview router.
+# Seed recipes never overwrite one the agent already saved.
 install-preview:
-	@COPYFILE_DISABLE=1 tar cf - vps/preview-url vps/preview-stack vps/preview-reap.sh vps/preview-router.js vps/preview-stack.d | ssh $(VPS) 'set -e; \
+	@COPYFILE_DISABLE=1 tar cf - vps/preview-url vps/preview-stack vps/preview-reap.sh vps/test-reap.sh vps/preview-router.js vps/preview-stack.d | ssh $(VPS) 'set -e; \
 	  D=/tmp/grappus-preview; rm -rf $$D; mkdir -p $$D; tar xf - -C $$D; \
 	  install -m 755 -o root -g root $$D/vps/preview-url /usr/local/bin/preview-url; \
 	  install -m 755 -o root -g root $$D/vps/preview-stack /usr/local/bin/preview-stack; \
 	  install -m 755 -o root -g root $$D/vps/preview-reap.sh /usr/local/bin/preview-reap; \
+	  install -m 755 -o root -g root $$D/vps/test-reap.sh /usr/local/bin/test-reap; \
+	  su - paperclip -c "crontab -l | grep -v /usr/local/bin/test-reap | { cat; echo \"*/5 * * * * /usr/local/bin/test-reap >> /home/paperclip/test-reap.log 2>&1\"; } | crontab -"; \
 	  install -m 644 -o paperclip -g paperclip $$D/vps/preview-router.js /home/paperclip/preview-router/index.js; \
 	  install -d -o paperclip -g paperclip /home/paperclip/preview-stack.d /home/paperclip/preview-stacks /home/paperclip/services /home/paperclip/services/bin; \
 	  for f in $$D/vps/preview-stack.d/*.json; do [ -e "$$f" ] || continue; t=/home/paperclip/preview-stack.d/$$(basename $$f); \
