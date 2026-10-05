@@ -184,7 +184,9 @@ export async function markExecutionReconciliation(
     if (
       !run ||
       run.status !== "failed" ||
-      !(await isPreProviderReviewedChatFailure(db, run)) ||
+      !(await isPreProviderReviewedChatFailure(db, run, {
+        requireDispatchMetadata: true,
+      })) ||
       context.source !== "issue.interaction.respond" ||
       context.issueId !== action.sourceIssueId ||
       context.externalChatContinuation !== true ||

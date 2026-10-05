@@ -1935,10 +1935,9 @@ describe("native external-chat response wait", () => {
     );
   });
 
-  it("retries only an exact pre-provider failure of an answered Slack card", async () => {
+  async function seedPreProviderQuestionResponseRetry() {
     const fixture = await seedAnsweredChatTurn("slack", undefined, "form");
     const failedRunId = randomUUID();
-    const retryRunId = randomUUID();
     await db
       .update(heartbeatRuns)
       .set({ runtimeMode: "legacy", nativeIssueId: null })
@@ -1992,6 +1991,13 @@ describe("native external-chat response wait", () => {
       .update(issueQuestionResponseDeliveries)
       .set({ targetRunId: failedRunId })
       .where(eq(issueQuestionResponseDeliveries.id, fixture.responseDeliveryId));
+    return { fixture, failedRunId };
+  }
+
+  it("retries only an exact pre-provider failure of an answered Slack card", async () => {
+    const { fixture, failedRunId } =
+      await seedPreProviderQuestionResponseRetry();
+    const retryRunId = randomUUID();
 
     const wakeup = vi.fn(async (agentId: string, options: Record<string, unknown>) => {
       const wakeId = randomUUID();
@@ -2060,6 +2066,73 @@ describe("native external-chat response wait", () => {
         }),
       }),
     );
+  });
+
+  it("does not retry if provider-work evidence arrives after recovery preparation", async () => {
+    const { fixture, failedRunId } =
+      await seedPreProviderQuestionResponseRetry();
+    const wakeup = vi.fn();
+    const delivery = questionResponseDeliveryService(db, {
+      heartbeat: { wakeup } as never,
+    });
+    const interactionId = await db.transaction((tx) =>
+      delivery.prepareFailedExternalChatQuestionRetry(tx as never, {
+        companyId: fixture.companyId,
+        issueId: fixture.issueId,
+        agentId: fixture.agentId,
+        failedRunId,
+      }),
+    );
+    expect(interactionId).toBe(fixture.interactionId);
+
+    await db.insert(heartbeatRunEvents).values({
+      companyId: fixture.companyId,
+      agentId: fixture.agentId,
+      runId: failedRunId,
+      seq: 2,
+      eventType: "tool_call",
+      stream: "system",
+      level: "info",
+      message: "A provider action was recorded after recovery preparation.",
+    });
+
+    await expect(delivery.deliver(interactionId!)).resolves.toMatchObject({
+      status: "failed",
+      mode: null,
+      targetRunId: null,
+    });
+    expect(wakeup).not.toHaveBeenCalled();
+  });
+
+  it("does not prepare a retry without control-plane bootstrap metadata", async () => {
+    const { fixture, failedRunId } =
+      await seedPreProviderQuestionResponseRetry();
+    await db
+      .update(heartbeatRuns)
+      .set({ runnerProfileJson: null, resultJson: null })
+      .where(eq(heartbeatRuns.id, failedRunId));
+    const wakeup = vi.fn();
+    const delivery = questionResponseDeliveryService(db, {
+      heartbeat: { wakeup } as never,
+    });
+
+    const interactionId = await db.transaction((tx) =>
+      delivery.prepareFailedExternalChatQuestionRetry(tx as never, {
+        companyId: fixture.companyId,
+        issueId: fixture.issueId,
+        agentId: fixture.agentId,
+        failedRunId,
+      }),
+    );
+
+    expect(interactionId).toBeNull();
+    await expect(
+      db
+        .select({ status: issueQuestionResponseDeliveries.status })
+        .from(issueQuestionResponseDeliveries)
+        .where(eq(issueQuestionResponseDeliveries.id, fixture.responseDeliveryId)),
+    ).resolves.toEqual([{ status: "fallback_queued" }]);
+    expect(wakeup).not.toHaveBeenCalled();
   });
 
   it.each(["execution_owner", "agent_paused", "membership_revoked"] as const)(

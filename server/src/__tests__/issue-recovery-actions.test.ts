@@ -1753,6 +1753,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       await seedReconciledDelivery();
     const interactionId = randomUUID();
     const failedRunId = randomUUID();
+    const failedWakeId = randomUUID();
     await db.insert(issueThreadInteractions).values({
       id: interactionId,
       companyId,
@@ -1774,6 +1775,16 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       payloadSha256: "a".repeat(64),
       status: "pending",
     });
+    await db.insert(agentWakeupRequests).values({
+      id: failedWakeId,
+      companyId,
+      agentId: coderId,
+      source: "automation",
+      reason: "issue_commented",
+      status: "failed",
+      runId: failedRunId,
+      payload: { issueId: sourceIssueId, interactionId },
+    });
     await db.insert(heartbeatRuns).values({
       id: failedRunId,
       companyId,
@@ -1781,8 +1792,25 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       invocationSource: "automation",
       status: "failed",
       runtimeMode: "legacy",
+      wakeupRequestId: failedWakeId,
       errorCode: "setup_failed",
       error: "reviewed_chat_execution_binding_not_authorized",
+      runnerProfileJson: {
+        adapterDispatch: { adapterType: "opencode_local" },
+        chatControlRecoveryAdmission: {
+          version: 1,
+          phase: "required",
+          companyId,
+          runId: failedRunId,
+          agentId: coderId,
+          issueId: sourceIssueId,
+          wakeupRequestId: failedWakeId,
+        },
+        aiConnectionNonAssigneeCommentWake: false,
+      },
+      resultJson: {
+        executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+      },
       contextSnapshot: {
         issueId: sourceIssueId,
         source: "issue.interaction.respond",
@@ -2179,6 +2207,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     const applicationId = randomUUID();
     const connectionId = randomUUID();
     const failedRunId = randomUUID();
+    const failedWakeId = randomUUID();
     const interactionId = randomUUID();
     const sourceRunId = randomUUID();
     await db
@@ -2268,6 +2297,16 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       payloadSha256: "a".repeat(64),
       status: "pending",
     });
+    await db.insert(agentWakeupRequests).values({
+      id: failedWakeId,
+      companyId,
+      agentId: coderId,
+      source: "automation",
+      reason: "issue_commented",
+      status: "failed",
+      runId: failedRunId,
+      payload: { issueId: sourceIssueId, interactionId },
+    });
     await db.insert(heartbeatRuns).values({
       id: failedRunId,
       companyId,
@@ -2275,8 +2314,25 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       invocationSource: "automation",
       status: "failed",
       runtimeMode: "legacy",
+      wakeupRequestId: failedWakeId,
       errorCode: "setup_failed",
       error: "reviewed_chat_execution_binding_not_authorized",
+      runnerProfileJson: {
+        adapterDispatch: { adapterType: "opencode_local" },
+        chatControlRecoveryAdmission: {
+          version: 1,
+          phase: "required",
+          companyId,
+          runId: failedRunId,
+          agentId: coderId,
+          issueId: sourceIssueId,
+          wakeupRequestId: failedWakeId,
+        },
+        aiConnectionNonAssigneeCommentWake: false,
+      },
+      resultJson: {
+        executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+      },
       contextSnapshot: {
         issueId: sourceIssueId,
         source: "issue.interaction.respond",

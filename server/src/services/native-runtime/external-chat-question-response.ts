@@ -22,6 +22,7 @@ import {
 } from "../chat-question-forms.js";
 import { questionResponseDeliveryValues } from "../question-response-delivery.js";
 import { nativeSha256 } from "./canonical.js";
+import { PRE_PROVIDER_REVIEWED_CHAT_RETRY_MARKER_PREFIX } from "../pre-provider-reviewed-chat-failure.js";
 
 export const EXTERNAL_CHAT_QUESTION_RESPONSE_KEY =
   "paperclipExternalChatQuestionResponse";
@@ -413,6 +414,12 @@ async function resolveQuestionResponseChain(
     );
   const sourceIds = ids(sourceContext.wakeCommentIds);
   const wakePayload = record(wake.payload);
+  const preProviderRetryDelivery =
+    delivery.status === "delivering" &&
+    delivery.deliveryMode === "wake_fallback" &&
+    delivery.targetRunId === binding.runId &&
+    delivery.lastErrorCode ===
+      `${PRE_PROVIDER_REVIEWED_CHAT_RETRY_MARKER_PREFIX}${binding.runId}`;
   if (
     !provider ||
     source.agentId !== binding.agentId ||
@@ -460,7 +467,8 @@ async function resolveQuestionResponseChain(
         delivery.targetRunId === binding.runId) ||
       (delivery.status === "delivering" &&
         delivery.targetRunId === null &&
-        delivery.deliveryMode === null)
+        delivery.deliveryMode === null) ||
+      preProviderRetryDelivery
     )
   )
     return null;

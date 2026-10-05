@@ -20,8 +20,9 @@ function record(value: unknown): Record<string, unknown> {
 
 function hasOnlyPreProviderDispatchMetadata(
   run: typeof heartbeatRuns.$inferSelect,
+  requireDispatchMetadata: boolean,
 ): boolean {
-  if (run.runnerProfileJson === null) return true;
+  if (run.runnerProfileJson === null) return !requireDispatchMetadata;
   const profile = record(run.runnerProfileJson);
   const dispatch = record(profile.adapterDispatch);
   const recovery = record(record(run.resultJson).executionRecovery);
@@ -40,11 +41,14 @@ function hasOnlyPreProviderDispatchMetadata(
 
 export const PRE_PROVIDER_REVIEWED_CHAT_FAILURE =
   "reviewed_chat_execution_binding_not_authorized";
+export const PRE_PROVIDER_REVIEWED_CHAT_RETRY_MARKER_PREFIX =
+  "pre-provider-reviewed-chat-retry:";
 
 /** Exact proof that reviewed-chat authorization failed before provider work. */
 export async function isPreProviderReviewedChatFailure(
   tx: DbOrTransaction,
   run: typeof heartbeatRuns.$inferSelect,
+  options: { requireDispatchMetadata?: boolean } = {},
 ): Promise<boolean> {
   const diagnostic = PRE_PROVIDER_REVIEWED_CHAT_FAILURE;
   if (
@@ -83,7 +87,10 @@ export async function isPreProviderReviewedChatFailure(
     ].some((value) => value !== null) ||
     run.lastOutputSeq !== 0 ||
     run.logCompressed ||
-    !hasOnlyPreProviderDispatchMetadata(run)
+    !hasOnlyPreProviderDispatchMetadata(
+      run,
+      options.requireDispatchMetadata === true,
+    )
   )
     return false;
   const events = await tx
