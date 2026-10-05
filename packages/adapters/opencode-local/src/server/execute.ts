@@ -168,6 +168,13 @@ export async function ensureRemoteOpenCodeModelConfiguredAndAvailable(input: {
   }
 }
 
+// Compiled builds ship acp-bridge.js next to this module; dev runs execute the
+// .ts source through node's type stripping.
+async function resolveAcpBridgePath(): Promise<string> {
+  const compiled = path.join(__moduleDir, "acp-bridge.js");
+  return fs.access(compiled).then(() => compiled, () => path.join(__moduleDir, "acp-bridge.ts"));
+}
+
 async function ensureOpenCodeSkillsInjected(
   onLog: AdapterExecutionContext["onLog"],
   skillsEntries: Array<{ key: string; runtimeName: string; source: string }>,
@@ -619,7 +626,24 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const printLogs = isTruthyEnvFlag(
       env.PAPERCLIP_OPENCODE_PRINT_LOGS ?? process.env.PAPERCLIP_OPENCODE_PRINT_LOGS,
     );
+    // Local turns run over ACP (`opencode acp`) so thinking and text stream
+    // live; `opencode run` prints a part only once it is finished. ACP cannot
+    // select a variant, and the bridge script exists only on this host, so
+    // variant and remote runs keep `opencode run`.
+    const useAcp = !executionTargetIsRemote && !variant;
+    if (useAcp && extraArgs.length > 0) {
+      await onLog("stdout", `[paperclip] OpenCode ACP runs ignore extraArgs: ${extraArgs.join(" ")}\n`);
+    }
+    const runCommand = useAcp ? process.execPath : command;
+    const acpBridgePath = useAcp ? await resolveAcpBridgePath() : "";
     const buildArgs = (resumeSessionId: string | null) => {
+      if (useAcp) {
+        const args = [acpBridgePath, "--command", command, "--cwd", effectiveExecutionCwd];
+        if (resumeSessionId) args.push("--session", resumeSessionId);
+        if (model) args.push("--model", model);
+        if (printLogs) args.push("--print-logs");
+        return args;
+      }
       const args = ["run", "--format", "json"];
       if (printLogs) args.push("--print-logs");
       if (resumeSessionId) args.push("--session", resumeSessionId);
@@ -634,7 +658,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       if (onMeta) {
         await onMeta({
           adapterType: "opencode_local",
-          command: resolvedCommand,
+          command: useAcp ? process.execPath : resolvedCommand,
           cwd: effectiveExecutionCwd,
           commandNotes,
           commandArgs: [...args, `<stdin prompt ${prompt.length} chars>`],
@@ -645,7 +669,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         });
       }
 
-      const proc = await runAdapterExecutionTargetProcess(runId, runtimeExecutionTarget, command, args, {
+      const proc = await runAdapterExecutionTargetProcess(runId, runtimeExecutionTarget, runCommand, args, {
         cwd,
         env: preparedRuntimeConfig.env,
         stdin: prompt,
