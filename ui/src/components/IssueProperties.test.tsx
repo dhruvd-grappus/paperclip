@@ -2196,6 +2196,44 @@ describe("IssueProperties", () => {
     expect(container.textContent).not.toContain("Model lane");
     expect(container.textContent).not.toContain("Codex options");
 
+    // GRA-550: the Model row is visible for override-capable adapters, but
+    // without a configured primary model it stays anonymous.
+    await waitForAssertion(() => {
+      expect(findRowTrigger(container, "Model")?.textContent).toContain("Primary model");
+    });
+
+    act(() => root.unmount());
+  });
+
+  it("names the agent's primary model in the Model properties row", async () => {
+    mockAgentsApi.list.mockResolvedValue([
+      {
+        id: "agent-1",
+        name: "Senior Product Engineer",
+        role: "engineer",
+        title: null,
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: { model: "gpt-6-astra" },
+        icon: null,
+      },
+    ]);
+
+    const root = renderProperties(container, {
+      issue: createIssue({
+        assigneeAgentId: "agent-1",
+        assigneeAdapterOverrides: null,
+      }),
+      childIssues: [],
+      onUpdate: vi.fn(),
+    });
+    await flush();
+    await flush();
+
+    await waitForAssertion(() => {
+      expect(findRowTrigger(container, "Model")?.textContent).toContain("gpt-6-astra");
+    });
+
     act(() => root.unmount());
   });
 
@@ -2351,6 +2389,10 @@ describe("IssueProperties", () => {
 
     // The trailing "clear" X was removed (ux-spec: one trailing-action style).
     // Clearing now happens by selecting the "Primary" model lane inside the picker.
+    await waitForAssertion(() => {
+      const optionsTrigger = findRowTrigger(container, "Model");
+      expect(optionsTrigger).toBeTruthy();
+    });
     const optionsTrigger = findRowTrigger(container, "Model");
     expect(optionsTrigger).toBeTruthy();
     await act(async () => {
