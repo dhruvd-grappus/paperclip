@@ -1,6 +1,12 @@
 # Grappus fork: build the host overlay for every push to grappus/stable and
 # publish it as a GitHub release (overlay-<sha12>). The host installs it with
 # `paperclip-overlay apply-request` after an in-app "Update now".
+#
+# Tests run in three parallel shards (scripts/grappus/test.sh --shard). On a
+# push they cover only what changed since the last published overlay (the
+# tests touched plus the suites next to changed source, plus the core suites);
+# a manual dispatch or the weekly schedule runs every test file the fork has
+# touched since the upstream base.
 name: grappus overlay
 
 on:
@@ -9,6 +15,8 @@ on:
     # grappus/ is VPS ops (scripts, units), not part of the Paperclip build.
     paths-ignore:
       - "grappus/**"
+  schedule:
+    - cron: "17 2 * * 1" # Monday 02:17 UTC: full test run, no release
   workflow_dispatch:
 
 permissions:
@@ -18,10 +26,61 @@ concurrency:
   group: grappus-overlay
   cancel-in-progress: false
 
+env:
+  SHARDS: 3
+
 jobs:
-  overlay:
+  test:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 30
+    strategy:
+      fail-fast: true
+      matrix:
+        shard: [1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Install
+        run: |
+          corepack enable
+          corepack prepare pnpm@9.15.4 --activate
+          pnpm install --frozen-lockfile
+
+      - name: Build workspace dependencies
+        run: scripts/grappus/prepare.sh
+
+      # The last published overlay is what the host runs; everything since it
+      # is untested until now. A manual or scheduled run tests the full set.
+      - name: Resolve test range
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag=$(gh release list --limit 1 --exclude-drafts --json tagName --jq '.[0].tagName // empty')
+          since=""
+          if [ -n "$tag" ] && git rev-parse -q --verify "refs/tags/$tag^{commit}" >/dev/null; then
+            since=$(git rev-parse "$tag^{commit}")
+          elif [ -n "${{ github.event.before }}" ]; then
+            since="${{ github.event.before }}"
+          fi
+          echo "since=$since (release tag: ${tag:--})"
+          echo "SINCE=$since" >> "$GITHUB_ENV"
+
+      - name: Test fork changes (shard ${{ matrix.shard }}/3)
+        run: scripts/grappus/test.sh ${SINCE:+--since "$SINCE"} --shard "${{ matrix.shard }}/$SHARDS"
+
+  overlay:
+    needs: test
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
     env:
       GRAPPUS_BRANCH: grappus/stable
     steps:
@@ -42,9 +101,6 @@ jobs:
 
       - name: Build workspace dependencies
         run: scripts/grappus/prepare.sh
-
-      - name: Test fork changes
-        run: scripts/grappus/test.sh
 
       - name: Build overlay
         run: scripts/grappus/build-overlay.sh out
