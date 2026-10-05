@@ -2459,8 +2459,10 @@ function renderPaperclipWakePromptBody(
     // the prompt. Keep the tail (enough to re-orient) and say where the rest
     // lives; the agent can fetch older comments from the task API.
     const FRESH_HISTORY_TAIL = 12;
-    const historyMessages = (requestContext as Record<string, unknown>).messages;
-    const historyCount = Array.isArray(historyMessages) ? historyMessages.length : 0;
+    const historyMessages = Array.isArray((requestContext as Record<string, unknown>).messages)
+      ? ((requestContext as Record<string, unknown>).messages as unknown[])
+      : [];
+    const historyCount = historyMessages.length;
     const historyTrimmed = !resumedSession && historyCount > FRESH_HISTORY_TAIL;
     if (historyTrimmed) {
       (requestContext as Record<string, unknown>).messages = historyMessages.slice(-FRESH_HISTORY_TAIL);
