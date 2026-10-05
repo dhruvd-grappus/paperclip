@@ -1617,6 +1617,50 @@ export function TaskChatThread(props: TaskChatThreadProps) {
           },
         });
       }
+      // A failed run still needs its own retry target when it produced output
+      // or a final comment. Otherwise the thread keeps retrying an older run.
+      const sourceHasLegacyStop = !sourceIsPaperclipRunner && (
+        source.status === "failed" || source.status === "timed_out" ||
+        (source.status === "cancelled" && entries.length === 0)
+      );
+      if (sourceHasLegacyStop) {
+        settledRunIds.add(source.id);
+        const code = meta?.errorCode ?? "native_runner_process_exited";
+        const retryDetail = meta?.scheduledRetryAt
+          ? "Retry scheduled automatically."
+          : canRetryFailedRun
+            ? "You can retry this message now."
+            : "Your message is preserved.";
+        const aiRequest = interactions?.find((interaction) => interaction.kind === "connection_intent" && interaction.payload.purpose === "ai" && interaction.sourceRunId === source.id);
+        const detail = aiRequest
+          ? aiRequest.status === "pending"
+            ? "The selected AI account is unavailable. Fix it in the connection card."
+            : "This run stopped because its AI account was unavailable."
+          : source.status === "cancelled"
+            ? code === "execution_reconciliation_required"
+              ? "The previous execution must be checked before this task can continue. Your message is preserved. View the stopped run for details."
+              : "Execution was stopped before returning an answer."
+            : code === "provider_frame_too_large"
+            ? `Provider output exceeded the safe limit. ${retryDetail}`
+            : code.startsWith("workspace_git_scan_")
+            ? `Workspace setup failed before the agent started. ${retryDetail}`
+            : `The runner stopped before returning an answer (${code}). ${retryDetail}`;
+        const id = `${source.id}:failure`;
+        entriesWithFailures.push({
+          ms: toMs(meta?.finishedAt ?? meta?.startedAt ?? meta?.createdAt),
+          order: 3,
+          id,
+          item: {
+            id,
+            kind: "marker",
+            variant: "interrupted",
+            label: source.status === "cancelled" ? (meta?.startedAt ? "Stopped" : "Couldn't start") : "Run failed",
+            runId: source.status === "cancelled" ? undefined : source.id,
+            tone: source.status === "cancelled" ? "neutral" : "error",
+            detail,
+          },
+        });
+      }
       if (entries.length === 0) {
         if (sourceIsPaperclipRunner && sourceYielded) {
           settledRunIds.add(source.id);
@@ -1666,47 +1710,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
           });
           settledRunIds.add(source.id);
           settledReplyRunIds.add(source.id);
-        } else if (
-          !sourceIsPaperclipRunner &&
-          (source.status === "failed" || source.status === "timed_out" || source.status === "cancelled")
-        ) {
-          settledRunIds.add(source.id);
-          const code = meta?.errorCode ?? "native_runner_process_exited";
-          const retryDetail = meta?.scheduledRetryAt
-            ? "Retry scheduled automatically."
-            : canRetryFailedRun
-              ? "You can retry this message now."
-              : "Your message is preserved.";
-          const aiRequest = interactions?.find((interaction) => interaction.kind === "connection_intent" && interaction.payload.purpose === "ai" && interaction.sourceRunId === source.id);
-          const detail = aiRequest
-            ? aiRequest.status === "pending"
-              ? "The selected AI account is unavailable. Fix it in the connection card."
-              : "This run stopped because its AI account was unavailable."
-            : source.status === "cancelled"
-              ? code === "execution_reconciliation_required"
-                ? "The previous execution must be checked before this task can continue. Your message is preserved. View the stopped run for details."
-                : "Execution was stopped before returning an answer."
-              : code === "provider_frame_too_large"
-              ? `Provider output exceeded the safe limit. ${retryDetail}`
-              : code.startsWith("workspace_git_scan_")
-              ? `Workspace setup failed before the agent started. ${retryDetail}`
-              : `The runner stopped before returning an answer (${code}). ${retryDetail}`;
-          const id = `${source.id}:failure`;
-          entriesWithFailures.push({
-            ms: toMs(meta?.finishedAt ?? meta?.startedAt ?? meta?.createdAt),
-            order: 3,
-            id,
-            item: {
-              id,
-              kind: "marker",
-              variant: "interrupted",
-              label: source.status === "cancelled" ? (meta?.startedAt ? "Stopped" : "Couldn't start") : "Run failed",
-              runId: source.status === "cancelled" ? undefined : source.id,
-              tone: source.status === "cancelled" ? "neutral" : "error",
-              detail,
-            },
-          });
-        } else if (!sourceHasNativeStop && !lastCommentIdByRun.has(source.id)) {
+        } else if (!sourceHasNativeStop && !sourceHasLegacyStop && !lastCommentIdByRun.has(source.id)) {
           settledRunIds.add(source.id);
           const id = `${source.id}:terminal-notice`;
           entriesWithFailures.push({
@@ -2676,6 +2680,8 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     initialHistoryPending ||
     planLoading ||
     initialRuns.some((run) => {
+      // A scheduled retry has not started and has no log to hydrate yet.
+      if (run.status === "scheduled_retry") return false;
       if (
         run.runtimeMode === "native" &&
         (hydratedNativeRunIds

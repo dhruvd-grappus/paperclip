@@ -277,6 +277,8 @@ import {
   resolveChatActionSchema,
   resolveChatPublicationSchema,
   replaceChatEndpointResourcesSchema,
+  statsOverviewQuerySchema,
+  statsRangeQuerySchema,
   updateChatEndpointSchema,
 } from "@paperclipai/shared";
 import {
@@ -619,6 +621,12 @@ class OpenAPIRegistry {
 const registry = new OpenAPIRegistry();
 
 // ─── Common schemas ──────────────────────────────────────────────────────────
+
+// Match the route's isUuidLike check without its whitespace trimming. Spell
+// out both cases because OpenAPI patterns do not carry RegExp flags.
+const heartbeatRunIdParamSchema = z.string()
+  .regex(/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89aAbB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$/)
+  .describe("Heartbeat run UUID; malformed values return 400");
 
 const ErrorSchema = registry.register("Error", z.object({ error: z.string() }));
 
@@ -5166,6 +5174,26 @@ registry.registerPath({
   responses: { 200: r.ok(), 401: r.unauthorized },
 });
 
+// Stats page (fork): delivery and agent-time metrics.
+for (const [suffix, summary, query] of [
+  ["overview", "Delivery statistics overview", statsOverviewQuerySchema],
+  ["by-project", "Delivery statistics per project", statsRangeQuerySchema],
+  ["by-model", "Delivery statistics per model", statsRangeQuerySchema],
+  ["token-usage", "Token usage per cloud account and agent", undefined],
+] as const) {
+  registry.registerPath({
+    method: "get",
+    path: `/api/companies/{companyId}/stats/${suffix}`,
+    tags: ["dashboard"],
+    summary,
+    request: {
+      params: z.object({ companyId: z.string() }),
+      ...(query ? { query } : {}),
+    },
+    responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
+  });
+}
+
 registry.registerPath({
   method: "get",
   path: "/api/companies/{companyId}/recovery-observability",
@@ -5212,6 +5240,21 @@ registry.registerPath({
     }),
   },
   responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/waiting-on-you",
+  tags: ["inbox"],
+  summary: "List tasks waiting on a person, filtered by owner and project",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    query: z.object({
+      user: z.union([z.string(), z.array(z.string())]).optional(),
+      project: z.union([z.string(), z.array(z.string())]).optional(),
+    }),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
 });
 
 // ─── Decisions ──────────────────────────────────────────────────────────────
@@ -5966,6 +6009,67 @@ registry.registerPath({
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
 });
 
+// Fork builds: running build, self-update and provider management
+// (services/instance-update.ts, services/instance-providers.ts).
+
+registry.registerPath({
+  method: "get",
+  path: "/api/instance/build",
+  tags: ["instance"],
+  summary: "Get the running build and its changelog since the upstream base",
+  responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/instance/build/update",
+  tags: ["instance"],
+  summary: "Get the latest available build and the state of any update request",
+  responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/instance/build/update",
+  tags: ["instance"],
+  summary: "Request installation of a released build",
+  request: { body: jsonBody(z.object({ tag: z.string().min(1) })) },
+  responses: {
+    202: r.ok(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    409: r.conflict,
+    422: r.unprocessable,
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/instance/providers",
+  tags: ["instance"],
+  summary: "Get the agent-run and host Claude Code versions and effort level",
+  request: { query: z.object({ refresh: z.enum(["1"]).optional() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/instance/providers/action",
+  tags: ["instance"],
+  summary: "Request a provider change (effort level, host CLI update)",
+  request: { body: jsonBody(z.record(z.string(), z.unknown())) },
+  responses: {
+    202: r.ok(),
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    409: r.conflict,
+    422: r.unprocessable,
+  },
+});
+
 registry.registerPath({
   method: "get",
   path: "/api/instance/task-drain",
@@ -6519,8 +6623,8 @@ registry.registerPath({
   path: "/api/heartbeat-runs/{runId}",
   tags: ["runs"],
   summary: "Get a heartbeat run",
-  request: { params: z.object({ runId: z.string() }) },
-  responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound },
+  request: { params: z.object({ runId: heartbeatRunIdParamSchema }) },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 404: r.notFound },
 });
 
 registry.registerPath({
@@ -6528,8 +6632,8 @@ registry.registerPath({
   path: "/api/heartbeat-runs/{runId}/cancel",
   tags: ["runs"],
   summary: "Cancel a heartbeat run",
-  request: { params: z.object({ runId: z.string() }) },
-  responses: { 200: r.ok(), 401: r.unauthorized },
+  request: { params: z.object({ runId: heartbeatRunIdParamSchema }) },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
 });
 
 registry.registerPath({
@@ -6537,9 +6641,10 @@ registry.registerPath({
   path: "/api/heartbeat-runs/{runId}/provider-trace",
   tags: ["runs"],
   summary: "Inspect a redacted provider trace",
-  request: { params: z.object({ runId: z.string() }) },
+  request: { params: z.object({ runId: heartbeatRunIdParamSchema }) },
   responses: {
     200: r.ok(),
+    400: r.badRequest,
     401: r.unauthorized,
     403: r.forbidden,
     404: r.notFound,
@@ -6551,9 +6656,10 @@ registry.registerPath({
   path: "/api/heartbeat-runs/{runId}/provider-trace/reproject-workspace-diffs",
   tags: ["runs"],
   summary: "Reproject retained Codex workspace diffs into run events",
-  request: { params: z.object({ runId: z.string() }) },
+  request: { params: z.object({ runId: heartbeatRunIdParamSchema }) },
   responses: {
     200: r.ok(),
+    400: r.badRequest,
     401: r.unauthorized,
     403: r.forbidden,
     404: r.notFound,
@@ -6567,7 +6673,7 @@ registry.registerPath({
   summary: "Reveal one exact provider trace frame",
   request: {
     params: z.object({
-      runId: z.string(),
+      runId: heartbeatRunIdParamSchema,
       frameId: z.coerce.number().int().positive(),
     }),
   },
@@ -6585,9 +6691,10 @@ registry.registerPath({
   path: "/api/heartbeat-runs/{runId}/provider-trace/download",
   tags: ["runs"],
   summary: "Download an exact provider trace as NDJSON",
-  request: { params: z.object({ runId: z.string() }) },
+  request: { params: z.object({ runId: heartbeatRunIdParamSchema }) },
   responses: {
     200: r.ok(),
+    400: r.badRequest,
     401: r.unauthorized,
     403: r.forbidden,
     404: r.notFound,
@@ -6599,9 +6706,10 @@ registry.registerPath({
   path: "/api/heartbeat-runs/{runId}/provider-trace",
   tags: ["runs"],
   summary: "Permanently delete a provider trace",
-  request: { params: z.object({ runId: z.string() }) },
+  request: { params: z.object({ runId: heartbeatRunIdParamSchema }) },
   responses: {
     200: r.ok(),
+    400: r.badRequest,
     401: r.unauthorized,
     403: r.forbidden,
     404: r.notFound,
@@ -6744,7 +6852,7 @@ registry.registerPath({
   tags: ["runs"],
   summary: "Resolve a pending Paperclip runner runtime request",
   request: {
-    params: z.object({ runId: z.string(), requestId: z.string() }),
+    params: z.object({ runId: heartbeatRunIdParamSchema, requestId: z.string() }),
     body: jsonBody(
       z.object({
         turnId: z.string().min(1).max(160),
@@ -6794,7 +6902,7 @@ registry.registerPath({
   tags: ["runs"],
   summary: "Submit watchdog decisions for a run",
   request: {
-    params: z.object({ runId: z.string() }),
+    params: z.object({ runId: heartbeatRunIdParamSchema }),
     body: jsonBody(
       z.object({
         decision: z.enum(["snooze", "continue", "dismissed_false_positive"]),
@@ -6804,7 +6912,7 @@ registry.registerPath({
       }),
     ),
   },
-  responses: { 200: r.ok(), 401: r.unauthorized },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
 });
 
 registry.registerPath({
@@ -6812,8 +6920,8 @@ registry.registerPath({
   path: "/api/heartbeat-runs/{runId}/events",
   tags: ["runs"],
   summary: "Get events for a heartbeat run",
-  request: { params: z.object({ runId: z.string() }) },
-  responses: { 200: r.ok(), 401: r.unauthorized },
+  request: { params: z.object({ runId: heartbeatRunIdParamSchema }) },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
 });
 
 registry.registerPath({
@@ -6821,8 +6929,8 @@ registry.registerPath({
   path: "/api/heartbeat-runs/{runId}/log",
   tags: ["runs"],
   summary: "Get log for a heartbeat run",
-  request: { params: z.object({ runId: z.string() }) },
-  responses: { 200: r.ok(), 401: r.unauthorized },
+  request: { params: z.object({ runId: heartbeatRunIdParamSchema }) },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
 });
 
 registry.registerPath({
@@ -6830,8 +6938,8 @@ registry.registerPath({
   path: "/api/heartbeat-runs/{runId}/workspace-operations",
   tags: ["runs"],
   summary: "List workspace operations for a run",
-  request: { params: z.object({ runId: z.string() }) },
-  responses: { 200: r.ok(), 401: r.unauthorized },
+  request: { params: z.object({ runId: heartbeatRunIdParamSchema }) },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
 });
 
 registry.registerPath({
