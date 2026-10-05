@@ -64,10 +64,27 @@ export interface StatsThroughput {
   blockedCount: number;
 }
 
+/**
+ * How long tasks took to reach human approval. The clock is the same start-to-done
+ * clock as {@link StatsParentTaskDurations}, but the finish line is the first
+ * transition into `human_approved` recorded on the issue — so tasks whose terminal
+ * status is `human_approved` (and never reach `done`) are measured here even though
+ * they never show up in the done-task numbers.
+ */
+export interface StatsApprovalTiming {
+  /** parent tasks whose first approval transition fell inside the range */
+  approvedCount: number;
+  avgTimeToApprovedMs: number;
+  medianTimeToApprovedMs: number;
+  /** approved tasks with no usable start clock, excluded from the averages */
+  notMeasurableCount: number;
+}
+
 export interface StatsOverview {
   range: StatsRange;
   timeBurn: StatsTimeBurn;
   parentTasks: StatsParentTaskDurations;
+  approvals: StatsApprovalTiming;
   /** null when the range holds no measurable task */
   fastestTask: StatsTaskExtreme | null;
   slowestTask: StatsTaskExtreme | null;
@@ -89,6 +106,22 @@ export interface StatsProjectPerformance {
 
 export interface StatsByProject {
   projects: StatsProjectPerformance[];
+}
+
+/**
+ * Tokens, cost and run volume carried by one model name inside the requested range.
+ * Shape-compatible with {@link StatsTokenTotals} so tables can share their cells.
+ */
+export interface StatsModelPerformance extends StatsTokenTotals {
+  model: string;
+  provider: string;
+  /** distinct agents that ran this model in the range */
+  agentCount: number;
+}
+
+export interface StatsByModel {
+  /** one row per provider × model, largest total first */
+  models: StatsModelPerformance[];
 }
 
 /** Rolling lookback windows the token-usage view reports. */

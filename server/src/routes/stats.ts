@@ -65,6 +65,14 @@ export function statsRoutes(db: Db) {
     res.json(rows);
   });
 
+  router.get("/companies/:companyId/stats/by-model", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    if (!(await assertCompanyStatsReadAllowed(req, res, companyId))) return;
+    const query = parseStatsQuery(statsRangeQuerySchema, req.query);
+    res.json(await stats.byModel(companyId, query));
+  });
+
   router.get("/companies/:companyId/stats/token-usage", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);

@@ -4,7 +4,7 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { StatsByProject, StatsOverview, StatsTokenUsage } from "@paperclipai/shared";
+import type { StatsByModel, StatsByProject, StatsOverview, StatsTokenUsage } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Stats } from "./Stats";
 
@@ -12,6 +12,7 @@ const setBreadcrumbsMock = vi.hoisted(() => vi.fn());
 const statsApiMocks = vi.hoisted(() => ({
   overview: vi.fn(),
   byProject: vi.fn(),
+  byModel: vi.fn(),
   tokenUsage: vi.fn(),
 }));
 
@@ -49,6 +50,12 @@ function overviewFixture(overrides: Partial<StatsOverview> = {}): StatsOverview 
       medianDurationMs: 4 * HOUR,
       notMeasurableCount: 2,
     },
+    approvals: {
+      approvedCount: 3,
+      avgTimeToApprovedMs: 2 * HOUR,
+      medianTimeToApprovedMs: 90 * 60_000,
+      notMeasurableCount: 1,
+    },
     fastestTask: {
       issueId: "issue-fast",
       identifier: "GRA-10",
@@ -79,6 +86,7 @@ function overviewFixture(overrides: Partial<StatsOverview> = {}): StatsOverview 
 const emptyOverview: StatsOverview = overviewFixture({
   timeBurn: { totalMs: 0, avgMsPerDay: 0, previousAvgMsPerDay: 0, days: [] },
   parentTasks: { doneCount: 0, avgDurationMs: 0, medianDurationMs: 0, notMeasurableCount: 0 },
+  approvals: { approvedCount: 0, avgTimeToApprovedMs: 0, medianTimeToApprovedMs: 0, notMeasurableCount: 0 },
   fastestTask: null,
   slowestTask: null,
   throughput: { donePerDay: [], wipCount: 0, blockedCount: 0 },
@@ -95,6 +103,33 @@ const byProjectFixture: StatsByProject = {
       timeSpentMs: 20 * HOUR,
       spendCents: 12_00,
       costPerDoneTaskCents: 3_00,
+    },
+  ],
+};
+
+const byModelFixture: StatsByModel = {
+  models: [
+    {
+      model: "claude-opus-5",
+      provider: "anthropic",
+      inputTokens: 2_000_000,
+      cachedInputTokens: 100_000,
+      outputTokens: 200_000,
+      totalTokens: 2_300_000,
+      costCents: 15_50,
+      runCount: 2,
+      agentCount: 1,
+    },
+    {
+      model: "gpt-6",
+      provider: "openai",
+      inputTokens: 500_000,
+      cachedInputTokens: 0,
+      outputTokens: 50_000,
+      totalTokens: 550_000,
+      costCents: 4_00,
+      runCount: 1,
+      agentCount: 2,
     },
   ],
 };
@@ -164,6 +199,7 @@ describe("Stats page", () => {
     document.body.appendChild(container);
     statsApiMocks.overview.mockResolvedValue(overviewFixture());
     statsApiMocks.byProject.mockResolvedValue(byProjectFixture);
+    statsApiMocks.byModel.mockResolvedValue(byModelFixture);
     statsApiMocks.tokenUsage.mockResolvedValue(tokenUsageFixture);
   });
 
@@ -216,6 +252,14 @@ describe("Stats page", () => {
     expect(container.textContent).toContain("4h median · 7 done");
     expect(container.textContent).toContain("2 completed tasks have no usable clock");
 
+    // time to human approval
+    expect(container.textContent).toContain("Time to human approved");
+    expect(container.textContent).toContain("1h 30m median · 3 approved");
+    expect(container.textContent).toContain(
+      "How long tasks took to reach human approval, on the same start clock.",
+    );
+    expect(container.textContent).toContain("1 approved task has no usable clock");
+
     // throughput tiles
     expect(container.textContent).toContain("In progress");
     expect(container.textContent).toContain("Blocked");
@@ -231,12 +275,19 @@ describe("Stats page", () => {
     expect(container.textContent).toContain("Board UI");
     expect(container.textContent).toContain("$12.00");
 
+    // model performance rows, largest total first
+    expect(container.textContent).toContain("Model performance");
+    expect(container.textContent).toContain("claude-opus-5");
+    expect(container.textContent).toContain("gpt-6");
+    expect(container.textContent).toContain("$15.50");
+
     expect(setBreadcrumbsMock).toHaveBeenCalledWith([{ label: "Stats" }]);
   });
 
   it("shows the empty state, and does not crash, when the range holds no measurable work", async () => {
     statsApiMocks.overview.mockResolvedValue(emptyOverview);
     statsApiMocks.byProject.mockResolvedValue({ projects: [] });
+    statsApiMocks.byModel.mockResolvedValue({ models: [] });
 
     await render();
 
@@ -296,6 +347,7 @@ describe("Stats page", () => {
       await vi.waitFor(() => {
         expect(statsApiMocks.overview).toHaveBeenCalledTimes(2);
         expect(statsApiMocks.byProject).toHaveBeenCalledTimes(2);
+        expect(statsApiMocks.byModel).toHaveBeenCalledTimes(2);
       });
     });
     const [, nextFrom] = statsApiMocks.overview.mock.calls[1] as [string, string];

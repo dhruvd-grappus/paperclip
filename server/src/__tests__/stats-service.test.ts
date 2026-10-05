@@ -6,10 +6,12 @@ import {
   createDb,
   companies,
   agents,
+  activityLog,
   costEvents,
   heartbeatRuns,
   issues,
   projects,
+  statusDecisions,
 } from "@paperclipai/db";
 import { foldTokenUsageWindow, statsService } from "../services/stats.ts";
 import {
@@ -22,6 +24,7 @@ const OVERVIEW_FIXTURE = {
   range: { from: "2026-03-01T00:00:00.000Z", to: "2026-03-31T23:59:59.999Z" },
   timeBurn: { totalMs: 0, avgMsPerDay: 0, previousAvgMsPerDay: 0, days: [] },
   parentTasks: { doneCount: 0, avgDurationMs: 0, medianDurationMs: 0, notMeasurableCount: 0 },
+  approvals: { approvedCount: 0, avgTimeToApprovedMs: 0, medianTimeToApprovedMs: 0, notMeasurableCount: 0 },
   fastestTask: null,
   slowestTask: null,
   throughput: { donePerDay: [], wipCount: 0, blockedCount: 0 },
@@ -30,6 +33,7 @@ const OVERVIEW_FIXTURE = {
 const mockStatsService = vi.hoisted(() => ({
   overview: vi.fn(),
   byProject: vi.fn(),
+  byModel: vi.fn(),
   tokenUsage: vi.fn(),
 }));
 const mockAccessService = vi.hoisted(() => ({ decide: vi.fn() }));
@@ -73,6 +77,7 @@ describe("stats routes", () => {
     });
     mockStatsService.overview.mockResolvedValue(OVERVIEW_FIXTURE);
     mockStatsService.byProject.mockResolvedValue({ projects: [] });
+    mockStatsService.byModel.mockResolvedValue({ models: [] });
   });
 
   it("serves the overview and passes the parsed range and project through", async () => {
@@ -98,6 +103,20 @@ describe("stats routes", () => {
     expect(mockStatsService.byProject).toHaveBeenCalledWith("company-1", {
       from: undefined,
       to: undefined,
+      projectId: undefined,
+    });
+  });
+
+  it("serves the model table with the parsed range", async () => {
+    const res = await request(createApp()).get(
+      "/api/companies/company-1/stats/by-model?from=2026-03-01T00:00:00.000Z&to=2026-03-31T23:59:59.999Z",
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ models: [] });
+    expect(mockStatsService.byModel).toHaveBeenCalledWith("company-1", {
+      from: new Date("2026-03-01T00:00:00.000Z"),
+      to: new Date("2026-03-31T23:59:59.999Z"),
       projectId: undefined,
     });
   });
@@ -207,6 +226,8 @@ describeEmbeddedPostgres("stats service", () => {
   }, 90_000);
 
   afterEach(async () => {
+    await db.delete(activityLog);
+    await db.delete(statusDecisions);
     await db.delete(costEvents);
     await db.delete(heartbeatRuns);
     await db.delete(issues);
@@ -276,6 +297,22 @@ describeEmbeddedPostgres("stats service", () => {
         });
         return id;
       },
+      /** An `issue.updated` activity row recording a human sign-off. */
+      async approval(values: { issueId: string; approvedAt: Date; previousStatus?: string }) {
+        await db.insert(activityLog).values({
+          companyId,
+          actorType: "user",
+          actorId: "board-user",
+          action: "issue.updated",
+          entityType: "issue",
+          entityId: values.issueId,
+          details: {
+            status: "human_approved",
+            _previous: { status: values.previousStatus ?? "in_review" },
+          },
+          createdAt: values.approvedAt,
+        });
+      },
       async cost(values: {
         costCents: number;
         projectId?: string;
@@ -283,7 +320,10 @@ describeEmbeddedPostgres("stats service", () => {
         occurredAt: Date;
         accountLabel?: string | null;
         inputTokens?: number;
+        cachedInputTokens?: number;
         outputTokens?: number;
+        model?: string;
+        provider?: string;
         heartbeatRunId?: string;
       }) {
         await db.insert(costEvents).values({
@@ -292,13 +332,13 @@ describeEmbeddedPostgres("stats service", () => {
           projectId: values.projectId ?? null,
           issueId: values.issueId ?? null,
           heartbeatRunId: values.heartbeatRunId ?? null,
-          provider: "anthropic",
+          provider: values.provider ?? "anthropic",
           biller: "anthropic",
           billingType: "metered_api",
-          model: "claude-opus-5",
+          model: values.model ?? "claude-opus-5",
           accountLabel: values.accountLabel ?? null,
           inputTokens: values.inputTokens ?? 0,
-          cachedInputTokens: 0,
+          cachedInputTokens: values.cachedInputTokens ?? 0,
           outputTokens: values.outputTokens ?? 0,
           costCents: values.costCents,
           occurredAt: values.occurredAt,
@@ -597,5 +637,152 @@ describeEmbeddedPostgres("stats service", () => {
     expect(overview.slowestTask).toMatchObject({ issueId: mineIssue, durationMs: 3_600_000 });
     expect(overview.timeBurn.totalMs).toBe(3_600_000);
     expect(overview.throughput.wipCount).toBe(0);
+  });
+
+  it("measures time to human approval, ignoring children, hidden, out-of-range and clock-less tasks", async () => {
+    const company = await seedCompany("Approvals");
+
+    const twoHours = await company.issue({
+      title: "Approved in two hours",
+      status: "human_approved",
+      startedAt: new Date("2026-03-02T00:00:00.000Z"),
+    });
+    await company.approval({ issueId: twoHours, approvedAt: new Date("2026-03-02T02:00:00.000Z"), previousStatus: "in_review" });
+    // a later approval event (approve → reopen → approve again) must not move the first clock
+    await company.approval({ issueId: twoHours, approvedAt: new Date("2026-03-03T10:00:00.000Z"), previousStatus: "in_review" });
+
+    const threeHours = await company.issue({
+      title: "Approved in three hours",
+      status: "human_approved",
+      startedAt: new Date("2026-03-04T00:00:00.000Z"),
+    });
+    await company.approval({ issueId: threeHours, approvedAt: new Date("2026-03-04T03:00:00.000Z") });
+
+    // task that was approved and then went on to done still counts as approved
+    const approvedThenDone = await company.issue({
+      title: "Approved, then done",
+      status: "done",
+      startedAt: new Date("2026-03-05T00:00:00.000Z"),
+      completedAt: new Date("2026-03-05T05:00:00.000Z"),
+    });
+    await company.approval({ issueId: approvedThenDone, approvedAt: new Date("2026-03-05T04:00:00.000Z") });
+
+    // no start clock → approved but not measurable
+    const clockless = await company.issue({
+      title: "Approved without a start clock",
+      status: "human_approved",
+      startedAt: null,
+    });
+    await company.approval({ issueId: clockless, approvedAt: new Date("2026-03-06T01:00:00.000Z") });
+
+    // child of a task is excluded, like every other per-task number
+    const child = await company.issue({
+      title: "Approved child",
+      parentId: twoHours,
+      startedAt: new Date("2026-03-06T00:00:00.000Z"),
+    });
+    await company.approval({ issueId: child, approvedAt: new Date("2026-03-06T01:00:00.000Z") });
+
+    // hidden task is excluded
+    const hidden = await company.issue({
+      title: "Hidden then approved",
+      startedAt: new Date("2026-03-07T00:00:00.000Z"),
+      hiddenAt: new Date("2026-03-07T01:00:00.000Z"),
+    });
+    await company.approval({ issueId: hidden, approvedAt: new Date("2026-03-07T01:30:00.000Z") });
+
+    // approval event outside the range is excluded entirely
+    const earlyApproval = await company.issue({
+      title: "Approved before the range",
+      startedAt: new Date("2026-02-20T00:00:00.000Z"),
+    });
+    await company.approval({ issueId: earlyApproval, approvedAt: new Date("2026-02-20T02:00:00.000Z") });
+
+    const overview = await stats.overview(company.companyId, RANGE);
+
+    expect(overview.approvals).toEqual({
+      approvedCount: 4,
+      avgTimeToApprovedMs: 10_800_000, // (2h + 3h + 4h) / 3
+      medianTimeToApprovedMs: 10_800_000,
+      notMeasurableCount: 1,
+    });
+  });
+
+  it("returns zero approvals for a range with none", async () => {
+    const company = await seedCompany("Quiet approvals");
+    const approved = await company.issue({
+      title: "Approved in March",
+      status: "human_approved",
+      startedAt: new Date("2026-03-02T00:00:00.000Z"),
+    });
+    await company.approval({ issueId: approved, approvedAt: new Date("2026-03-02T02:00:00.000Z") });
+
+    const overview = await stats.overview(company.companyId, {
+      from: new Date("2026-04-01T00:00:00.000Z"),
+      to: new Date("2026-04-03T23:59:59.999Z"),
+    });
+
+    expect(overview.approvals).toEqual({
+      approvedCount: 0,
+      avgTimeToApprovedMs: 0,
+      medianTimeToApprovedMs: 0,
+      notMeasurableCount: 0,
+    });
+  });
+
+  it("breaks token usage and spend down per model name, ordered by load", async () => {
+    const company = await seedCompany("Models");
+    const other = await seedCompany("Elsewhere-models");
+
+    const runA = await company.run({
+      startedAt: new Date("2026-03-02T00:00:00.000Z"),
+      finishedAt: new Date("2026-03-02T01:00:00.000Z"),
+    });
+    const runB = await company.run({
+      startedAt: new Date("2026-03-04T00:00:00.000Z"),
+      finishedAt: new Date("2026-03-04T01:00:00.000Z"),
+    });
+
+    // two events on one model share a row; only the second links to a run
+    await company.cost({ costCents: 400, occurredAt: new Date("2026-03-02T01:00:00.000Z"), inputTokens: 100, outputTokens: 10, heartbeatRunId: runA });
+    await company.cost({ costCents: 100, occurredAt: new Date("2026-03-03T01:00:00.000Z"), inputTokens: 50, cachedInputTokens: 5, outputTokens: 10 });
+    // a second model, heavier load and cost, served by a different provider
+    await company.cost({ costCents: 900, occurredAt: new Date("2026-03-04T01:00:00.000Z"), inputTokens: 300, outputTokens: 30, model: "gpt-6", provider: "openai", heartbeatRunId: runB });
+    // outside the range → excluded
+    await company.cost({ costCents: 5_000, occurredAt: new Date("2026-02-15T01:00:00.000Z"), inputTokens: 9_000 });
+    // another company → excluded
+    await other.cost({ costCents: 700, occurredAt: new Date("2026-03-02T01:00:00.000Z"), inputTokens: 77 });
+    // no events at all for one quiet model name
+
+    const { models } = await stats.byModel(company.companyId, RANGE);
+
+    expect(models).toEqual([
+      {
+        model: "gpt-6",
+        provider: "openai",
+        inputTokens: 300,
+        cachedInputTokens: 0,
+        outputTokens: 30,
+        totalTokens: 330,
+        costCents: 900,
+        runCount: 1,
+        agentCount: 1,
+      },
+      {
+        model: "claude-opus-5",
+        provider: "anthropic",
+        inputTokens: 150,
+        cachedInputTokens: 5,
+        outputTokens: 20,
+        totalTokens: 175,
+        costCents: 500,
+        runCount: 1,
+        agentCount: 1,
+      },
+    ]);
+
+    const empty = await stats.byModel(other.companyId, RANGE);
+    expect(empty.models).toHaveLength(1);
+    expect(empty.models[0]).toMatchObject({ model: "claude-opus-5", totalTokens: 77, costCents: 700 });
   });
 });

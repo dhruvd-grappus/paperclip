@@ -1,9 +1,20 @@
 import { sql, type SQL } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import type { Db } from "@paperclipai/db";
-import { agents, costEvents, heartbeatRuns, issues, projects } from "@paperclipai/db";
+import {
+  activityLog,
+  agents,
+  costEvents,
+  heartbeatRuns,
+  issues,
+  projects,
+  statusDecisions,
+} from "@paperclipai/db";
 import type {
+  StatsApprovalTiming,
+  StatsByModel,
   StatsByProject,
+  StatsModelPerformance,
   StatsOverview,
   StatsProjectPerformance,
   StatsTaskExtreme,
@@ -344,6 +355,77 @@ export function statsService(db: Db) {
     return { fastestTask: pick("fastest"), slowestTask: pick("slowest") };
   }
 
+  /**
+   * Time to human approval, measured from the task's start clock to the first
+   * transition into `human_approved`. Sources: the activity log rows the issue
+   * update path writes for every status change (board/user sign-offs), plus
+   * applied status decisions for the flows that record them separately — the
+   * earliest event per issue wins.
+   */
+  async function approvalTimings(companyId: string, range: ResolvedStatsRange, projectId?: string) {
+    const statement = sql`
+      with approved_events as (
+        select ${activityLog.entityId} as "issueId", ${activityLog.createdAt} as "approvedAt"
+        from ${activityLog}
+        where ${activityLog.companyId} = ${companyId}
+          and ${activityLog.entityType} = 'issue'
+          and ${activityLog.action} = 'issue.updated'
+          and ${activityLog.details} ->> 'status' = 'human_approved'
+          and ${activityLog.details} -> '_previous' ->> 'status' is distinct from 'human_approved'
+          and ${activityLog.createdAt} >= ${ts(range.from)}
+          and ${activityLog.createdAt} <= ${ts(range.to)}
+        union all
+        select ${statusDecisions.issueId}::text as "issueId", ${statusDecisions.appliedAt} as "approvedAt"
+        from ${statusDecisions}
+        where ${statusDecisions.companyId} = ${companyId}
+          and ${statusDecisions.toStatus} = 'human_approved'
+          and ${statusDecisions.appliedAt} is not null
+          and ${statusDecisions.appliedAt} >= ${ts(range.from)}
+          and ${statusDecisions.appliedAt} <= ${ts(range.to)}
+      ),
+      approved as (
+        select "issueId", min("approvedAt") as "approvedAt"
+        from approved_events
+        group by "issueId"
+      ),
+      tasks as (
+        select
+          case
+            when ${issues.startedAt} is not null
+             and approved."approvedAt" >= ${issues.startedAt}
+            then extract(epoch from (approved."approvedAt" - ${issues.startedAt})) * 1000
+          end as ms
+        from approved
+        join ${issues} on ${issues.companyId} = ${companyId}
+          and ${issues.id}::text = approved."issueId"
+        where ${visibleIssues()}
+          and ${issues.parentId} is null${projectFilter(projectId)}
+      )
+      select count(*)::int as "approvedCount",
+             count(tasks.ms)::int as "measurableCount",
+             coalesce(avg(tasks.ms) filter (where tasks.ms is not null), 0)::double precision as "avgTimeToApprovedMs",
+             coalesce(
+               percentile_cont(0.5) within group (order by tasks.ms) filter (where tasks.ms is not null),
+               0
+             )::double precision as "medianTimeToApprovedMs"
+      from tasks
+    `;
+    const row = rowsOf<{
+      approvedCount: unknown;
+      measurableCount: unknown;
+      avgTimeToApprovedMs: unknown;
+      medianTimeToApprovedMs: unknown;
+    }>(await db.execute(statement))[0];
+    const approvedCount = num(row?.approvedCount);
+    const result: StatsApprovalTiming = {
+      approvedCount,
+      avgTimeToApprovedMs: roundMs(row?.avgTimeToApprovedMs),
+      medianTimeToApprovedMs: roundMs(row?.medianTimeToApprovedMs),
+      notMeasurableCount: approvedCount - num(row?.measurableCount),
+    };
+    return result;
+  }
+
   async function throughput(companyId: string, range: ResolvedStatsRange, projectId?: string) {
     const perDaySql = sql`
       with days as (${dayScaffold(range)}),
@@ -435,9 +517,10 @@ export function statsService(db: Db) {
 
     overview: async (companyId: string, options: StatsOverviewInput = {}): Promise<StatsOverview> => {
       const range = resolveStatsRange(options);
-      const [burn, parentTasks, extremes, flow] = await Promise.all([
+      const [burn, parentTasks, approvals, extremes, flow] = await Promise.all([
         timeBurn(companyId, range, options.projectId),
         parentTaskDurations(companyId, range, options.projectId),
+        approvalTimings(companyId, range, options.projectId),
         extremeTasks(companyId, range, options.projectId),
         throughput(companyId, range, options.projectId),
       ]);
@@ -445,6 +528,7 @@ export function statsService(db: Db) {
         range: { from: range.from.toISOString(), to: range.to.toISOString() },
         timeBurn: burn,
         parentTasks,
+        approvals,
         fastestTask: extremes.fastestTask,
         slowestTask: extremes.slowestTask,
         throughput: flow,
@@ -535,6 +619,65 @@ export function statsService(db: Db) {
         costPerDoneTaskCents: num(row.costPerDoneTaskCents),
       }));
       return { projects: projectRows };
+    },
+
+    /**
+     * Cost events grouped by provider × model inside the range, largest total
+     * token load first. Tokens-plus-cost per model: the "performance per model
+     * name" view the stats page reports.
+     */
+    byModel: async (companyId: string, options: StatsRangeInput & { projectId?: string } = {}): Promise<StatsByModel> => {
+      const range = resolveStatsRange(options);
+      const projectId = options.projectId;
+      const costIssues = alias(issues, "cost_issues");
+      // cost_events carries a project on most rows; where it does not, the issue
+      // the event was booked against does.
+      const modelProjectId = sql`coalesce(${costEvents.projectId}, ${costIssues.projectId})`;
+      const projectJoin = projectId
+        ? sql`left join ${issues} ${costIssues}
+              on ${costIssues.companyId} = ${companyId}
+             and ${costIssues.id} = ${costEvents.issueId}`
+        : sql.empty();
+      const projectCondition = projectId ? sql` and ${modelProjectId} = ${projectId}` : sql.empty();
+
+      const statement = sql`
+        select ${costEvents.model} as model,
+               ${costEvents.provider} as provider,
+               coalesce(sum(${costEvents.inputTokens}), 0)::bigint as "inputTokens",
+               coalesce(sum(${costEvents.cachedInputTokens}), 0)::bigint as "cachedInputTokens",
+               coalesce(sum(${costEvents.outputTokens}), 0)::bigint as "outputTokens",
+               coalesce(sum(${costEvents.costCents}), 0)::bigint as "costCents",
+               count(distinct ${costEvents.heartbeatRunId})::int as "runCount",
+               count(distinct ${costEvents.agentId})::int as "agentCount"
+        from ${costEvents}
+        ${projectJoin}
+        where ${costEvents.companyId} = ${companyId}
+          and ${costEvents.occurredAt} >= ${ts(range.from)}
+          and ${costEvents.occurredAt} <= ${ts(range.to)}${projectCondition}
+        group by ${costEvents.model}, ${costEvents.provider}
+      `;
+
+      const rows = rowsOf<Record<string, unknown>>(await db.execute(statement));
+      const models: StatsModelPerformance[] = rows.map((row) => ({
+        model: String(row.model ?? "unknown"),
+        provider: String(row.provider ?? "unknown"),
+        inputTokens: num(row.inputTokens),
+        cachedInputTokens: num(row.cachedInputTokens),
+        outputTokens: num(row.outputTokens),
+        totalTokens: num(row.inputTokens) + num(row.cachedInputTokens) + num(row.outputTokens),
+        costCents: num(row.costCents),
+        runCount: num(row.runCount),
+        agentCount: num(row.agentCount),
+      }));
+      models.sort(
+        (a, b) =>
+          b.totalTokens - a.totalTokens ||
+          b.costCents - a.costCents ||
+          b.runCount - a.runCount ||
+          a.model.localeCompare(b.model) ||
+          a.provider.localeCompare(b.provider),
+      );
+      return { models };
     },
   };
 }

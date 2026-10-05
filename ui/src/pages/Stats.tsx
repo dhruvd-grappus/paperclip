@@ -2,6 +2,8 @@ import { Fragment, useEffect, useState, type ComponentType } from "react";
 import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import type {
+  StatsByModel,
+  StatsModelPerformance,
   StatsTaskExtreme,
   StatsTimeBurnDay,
   StatsThroughputDay,
@@ -10,7 +12,19 @@ import type {
   StatsTokenUsage,
   StatsTokenWindowKey,
 } from "@paperclipai/shared";
-import { Activity, BarChart3, CircleDashed, Cloud, Gauge, Hourglass, Rabbit, Timer, Turtle } from "lucide-react";
+import {
+  Activity,
+  BarChart3,
+  CircleDashed,
+  Cloud,
+  Cpu,
+  Gauge,
+  Hourglass,
+  Rabbit,
+  Timer,
+  Turtle,
+  UserCheck,
+} from "lucide-react";
 import { statsApi } from "../api/stats";
 import { ChartCard } from "../components/ActivityCharts";
 import { cn } from "@/lib/utils";
@@ -50,6 +64,12 @@ const COPY = {
     label: "Average per task",
     note: "Measured from the moment a task starts to the moment it is done, so it excludes time spent waiting in the backlog.",
     notMeasurable: (n: number) => `${n} completed ${n === 1 ? "task has" : "tasks have"} no usable clock and sit outside these averages.`,
+  },
+  approvals: {
+    label: "Time to human approved",
+    note: "How long tasks took to reach human approval, on the same start clock. Tasks that stop at approval never reach the done numbers above.",
+    notMeasurable: (n: number) =>
+      `${n} approved ${n === 1 ? "task has" : "tasks have"} no usable clock and sit outside these averages.`,
   },
   throughput: {
     doneChartTitle: "Tasks done per day",
@@ -98,6 +118,22 @@ const COPY = {
       timeSpent: "Agent time",
       spend: "Spend",
       costPerTask: "Cost / task",
+    },
+  },
+  models: {
+    title: "Model performance",
+    description: "Tokens, spend and run volume per model that served agent work in this range.",
+    empty: "No model usage recorded in this range.",
+    columns: {
+      model: "Model",
+      input: "Input",
+      cached: "Cached",
+      output: "Output",
+      total: "Total",
+      share: "Share",
+      runs: "Runs",
+      spend: "Spend",
+      agents: "Agents",
     },
   },
 } as const;
@@ -385,6 +421,63 @@ export function TokenUsageByAccount({ usage }: { usage: StatsTokenUsage }) {
   );
 }
 
+/**
+ * Tokens and spend carried by each model name over the selected range. Shares the
+ * totals-vocabulary token shape with the cloud-account tables, so the same cells
+ * render both.
+ */
+export function ModelPerformanceTable({ data }: { data: StatsByModel }) {
+  const models = data.models;
+  const denominator = models.reduce((sum, model) => sum + model.totalTokens, 0);
+  const c = COPY.models.columns;
+  return (
+    <Card>
+      <CardHeader className="px-5 pt-5 pb-2">
+        <CardTitle className="flex items-center gap-2 text-base">
+          <Cpu className="h-4 w-4 text-muted-foreground" />
+          {COPY.models.title}
+        </CardTitle>
+        <CardDescription>{COPY.models.description}</CardDescription>
+      </CardHeader>
+      <CardContent className="px-5 pb-5 pt-2">
+        <div className="overflow-x-auto">
+          {models.length === 0 ? (
+            <p className="text-sm text-muted-foreground">{COPY.models.empty}</p>
+          ) : (
+            <table className="w-full min-w-(--sz-44rem) text-left text-sm" aria-label={c.model}>
+              <thead>
+                <tr className="border-b border-border text-muted-foreground">
+                  <th className="px-3 py-2 font-medium">{c.model}</th>
+                  <th className="px-3 py-2 text-right font-medium">{c.input}</th>
+                  <th className="px-3 py-2 text-right font-medium">{c.cached}</th>
+                  <th className="px-3 py-2 text-right font-medium">{c.output}</th>
+                  <th className="px-3 py-2 text-right font-medium">{c.total}</th>
+                  <th className="px-3 py-2 text-right font-medium">{c.share}</th>
+                  <th className="px-3 py-2 text-right font-medium">{c.runs}</th>
+                  <th className="px-3 py-2 text-right font-medium">{c.spend}</th>
+                  <th className="px-3 py-2 text-right font-medium">{c.agents}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {models.map((model) => (
+                  <tr key={`${model.provider}:${model.model}`} className="border-b border-border last:border-b-0">
+                    <td className="px-3 py-3 font-medium">
+                      {model.model}
+                      <span className="ml-2 text-xs font-normal text-muted-foreground">{model.provider}</span>
+                    </td>
+                    <TokenTotalsCells row={model} denominator={denominator} />
+                    <td className="px-3 py-3 text-right tabular-nums">{model.agentCount}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
 export function Stats() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
@@ -429,6 +522,17 @@ export function Stats() {
     staleTime: 30_000,
   });
 
+  const {
+    data: byModel,
+    isLoading: byModelLoading,
+    error: byModelError,
+  } = useQuery({
+    queryKey: queryKeys.stats.byModel(companyId, from || undefined, to || undefined),
+    queryFn: () => statsApi.byModel(companyId, from || undefined, to || undefined),
+    enabled,
+    staleTime: 30_000,
+  });
+
   const { data: tokenUsage } = useQuery({
     queryKey: queryKeys.stats.tokenUsage(companyId),
     queryFn: () => statsApi.tokenUsage(companyId),
@@ -442,20 +546,23 @@ export function Stats() {
   }
 
   const showCustomPrompt = preset === "custom" && !customReady;
-  const loading = (overviewLoading || byProjectLoading) && enabled;
-  const error = overviewError ?? byProjectError;
+  const loading = (overviewLoading || byProjectLoading || byModelLoading) && enabled;
+  const error = overviewError ?? byProjectError ?? byModelError;
 
   const burnDays: StatsTimeBurnDay[] = overview?.timeBurn.days ?? [];
   const doneDays: StatsThroughputDay[] = overview?.throughput.donePerDay ?? [];
   const projects = byProject?.projects ?? [];
+  const models = byModel?.models ?? [];
   const parentTasks = overview?.parentTasks;
+  const approvals = overview?.approvals;
   const isEmpty =
     !!overview &&
     overview.timeBurn.totalMs === 0 &&
     (parentTasks?.doneCount ?? 0) === 0 &&
     overview.throughput.wipCount === 0 &&
     overview.throughput.blockedCount === 0 &&
-    projects.length === 0;
+    projects.length === 0 &&
+    models.length === 0;
 
   return (
     <div className="space-y-6">
@@ -513,7 +620,7 @@ export function Stats() {
         </>
       ) : (
         <>
-          <div className="grid gap-3 lg:grid-cols-4">
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
             <MetricTile
               label={COPY.burn.label}
               value={formatDurationMs(overview?.timeBurn.avgMsPerDay ?? 0)}
@@ -525,6 +632,12 @@ export function Stats() {
               value={formatDurationMs(parentTasks?.avgDurationMs ?? 0)}
               subtitle={`${formatDurationMs(parentTasks?.medianDurationMs ?? 0)} median · ${parentTasks?.doneCount ?? 0} done`}
               icon={Timer}
+            />
+            <MetricTile
+              label={COPY.approvals.label}
+              value={formatDurationMs(approvals?.avgTimeToApprovedMs ?? 0)}
+              subtitle={`${formatDurationMs(approvals?.medianTimeToApprovedMs ?? 0)} median · ${approvals?.approvedCount ?? 0} approved`}
+              icon={UserCheck}
             />
             <MetricTile
               label={COPY.throughput.wipLabel}
@@ -549,6 +662,16 @@ export function Stats() {
                 : ""}
             </span>
           </p>
+
+          {approvals && approvals.approvedCount > 0 ? (
+            <p className="flex items-start gap-1.5 text-xs text-muted-foreground">
+              <Hourglass className="mt-0.5 h-3 w-3 shrink-0" />
+              <span>
+                {COPY.approvals.note}
+                {approvals.notMeasurableCount > 0 ? ` ${COPY.approvals.notMeasurable(approvals.notMeasurableCount)}` : ""}
+              </span>
+            </p>
+          ) : null}
 
           <div className="grid gap-4 xl:grid-cols-2 [&>*]:min-w-0">
             <ChartCard title={COPY.burn.chartTitle} subtitle={COPY.burn.chartSubtitle}>
@@ -634,6 +757,8 @@ export function Stats() {
               </div>
             </CardContent>
           </Card>
+
+          {byModel ? <ModelPerformanceTable data={byModel} /> : null}
 
           {tokenUsage ? <TokenUsageByAccount usage={tokenUsage} /> : null}
         </>
