@@ -17,10 +17,13 @@ import {
   environmentLeases,
   environments,
   heartbeatRuns,
+  heartbeatRunEvents,
   issueComments,
   issueInboxArchives,
   issueRecoveryActions,
   issueRelations,
+  issueQuestionResponseDeliveries,
+  issueThreadInteractions,
   issues,
   toolApplications,
   toolConnections,
@@ -32,7 +35,10 @@ import {
 import { errorHandler } from "../middleware/index.js";
 import { issueRoutes } from "../routes/issues.js";
 import { buildPaperclipWakePayload, heartbeatService } from "../services/heartbeat.js";
-import { deliverReconciledExecutions } from "../services/execution-recovery-resolution.js";
+import {
+  deliverReconciledExecutions,
+  markExecutionReconciliation,
+} from "../services/execution-recovery-resolution.js";
 import { issueRecoveryActionService } from "../services/issue-recovery-actions.js";
 import { recoveryService } from "../services/recovery/service.js";
 import { noticeMetadataReferencesRecoveryAction } from "../services/recovery/successful-run-handoff.js";
@@ -144,6 +150,8 @@ describeEmbeddedPostgres("issue recovery actions", () => {
 
   afterEach(async () => {
     await db.delete(issueRecoveryActions);
+    await db.delete(issueQuestionResponseDeliveries);
+    await db.delete(issueThreadInteractions);
     await db.delete(chatConversations);
     await db.delete(chatEndpointResources);
     await db.delete(chatEndpoints);
@@ -152,6 +160,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     await db.delete(issueComments);
     await db.delete(environmentLeases);
     await db.delete(activityLog);
+    await db.delete(heartbeatRunEvents);
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
     await db.delete(environments);
@@ -1739,6 +1748,107 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     };
   }
 
+  it("delegates reconciled wake ownership to a pending answered-card delivery", async () => {
+    const { action, companyId, coderId, sourceIssueId, previousRunId } =
+      await seedReconciledDelivery();
+    const interactionId = randomUUID();
+    const failedRunId = randomUUID();
+    await db.insert(issueThreadInteractions).values({
+      id: interactionId,
+      companyId,
+      issueId: sourceIssueId,
+      kind: "ask_user_questions",
+      status: "answered",
+      sourceRunId: previousRunId,
+      createdByAgentId: coderId,
+      payload: { version: 1, questions: [] },
+      result: { version: 1, answers: [] },
+      resolvedAt: new Date(),
+    });
+    await db.insert(issueQuestionResponseDeliveries).values({
+      companyId,
+      issueId: sourceIssueId,
+      interactionId,
+      sourceRunId: previousRunId,
+      correlationId: `question-response:${interactionId}`,
+      payloadSha256: "a".repeat(64),
+      status: "pending",
+    });
+    await db.insert(heartbeatRuns).values({
+      id: failedRunId,
+      companyId,
+      agentId: coderId,
+      invocationSource: "automation",
+      status: "failed",
+      runtimeMode: "legacy",
+      errorCode: "setup_failed",
+      error: "reviewed_chat_execution_binding_not_authorized",
+      contextSnapshot: {
+        issueId: sourceIssueId,
+        source: "issue.interaction.respond",
+        externalChatContinuation: true,
+        interactionKind: "ask_user_questions",
+        interactionStatus: "answered",
+        interactionId,
+        sourceRunId: previousRunId,
+      },
+    });
+    await db.insert(heartbeatRunEvents).values({
+      companyId,
+      agentId: coderId,
+      runId: failedRunId,
+      seq: 1,
+      eventType: "error",
+      stream: "system",
+      level: "error",
+      message: "reviewed_chat_execution_binding_not_authorized",
+    });
+    const decision = {
+      runId: failedRunId,
+      providerStopped: true as const,
+      actionOutcome: "not_performed" as const,
+      outcomeEvidence: "The provider did not start for this test run.",
+    };
+    const reconciliationWake = vi.fn();
+
+    await markExecutionReconciliation(
+      db,
+      {
+        ...action,
+        evidence: { ...action.evidence, runId: failedRunId },
+      },
+      decision,
+      "board",
+      {
+      kind: "question_response_delivery",
+      interactionId,
+      },
+    );
+    await deliverReconciledExecutions(
+      db,
+      reconciliationWake as never,
+    );
+    expect(reconciliationWake).not.toHaveBeenCalled();
+
+    const [resolved] = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.id, action.id));
+    expect(resolved!.evidence).toMatchObject({
+      continuationDelivery: "delegated",
+      continuationDeliveryOwner: {
+        kind: "question_response_delivery",
+        interactionId,
+      },
+    });
+    await expect(
+      db
+        .select()
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.idempotencyKey, `execution-reconciliation:${action.id}`)),
+    ).resolves.toEqual([]);
+  });
+
   it("delivers a reconciled execution once across concurrent sweeps without a deferred duplicate", async () => {
     const { action, heartbeat } = await seedReconciledDelivery();
     let entered = 0;
@@ -2070,6 +2180,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     const connectionId = randomUUID();
     const failedRunId = randomUUID();
     const interactionId = randomUUID();
+    const sourceRunId = randomUUID();
     await db
       .update(issues)
       .set({ status: "blocked", assigneeAgentId: coderId })
@@ -2126,6 +2237,66 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       externalLabel: "#mobile-work",
       state: "active",
     });
+    await db.insert(heartbeatRuns).values({
+      id: sourceRunId,
+      companyId,
+      agentId: coderId,
+      invocationSource: "automation",
+      status: "succeeded",
+      runtimeMode: "legacy",
+      contextSnapshot: { issueId: sourceIssueId, source: "chat:slack" },
+    });
+    await db.insert(issueThreadInteractions).values({
+      id: interactionId,
+      companyId,
+      issueId: sourceIssueId,
+      kind: "ask_user_questions",
+      status: "answered",
+      sourceRunId,
+      createdByAgentId: coderId,
+      resolvedByUserId: "board-user",
+      payload: { version: 1, questions: [] },
+      result: { version: 1, answers: [] },
+      resolvedAt: new Date(),
+    });
+    await db.insert(issueQuestionResponseDeliveries).values({
+      companyId,
+      issueId: sourceIssueId,
+      interactionId,
+      sourceRunId,
+      correlationId: `question-response:${interactionId}`,
+      payloadSha256: "a".repeat(64),
+      status: "pending",
+    });
+    await db.insert(heartbeatRuns).values({
+      id: failedRunId,
+      companyId,
+      agentId: coderId,
+      invocationSource: "automation",
+      status: "failed",
+      runtimeMode: "legacy",
+      errorCode: "setup_failed",
+      error: "reviewed_chat_execution_binding_not_authorized",
+      contextSnapshot: {
+        issueId: sourceIssueId,
+        source: "issue.interaction.respond",
+        externalChatContinuation: true,
+        interactionKind: "ask_user_questions",
+        interactionStatus: "answered",
+        interactionId,
+        sourceRunId,
+      },
+    });
+    await db.insert(heartbeatRunEvents).values({
+      companyId,
+      agentId: coderId,
+      runId: failedRunId,
+      seq: 1,
+      eventType: "error",
+      stream: "system",
+      level: "error",
+      message: "reviewed_chat_execution_binding_not_authorized",
+    });
     const action = await issueRecoveryActionService(db).upsertSourceScoped({
       companyId,
       sourceIssueId,
@@ -2133,9 +2304,9 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       ownerType: "board",
       previousOwnerAgentId: coderId,
       returnOwnerAgentId: coderId,
-      cause: "stranded_assigned_issue",
+      cause: "legacy_execution_requires_reconciliation",
       fingerprint: "pre-provider-question-response",
-      evidence: { latestRunId: failedRunId },
+      evidence: { runId: failedRunId, latestRunId: failedRunId },
       nextAction: "Retry the answered question response.",
       wakePolicy: { type: "board_escalation" },
     });
@@ -2147,6 +2318,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     const prepareRawChatRetry = vi.fn();
     const processRawChatRetry = vi.fn();
     const enqueueRecoveryActionWakeup = vi.fn();
+    const reconciliationWake = vi.fn();
     const resolved = await request(
       createApp(
         { type: "board", source: "local_implicit", userId: "board-user" },
@@ -2169,6 +2341,12 @@ describeEmbeddedPostgres("issue recovery actions", () => {
         outcome: "restored",
         sourceIssueStatus: "todo",
         resolutionNote: "Retry the already-answered Slack card.",
+        executionReconciliation: {
+          runId: failedRunId,
+          providerStopped: true,
+          actionOutcome: "not_performed",
+          outcomeEvidence: "The reviewed-chat gate stopped the run before provider work.",
+        },
       })
       .expect((response) => {
         if (response.status !== 200)
@@ -2193,6 +2371,22 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     expect(prepareRawChatRetry).not.toHaveBeenCalled();
     expect(processRawChatRetry).not.toHaveBeenCalled();
     expect(enqueueRecoveryActionWakeup).not.toHaveBeenCalled();
+    const [resolvedAction] = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.id, action.id));
+    expect(resolvedAction!.evidence).toMatchObject({
+      continuationDelivery: "delegated",
+      continuationDeliveryOwner: {
+        kind: "question_response_delivery",
+        interactionId,
+      },
+    });
+    await deliverReconciledExecutions(
+      db,
+      reconciliationWake as never,
+    );
+    expect(reconciliationWake).not.toHaveBeenCalled();
   });
 
   it("does not enqueue a restored wake when todo status and assignee are unchanged", async () => {

@@ -9333,16 +9333,22 @@ export function issueRoutes(
         }
 
         if (executionReconciliation) {
-          // The authorized chat retry is the sole durable delivery owner.
-          // Never also enqueue a generic successor that lacks chat provenance.
+          // A chat retry is the sole durable delivery owner. Never also enqueue
+          // a generic successor without the answered chat provenance.
+          const deliveryOwner = chatRetry
+            ? { kind: "chat_failed_run_retry" as const, actionId: chatRetry.actionId }
+            : questionResponseRetryInteractionId
+              ? {
+                  kind: "question_response_delivery" as const,
+                  interactionId: questionResponseRetryInteractionId,
+                }
+              : undefined;
           await markExecutionReconciliation(
             tx as unknown as Db,
             activeRecoveryAction,
             executionReconciliation,
             actor.actorId,
-            chatRetry
-              ? { kind: "chat_failed_run_retry", actionId: chatRetry.actionId }
-              : undefined,
+            deliveryOwner,
           );
         }
         let issue = lockedIssue;
