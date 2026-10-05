@@ -24,6 +24,7 @@ import {
   closeRegisteredClients,
   createDb,
   heartbeatRuns,
+  heartbeatRunEvents,
   issueComments,
   issueAttachments,
   issueApprovals,
@@ -61,7 +62,10 @@ import {
   resolveExternalChatResponseWaitAuthorization,
 } from "./chat-attachment-reuse.js";
 import { attestReviewedExternalChatRun, buildPaperclipWakePayload } from "../heartbeat.js";
-import { questionResponseDeliveryValues } from "../question-response-delivery.js";
+import {
+  questionResponseDeliveryService,
+  questionResponseDeliveryValues,
+} from "../question-response-delivery.js";
 import { resolveExternalChatQuestionResponse } from "./external-chat-question-response.js";
 import { materializeExternalChatQuestionResponseInput } from "./external-chat-question-response-input.js";
 import * as nativeInteractionBridge from "./native-interaction-bridge.js";
@@ -1858,6 +1862,363 @@ describe("native external-chat response wait", () => {
         .from(issueThreadInteractions)
         .where(eq(issueThreadInteractions.id, fixture.gate.id)),
     ).toEqual([expect.objectContaining({ status: "pending" })]);
+  });
+
+  it("accepts an answered Slack card from a legacy source run with harness checkout proof", async () => {
+    const fixture = await seedAnsweredChatTurn("slack", undefined, "form");
+    await db
+      .update(heartbeatRuns)
+      .set({ runtimeMode: "legacy", nativeIssueId: null })
+      .where(eq(heartbeatRuns.id, fixture.sourceRunId));
+    const [sourceRun] = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, fixture.sourceRunId));
+    expect(sourceRun?.contextSnapshot).toMatchObject({
+      paperclipHarnessCheckedOut: true,
+      paperclipWake: {
+        externalChatProvider: "slack",
+        checkedOutByHarness: true,
+      },
+    });
+
+    await attestAnswer(fixture);
+  });
+
+  it("rejects a legacy Slack answer when source checkout proof is missing", async () => {
+    const fixture = await seedAnsweredChatTurn("slack", undefined, "form");
+    const [sourceRun] = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, fixture.sourceRunId));
+    const sourceContext = structuredClone(
+      sourceRun!.contextSnapshot as Record<string, unknown>,
+    );
+    sourceContext.paperclipHarnessCheckedOut = false;
+    await db
+      .update(heartbeatRuns)
+      .set({ runtimeMode: "legacy", nativeIssueId: null, contextSnapshot: sourceContext })
+      .where(eq(heartbeatRuns.id, fixture.sourceRunId));
+
+    await expect(
+      attestReviewedExternalChatRun({
+        db,
+        ...fixture,
+        contextSnapshot: fixture.context,
+      }),
+    ).resolves.toBe(false);
+    expect(fixture.context).not.toHaveProperty(
+      "paperclipExternalChatQuestionResponse",
+    );
+  });
+
+  it("rejects a legacy Slack answer after the linked identity is revoked", async () => {
+    const fixture = await seedAnsweredChatTurn("slack", undefined, "form");
+    await db
+      .update(heartbeatRuns)
+      .set({ runtimeMode: "legacy", nativeIssueId: null })
+      .where(eq(heartbeatRuns.id, fixture.sourceRunId));
+    await db
+      .update(chatIdentityLinks)
+      .set({ status: "revoked" })
+      .where(eq(chatIdentityLinks.principalId, fixture.principalId));
+
+    await expect(
+      attestReviewedExternalChatRun({
+        db,
+        ...fixture,
+        contextSnapshot: fixture.context,
+      }),
+    ).resolves.toBe(false);
+    expect(fixture.context).not.toHaveProperty(
+      "paperclipExternalChatQuestionResponse",
+    );
+  });
+
+  async function seedPreProviderQuestionResponseRetry() {
+    const fixture = await seedAnsweredChatTurn("slack", undefined, "form");
+    const failedRunId = randomUUID();
+    await db
+      .update(heartbeatRuns)
+      .set({ runtimeMode: "legacy", nativeIssueId: null })
+      .where(eq(heartbeatRuns.id, fixture.sourceRunId));
+    await db.insert(heartbeatRuns).values({
+      id: failedRunId,
+      companyId: fixture.companyId,
+      agentId: fixture.agentId,
+      invocationSource: "automation",
+      status: "failed",
+      runtimeMode: "legacy",
+      wakeupRequestId: fixture.wakeId,
+      errorCode: "setup_failed",
+      error: "reviewed_chat_execution_binding_not_authorized",
+      startedAt: new Date(Date.now() - 100),
+      finishedAt: new Date(),
+      runnerProfileJson: {
+        adapterDispatch: { adapterType: "opencode_local" },
+        chatControlRecoveryAdmission: {
+          version: 1,
+          phase: "required",
+          companyId: fixture.companyId,
+          runId: failedRunId,
+          agentId: fixture.agentId,
+          issueId: fixture.issueId,
+          wakeupRequestId: fixture.wakeId,
+        },
+        aiConnectionNonAssigneeCommentWake: false,
+      },
+      resultJson: {
+        stopReason: "adapter_failed",
+        executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+      },
+      contextSnapshot: fixture.context,
+    });
+    await db.insert(heartbeatRunEvents).values({
+      companyId: fixture.companyId,
+      agentId: fixture.agentId,
+      runId: failedRunId,
+      seq: 1,
+      eventType: "error",
+      stream: "system",
+      level: "error",
+      message: "reviewed_chat_execution_binding_not_authorized",
+    });
+    await db
+      .update(agentWakeupRequests)
+      .set({ runId: failedRunId, status: "failed" })
+      .where(eq(agentWakeupRequests.id, fixture.wakeId));
+    await db
+      .update(issueQuestionResponseDeliveries)
+      .set({ targetRunId: failedRunId })
+      .where(eq(issueQuestionResponseDeliveries.id, fixture.responseDeliveryId));
+    return { fixture, failedRunId };
+  }
+
+  it("retries only an exact pre-provider failure of an answered Slack card", async () => {
+    const { fixture, failedRunId } =
+      await seedPreProviderQuestionResponseRetry();
+    const retryRunId = randomUUID();
+
+    const wakeup = vi.fn(async (agentId: string, options: Record<string, unknown>) => {
+      const wakeId = randomUUID();
+      await db.insert(agentWakeupRequests).values({
+        id: wakeId,
+        companyId: fixture.companyId,
+        agentId,
+        source: String(options.source),
+        triggerDetail: String(options.triggerDetail),
+        reason: String(options.reason),
+        requestedByActorType: String(options.requestedByActorType),
+        requestedByActorId: String(options.requestedByActorId),
+        idempotencyKey: String(options.idempotencyKey),
+        status: "queued",
+        runId: retryRunId,
+        payload: options.payload as Record<string, unknown>,
+      });
+      await db.insert(heartbeatRuns).values({
+        id: retryRunId,
+        companyId: fixture.companyId,
+        agentId,
+        invocationSource: "automation",
+        status: "queued",
+        runtimeMode: "legacy",
+        wakeupRequestId: wakeId,
+        contextSnapshot: options.contextSnapshot as Record<string, unknown>,
+      });
+      return { id: retryRunId };
+    });
+    const delivery = questionResponseDeliveryService(db, {
+      heartbeat: { wakeup } as never,
+    });
+    const interactionId = await db.transaction((tx) =>
+      delivery.prepareFailedExternalChatQuestionRetry(tx as never, {
+        companyId: fixture.companyId,
+        issueId: fixture.issueId,
+        agentId: fixture.agentId,
+        failedRunId,
+      }),
+    );
+
+    expect(interactionId).toBe(fixture.interactionId);
+    await expect(
+      db
+        .select({ status: issueQuestionResponseDeliveries.status })
+        .from(issueQuestionResponseDeliveries)
+        .where(eq(issueQuestionResponseDeliveries.id, fixture.responseDeliveryId)),
+    ).resolves.toEqual([{ status: "pending" }]);
+    await expect(delivery.deliver(interactionId!)).resolves.toMatchObject({
+      status: "fallback_queued",
+      targetRunId: retryRunId,
+    });
+    expect(wakeup).toHaveBeenCalledWith(
+      fixture.agentId,
+      expect.objectContaining({
+        source: "automation",
+        reason: "issue_commented",
+        idempotencyKey: `question-response:${fixture.interactionId}`,
+        requestedByActorType: "user",
+        requestedByActorId: fixture.userId,
+        contextSnapshot: expect.objectContaining({
+          source: "issue.interaction.respond",
+          interactionId: fixture.interactionId,
+          sourceRunId: fixture.sourceRunId,
+          externalChatContinuation: true,
+        }),
+      }),
+    );
+  });
+
+  it("does not retry if provider-work evidence arrives after recovery preparation", async () => {
+    const { fixture, failedRunId } =
+      await seedPreProviderQuestionResponseRetry();
+    const wakeup = vi.fn();
+    const delivery = questionResponseDeliveryService(db, {
+      heartbeat: { wakeup } as never,
+    });
+    const interactionId = await db.transaction((tx) =>
+      delivery.prepareFailedExternalChatQuestionRetry(tx as never, {
+        companyId: fixture.companyId,
+        issueId: fixture.issueId,
+        agentId: fixture.agentId,
+        failedRunId,
+      }),
+    );
+    expect(interactionId).toBe(fixture.interactionId);
+
+    await db.insert(heartbeatRunEvents).values({
+      companyId: fixture.companyId,
+      agentId: fixture.agentId,
+      runId: failedRunId,
+      seq: 2,
+      eventType: "tool_call",
+      stream: "system",
+      level: "info",
+      message: "A provider action was recorded after recovery preparation.",
+    });
+
+    await expect(delivery.deliver(interactionId!)).resolves.toMatchObject({
+      status: "failed",
+      mode: null,
+      targetRunId: null,
+    });
+    expect(wakeup).not.toHaveBeenCalled();
+  });
+
+  it("rechecks linked identity immediately before retry dispatch", async () => {
+    const { fixture, failedRunId } =
+      await seedPreProviderQuestionResponseRetry();
+    const wakeup = vi.fn().mockResolvedValue({ id: randomUUID() });
+    const delivery = questionResponseDeliveryService(db, {
+      heartbeat: { wakeup } as never,
+    });
+    const interactionId = await db.transaction((tx) =>
+      delivery.prepareFailedExternalChatQuestionRetry(tx as never, {
+        companyId: fixture.companyId,
+        issueId: fixture.issueId,
+        agentId: fixture.agentId,
+        failedRunId,
+      }),
+    );
+    expect(interactionId).toBe(fixture.interactionId);
+    await db
+      .update(chatIdentityLinks)
+      .set({ status: "revoked" })
+      .where(eq(chatIdentityLinks.principalId, fixture.principalId));
+
+    await expect(delivery.deliver(interactionId!)).resolves.toMatchObject({
+      status: "failed",
+    });
+    const [responseDelivery] = await db
+      .select({ lastErrorCode: issueQuestionResponseDeliveries.lastErrorCode })
+      .from(issueQuestionResponseDeliveries)
+      .where(eq(issueQuestionResponseDeliveries.id, fixture.responseDeliveryId));
+    expect(responseDelivery?.lastErrorCode).toBe(
+      "question_response_retry_evidence_changed",
+    );
+    expect(wakeup).not.toHaveBeenCalled();
+  });
+
+  it("keeps pre-provider retry proof across transient wake delivery failure", async () => {
+    const { fixture, failedRunId } =
+      await seedPreProviderQuestionResponseRetry();
+    const wakeup = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("temporary wake failure"))
+      .mockResolvedValue({ id: randomUUID() });
+    const delivery = questionResponseDeliveryService(db, {
+      heartbeat: { wakeup } as never,
+    });
+    const interactionId = await db.transaction((tx) =>
+      delivery.prepareFailedExternalChatQuestionRetry(tx as never, {
+        companyId: fixture.companyId,
+        issueId: fixture.issueId,
+        agentId: fixture.agentId,
+        failedRunId,
+      }),
+    );
+    expect(interactionId).toBe(fixture.interactionId);
+
+    await expect(delivery.deliver(interactionId!)).resolves.toBeNull();
+    const [afterTransientFailure] = await db
+      .select({ lastErrorCode: issueQuestionResponseDeliveries.lastErrorCode })
+      .from(issueQuestionResponseDeliveries)
+      .where(eq(issueQuestionResponseDeliveries.id, fixture.responseDeliveryId));
+    expect(afterTransientFailure?.lastErrorCode).toBe(
+      `pre-provider-reviewed-chat-retry:${failedRunId}`,
+    );
+
+    await db.insert(heartbeatRunEvents).values({
+      companyId: fixture.companyId,
+      agentId: fixture.agentId,
+      runId: failedRunId,
+      seq: 2,
+      eventType: "tool_call",
+      stream: "system",
+      level: "info",
+      message: "Provider activity arrived after the transient delivery failure.",
+    });
+    await expect(delivery.deliver(interactionId!)).resolves.toMatchObject({
+      status: "failed",
+    });
+    const [afterNewProviderEvidence] = await db
+      .select({ lastErrorCode: issueQuestionResponseDeliveries.lastErrorCode })
+      .from(issueQuestionResponseDeliveries)
+      .where(eq(issueQuestionResponseDeliveries.id, fixture.responseDeliveryId));
+    expect(afterNewProviderEvidence?.lastErrorCode).toBe(
+      "question_response_retry_evidence_changed",
+    );
+    expect(wakeup).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not prepare a retry without control-plane bootstrap metadata", async () => {
+    const { fixture, failedRunId } =
+      await seedPreProviderQuestionResponseRetry();
+    await db
+      .update(heartbeatRuns)
+      .set({ runnerProfileJson: null, resultJson: null })
+      .where(eq(heartbeatRuns.id, failedRunId));
+    const wakeup = vi.fn();
+    const delivery = questionResponseDeliveryService(db, {
+      heartbeat: { wakeup } as never,
+    });
+
+    const interactionId = await db.transaction((tx) =>
+      delivery.prepareFailedExternalChatQuestionRetry(tx as never, {
+        companyId: fixture.companyId,
+        issueId: fixture.issueId,
+        agentId: fixture.agentId,
+        failedRunId,
+      }),
+    );
+
+    expect(interactionId).toBeNull();
+    await expect(
+      db
+        .select({ status: issueQuestionResponseDeliveries.status })
+        .from(issueQuestionResponseDeliveries)
+        .where(eq(issueQuestionResponseDeliveries.id, fixture.responseDeliveryId)),
+    ).resolves.toEqual([{ status: "fallback_queued" }]);
+    expect(wakeup).not.toHaveBeenCalled();
   });
 
   it.each(["execution_owner", "agent_paused", "membership_revoked"] as const)(

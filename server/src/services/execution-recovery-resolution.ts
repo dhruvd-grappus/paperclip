@@ -9,6 +9,8 @@ import {
   environmentLeases,
   heartbeatRuns,
   issueRecoveryActions,
+  issueQuestionResponseDeliveries,
+  issueThreadInteractions,
   issues,
   nativeRunFinalizations,
   type Db,
@@ -21,6 +23,10 @@ import {
 } from "@paperclipai/shared";
 import { parseIssueExecutionState } from "./issue-execution-policy.js";
 import { isSupersededConversationRun } from "./agent-conversations.js";
+import {
+  isPreProviderReviewedChatFailure,
+  PRE_PROVIDER_REVIEWED_CHAT_RETRY_MARKER_PREFIX,
+} from "./pre-provider-reviewed-chat-failure.js";
 
 /** An operator records observed outcomes; this is not permission to blindly retry. */
 export async function validateExecutionReconciliation(input: {
@@ -132,13 +138,15 @@ export async function markExecutionReconciliation(
   db: Db,
   action: Pick<
     typeof issueRecoveryActions.$inferSelect,
-    "companyId" | "id" | "evidence" | "sourceIssueId"
+    "companyId" | "id" | "evidence" | "sourceIssueId" | "returnOwnerAgentId"
   >,
   decision: ExecutionReconciliation,
   actorId: string,
-  deliveryOwner?: { kind: "chat_failed_run_retry"; actionId: string },
+  deliveryOwner?:
+    | { kind: "chat_failed_run_retry"; actionId: string }
+    | { kind: "question_response_delivery"; interactionId: string },
 ) {
-  if (deliveryOwner) {
+  if (deliveryOwner?.kind === "chat_failed_run_retry") {
     const [retry] = await db
       .select()
       .from(chatActions)
@@ -158,6 +166,89 @@ export async function markExecutionReconciliation(
       retry.payload.issueId !== action.sourceIssueId
     ) {
       throw conflict("The authorized chat retry owner is no longer valid.");
+    }
+  } else if (deliveryOwner?.kind === "question_response_delivery") {
+    if (!action.returnOwnerAgentId)
+      throw conflict("The answered-card retry owner is no longer valid.");
+    const [run] = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, action.companyId),
+          eq(heartbeatRuns.id, decision.runId),
+          eq(heartbeatRuns.agentId, action.returnOwnerAgentId),
+        ),
+      );
+    const context =
+      run?.contextSnapshot && typeof run.contextSnapshot === "object"
+        ? (run.contextSnapshot as Record<string, unknown>)
+        : {};
+    if (
+      !run ||
+      run.status !== "failed" ||
+      !(await isPreProviderReviewedChatFailure(db, run, {
+        requireDispatchMetadata: true,
+      })) ||
+      context.source !== "issue.interaction.respond" ||
+      context.issueId !== action.sourceIssueId ||
+      context.externalChatContinuation !== true ||
+      context.interactionKind !== "ask_user_questions" ||
+      context.interactionStatus !== "answered" ||
+      context.interactionId !== deliveryOwner.interactionId ||
+      typeof context.sourceRunId !== "string"
+    ) {
+      throw conflict("The answered-card retry owner is no longer valid.");
+    }
+    const [delivery] = await db
+      .select({
+        delivery: issueQuestionResponseDeliveries,
+        interaction: issueThreadInteractions,
+      })
+      .from(issueQuestionResponseDeliveries)
+      .innerJoin(
+        issueThreadInteractions,
+        and(
+          eq(
+            issueThreadInteractions.companyId,
+            issueQuestionResponseDeliveries.companyId,
+          ),
+          eq(
+            issueThreadInteractions.issueId,
+            issueQuestionResponseDeliveries.issueId,
+          ),
+          eq(
+            issueThreadInteractions.id,
+            issueQuestionResponseDeliveries.interactionId,
+          ),
+        ),
+      )
+      .where(
+        and(
+          eq(issueQuestionResponseDeliveries.companyId, action.companyId),
+          eq(issueQuestionResponseDeliveries.issueId, action.sourceIssueId),
+          eq(
+            issueQuestionResponseDeliveries.interactionId,
+            deliveryOwner.interactionId,
+          ),
+          eq(issueQuestionResponseDeliveries.sourceRunId, context.sourceRunId),
+          eq(issueQuestionResponseDeliveries.status, "pending"),
+          eq(issueQuestionResponseDeliveries.deliveryMode, "wake_fallback"),
+          eq(issueQuestionResponseDeliveries.targetRunId, decision.runId),
+          eq(
+            issueQuestionResponseDeliveries.lastErrorCode,
+            `${PRE_PROVIDER_REVIEWED_CHAT_RETRY_MARKER_PREFIX}${decision.runId}`,
+          ),
+          eq(issueThreadInteractions.kind, "ask_user_questions"),
+          eq(issueThreadInteractions.status, "answered"),
+        ),
+      )
+      .for("update", { noWait: true });
+    if (
+      !delivery ||
+      delivery.delivery.interactionId !== context.interactionId
+    ) {
+      throw conflict("The answered-card retry owner is no longer valid.");
     }
   }
   await db

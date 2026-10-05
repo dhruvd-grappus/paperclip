@@ -22,6 +22,11 @@ import { logger } from "../middleware/logger.js";
 import { logActivity } from "./activity-log.js";
 import type { heartbeatService } from "./heartbeat.js";
 import { nativeSha256 } from "./native-runtime/canonical.js";
+import { resolveExternalChatQuestionResponse } from "./native-runtime/external-chat-question-response.js";
+import {
+  isPreProviderReviewedChatFailure,
+  PRE_PROVIDER_REVIEWED_CHAT_RETRY_MARKER_PREFIX,
+} from "./pre-provider-reviewed-chat-failure.js";
 
 const DELIVERY_CLAIM_STALE_MS = 30_000;
 const DELIVERY_CLAIM_REFRESH_MS = 10_000;
@@ -50,6 +55,8 @@ const DURABLE_WAKE_REQUEST_STATUSES = [
 
 type QuestionInteractionRow = typeof issueThreadInteractions.$inferSelect;
 type DeliveryRow = typeof issueQuestionResponseDeliveries.$inferSelect;
+type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
+type DbOrTransaction = Db | DbTransaction;
 type Heartbeat = Pick<
   ReturnType<typeof heartbeatService>,
   "wakeup" | "cancelRun"
@@ -604,13 +611,18 @@ export function questionResponseDeliveryService(
     const nextErrorCount = delivery.errorCount + (options.bounded ? 1 : 0);
     const exhausted =
       options.bounded && nextErrorCount >= MAX_DELIVERY_ATTEMPTS;
+    const retryMarker = delivery.lastErrorCode?.startsWith(
+      PRE_PROVIDER_REVIEWED_CHAT_RETRY_MARKER_PREFIX,
+    )
+      ? delivery.lastErrorCode
+      : null;
     await db
       .update(issueQuestionResponseDeliveries)
       .set({
         // Keep an exhausted claim owned until recordTerminal commits its outcome.
         status: exhausted ? "delivering" : "pending",
         ...(options.bounded ? { errorCount: nextErrorCount } : {}),
-        lastErrorCode: errorCode,
+        lastErrorCode: retryMarker ?? errorCode,
         updatedAt: at,
       })
       .where(
@@ -848,6 +860,75 @@ export function questionResponseDeliveryService(
           .then((rows) => rows[0] ?? null),
       ]);
     const adapter = agent?.adapterType ?? "unknown";
+    const retryFailedRunId = claimed.lastErrorCode?.startsWith(
+      PRE_PROVIDER_REVIEWED_CHAT_RETRY_MARKER_PREFIX,
+    )
+      ? claimed.lastErrorCode.slice(
+          PRE_PROVIDER_REVIEWED_CHAT_RETRY_MARKER_PREFIX.length,
+        )
+      : null;
+    const retryEvidenceStillValid = async () => {
+      if (!retryFailedRunId) return true;
+      const retryAgentId = interaction.createdByAgentId;
+      if (!retryAgentId || claimed.targetRunId !== retryFailedRunId) return false;
+      return db.transaction(async (tx) => {
+        const [failedRun] = await tx
+          .select()
+          .from(heartbeatRuns)
+          .where(
+            and(
+              eq(heartbeatRuns.id, retryFailedRunId),
+              eq(heartbeatRuns.companyId, claimed.companyId),
+              eq(heartbeatRuns.agentId, retryAgentId),
+            ),
+          )
+          .for("update", { noWait: true })
+          .limit(1);
+        if (
+          !failedRun ||
+          failedRun.status !== "failed" ||
+          !(await isPreProviderReviewedChatFailure(tx, failedRun, {
+            requireDispatchMetadata: true,
+          }))
+        )
+          return false;
+        const retryContext = record(failedRun.contextSnapshot);
+        if (
+          retryContext.source !== "issue.interaction.respond" ||
+          retryContext.issueId !== interaction.issueId ||
+          retryContext.interactionId !== interaction.id ||
+          retryContext.sourceRunId !== interaction.sourceRunId ||
+          retryContext.externalChatContinuation !== true ||
+          retryContext.interactionKind !== "ask_user_questions" ||
+          retryContext.interactionStatus !== "answered"
+        )
+          return false;
+        const answer = await resolveExternalChatQuestionResponse(
+          tx as unknown as Db,
+          {
+            companyId: interaction.companyId,
+            issueId: interaction.issueId,
+            runId: failedRun.id,
+            agentId: retryAgentId,
+          },
+          retryContext,
+          "nonblocking",
+          true,
+        );
+        return answer !== null;
+      });
+    };
+    const retryEvidenceChanged = () =>
+      recordTerminal({
+        delivery: claimed,
+        interaction,
+        status: "failed",
+        mode: null,
+        targetRunId: null,
+        adapter,
+        errorCode: "question_response_retry_evidence_changed",
+      });
+    if (!(await retryEvidenceStillValid())) return retryEvidenceChanged();
     if (
       !issue ||
       !issue.assigneeAgentId ||
@@ -1196,6 +1277,9 @@ export function questionResponseDeliveryService(
         companyId: interaction.companyId,
         idempotencyKey: wakeIdempotencyKey,
       });
+      // Recheck at the enqueue boundary. The continuation run also attests
+      // before provider dispatch, so later access changes still fail closed.
+      if (!(await retryEvidenceStillValid())) return retryEvidenceChanged();
       const wakeRun =
         existingWake?.run ??
         (existingWake
@@ -1382,5 +1466,99 @@ export function questionResponseDeliveryService(
     return counts;
   }
 
-  return { deliver, sweepPending };
+  /** Reopen only an answered external-chat delivery whose first continuation
+   * failed at the reviewed-chat gate before any provider work. */
+  async function prepareFailedExternalChatQuestionRetry(
+    tx: DbOrTransaction,
+    input: {
+      companyId: string;
+      issueId: string;
+      agentId: string;
+      failedRunId: string;
+    },
+  ): Promise<string | null> {
+    const [failedRun] = await tx
+      .select()
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.id, input.failedRunId),
+          eq(heartbeatRuns.companyId, input.companyId),
+          eq(heartbeatRuns.agentId, input.agentId),
+        ),
+      )
+      .for("update", { noWait: true })
+      .limit(1);
+    if (
+      !failedRun ||
+      !(await isPreProviderReviewedChatFailure(tx, failedRun, {
+        requireDispatchMetadata: true,
+      }))
+    )
+      return null;
+    const context = record(failedRun.contextSnapshot);
+    if (
+      failedRun.status !== "failed" ||
+      context.source !== "issue.interaction.respond" ||
+      context.issueId !== input.issueId ||
+      context.externalChatContinuation !== true ||
+      context.interactionKind !== "ask_user_questions" ||
+      context.interactionStatus !== "answered" ||
+      typeof context.interactionId !== "string" ||
+      typeof context.sourceRunId !== "string"
+    )
+      return null;
+
+    const answer = await resolveExternalChatQuestionResponse(
+      tx as unknown as Db,
+      {
+        companyId: input.companyId,
+        issueId: input.issueId,
+        runId: failedRun.id,
+        agentId: input.agentId,
+      },
+      context,
+      "nonblocking",
+      true,
+    );
+    if (!answer) return null;
+
+    const [delivery] = await tx
+      .update(issueQuestionResponseDeliveries)
+      .set({
+        status: "pending",
+        deliveryMode: "wake_fallback",
+        targetRunId: failedRun.id,
+        targetTurnId: null,
+        acknowledgedAt: null,
+        lastErrorCode: `${PRE_PROVIDER_REVIEWED_CHAT_RETRY_MARKER_PREFIX}${failedRun.id}`,
+        updatedAt: now(),
+      })
+      .where(
+        and(
+          eq(issueQuestionResponseDeliveries.companyId, input.companyId),
+          eq(issueQuestionResponseDeliveries.issueId, input.issueId),
+          eq(
+            issueQuestionResponseDeliveries.interactionId,
+            answer.marker.interactionId,
+          ),
+          eq(
+            issueQuestionResponseDeliveries.sourceRunId,
+            answer.marker.sourceRunId,
+          ),
+          eq(issueQuestionResponseDeliveries.targetRunId, failedRun.id),
+          eq(issueQuestionResponseDeliveries.status, "fallback_queued"),
+        ),
+      )
+      .returning({
+        interactionId: issueQuestionResponseDeliveries.interactionId,
+      });
+    return delivery?.interactionId ?? null;
+  }
+
+  return {
+    deliver,
+    sweepPending,
+    prepareFailedExternalChatQuestionRetry,
+  };
 }

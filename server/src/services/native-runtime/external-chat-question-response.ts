@@ -22,6 +22,7 @@ import {
 } from "../chat-question-forms.js";
 import { questionResponseDeliveryValues } from "../question-response-delivery.js";
 import { nativeSha256 } from "./canonical.js";
+import { PRE_PROVIDER_REVIEWED_CHAT_RETRY_MARKER_PREFIX } from "../pre-provider-reviewed-chat-failure.js";
 
 export const EXTERNAL_CHAT_QUESTION_RESPONSE_KEY =
   "paperclipExternalChatQuestionResponse";
@@ -373,6 +374,15 @@ async function resolveQuestionResponseChain(
   chain.deliveryIds.add(delivery.id);
   const sourceContext = record(source.contextSnapshot);
   const sourceWake = record(sourceContext.paperclipWake);
+  const sourceRunBindingValid =
+    (source.runtimeMode === "native" &&
+      source.nativeIssueId === binding.issueId) ||
+    (source.runtimeMode === "legacy" &&
+      source.nativeIssueId === null &&
+      ((sourceContext.paperclipHarnessCheckedOut === true &&
+        sourceWake.checkedOutByHarness === true) ||
+        (sourceContext.paperclipExternalChatExecutionBound === true &&
+          sourceWake.externalChatExecutionBound === true)));
   // A follow-up question inherits no authority from its marker alone. Rebuild
   // every parent proof from current durable state until the direct-chat root.
   const parent =
@@ -404,11 +414,16 @@ async function resolveQuestionResponseChain(
     );
   const sourceIds = ids(sourceContext.wakeCommentIds);
   const wakePayload = record(wake.payload);
+  const preProviderRetryDelivery =
+    delivery.status === "delivering" &&
+    delivery.deliveryMode === "wake_fallback" &&
+    delivery.targetRunId === binding.runId &&
+    delivery.lastErrorCode ===
+      `${PRE_PROVIDER_REVIEWED_CHAT_RETRY_MARKER_PREFIX}${binding.runId}`;
   if (
     !provider ||
     source.agentId !== binding.agentId ||
-    source.runtimeMode !== "native" ||
-    source.nativeIssueId !== binding.issueId ||
+    !sourceRunBindingValid ||
     sourceContext.issueId !== binding.issueId ||
     (source.status !== "succeeded" &&
       !(
@@ -452,7 +467,8 @@ async function resolveQuestionResponseChain(
         delivery.targetRunId === binding.runId) ||
       (delivery.status === "delivering" &&
         delivery.targetRunId === null &&
-        delivery.deliveryMode === null)
+        delivery.deliveryMode === null) ||
+      preProviderRetryDelivery
     )
   )
     return null;
