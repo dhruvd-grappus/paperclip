@@ -64,6 +64,12 @@ export function printOpenCodeStreamEvent(raw: string, _debug: boolean): void {
     return;
   }
 
+  if (type === "text_delta" || type === "reasoning_delta") {
+    const text = asString(asRecord(parsed.part)?.text);
+    if (text) process.stdout.write(type === "text_delta" ? pc.green(text) : pc.gray(text));
+    return;
+  }
+
   if (type === "reasoning") {
     const part = asRecord(parsed.part);
     const text = asString(part?.text).trim();

@@ -30,6 +30,14 @@ export function parseOpenCodeJsonl(stdout: string) {
     outputTokens: 0,
   };
   let costUsd = 0;
+  // ACP runs stream assistant text as `text_delta` pieces; one message ends
+  // at the first event of any other type.
+  let streamedText = "";
+  const flushStreamedText = () => {
+    const text = streamedText.trim();
+    if (text) messages.push(text);
+    streamedText = "";
+  };
 
   for (const rawLine of stdout.split(/\r?\n/)) {
     const line = rawLine.trim();
@@ -42,6 +50,12 @@ export function parseOpenCodeJsonl(stdout: string) {
     if (currentSessionId) sessionId = currentSessionId;
 
     const type = asString(event.type, "");
+
+    if (type === "text_delta") {
+      streamedText += asString(parseObject(event.part).text, "");
+      continue;
+    }
+    flushStreamedText();
 
     if (type === "text") {
       const part = parseObject(event.part);
@@ -77,6 +91,7 @@ export function parseOpenCodeJsonl(stdout: string) {
       continue;
     }
   }
+  flushStreamedText();
 
   return {
     sessionId,

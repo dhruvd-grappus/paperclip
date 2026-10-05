@@ -221,6 +221,59 @@ describe("OpenCode local skill injection", () => {
   });
 });
 
+describe("OpenCode local transport", () => {
+  let root: string;
+
+  beforeEach(async () => {
+    root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-opencode-transport-"));
+    vi.stubEnv("XDG_CONFIG_HOME", root);
+  });
+
+  afterEach(async () => {
+    vi.unstubAllEnvs();
+    await fs.rm(root, { recursive: true, force: true });
+  });
+
+  async function runWith(config: Record<string, unknown>, sessionId: string | null = null) {
+    await fs.mkdir(path.join(root, "bin"), { recursive: true });
+    const commandPath = path.join(root, "bin", "opencode");
+    await fs.writeFile(commandPath, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    runProcessMock.mockReset();
+    runProcessMock.mockResolvedValue(probeResult({ stdout: JSON.stringify({
+      type: "text_delta", sessionID: "ses_acp", part: { text: "Reply" },
+    }) }));
+    const result = await execute({
+      runId: "transport-run",
+      agent: { id: "agent-1", companyId: "company-1", name: "OpenCode", adapterType: "opencode_local", adapterConfig: {} },
+      runtime: { sessionId, sessionParams: sessionId ? { sessionId, cwd: root } : null, sessionDisplayId: null, taskKey: null },
+      config: { command: commandPath, cwd: root, model: "opencode-go/glm-5.3-flash", env: { OPENCODE_ALLOW_ALL_MODELS: "1" }, ...config },
+      context: {},
+      onLog: async () => {},
+    });
+    return { result, call: runProcessMock.mock.calls.at(-1)!, commandPath };
+  }
+
+  it("runs local turns through the ACP bridge so thinking streams live", async () => {
+    const { result, call, commandPath } = await runWith({}, "ses_saved");
+
+    expect(result.summary).toBe("Reply");
+    expect(result.sessionId).toBe("ses_acp");
+    expect(call[2]).toBe(process.execPath);
+    const args = call[3] as string[];
+    expect(args[0]).toMatch(/acp-bridge\.(ts|js)$/);
+    expect(args.slice(1)).toEqual([
+      "--command", commandPath, "--cwd", root, "--session", "ses_saved", "--model", "opencode-go/glm-5.3-flash",
+    ]);
+  });
+
+  it("keeps opencode run when a variant is configured (ACP cannot select one)", async () => {
+    const { call, commandPath } = await runWith({ variant: "high" });
+
+    expect(call[2]).toBe(commandPath);
+    expect(call[3]).toEqual(["run", "--format", "json", "--model", "opencode-go/glm-5.3-flash", "--variant", "high"]);
+  });
+});
+
 describe("ensureRemoteOpenCodeModelConfiguredAndAvailable", () => {
   afterEach(() => {
     delete process.env.OPENCODE_ALLOW_ALL_MODELS;

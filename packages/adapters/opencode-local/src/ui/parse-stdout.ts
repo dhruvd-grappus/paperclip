@@ -99,6 +99,13 @@ export function parseOpenCodeStdoutLine(line: string, ts: string): TranscriptEnt
     return [{ kind: "assistant", ts, text }];
   }
 
+  if (type === "text_delta" || type === "reasoning_delta") {
+    // ACP runs: live pieces, merged by the transcript (keep whitespace).
+    const text = asString(asRecord(parsed.part)?.text);
+    if (!text) return [];
+    return [{ kind: type === "text_delta" ? "assistant" : "thinking", ts, text, delta: true }];
+  }
+
   if (type === "reasoning") {
     const part = asRecord(parsed.part);
     const text = asString(part?.text).trim();
