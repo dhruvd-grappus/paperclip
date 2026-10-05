@@ -23,7 +23,10 @@ import {
 } from "@paperclipai/shared";
 import { parseIssueExecutionState } from "./issue-execution-policy.js";
 import { isSupersededConversationRun } from "./agent-conversations.js";
-import { isPreProviderReviewedChatFailure } from "./pre-provider-reviewed-chat-failure.js";
+import {
+  isPreProviderReviewedChatFailure,
+  PRE_PROVIDER_REVIEWED_CHAT_RETRY_MARKER_PREFIX,
+} from "./pre-provider-reviewed-chat-failure.js";
 
 /** An operator records observed outcomes; this is not permission to blindly retry. */
 export async function validateExecutionReconciliation(input: {
@@ -230,7 +233,12 @@ export async function markExecutionReconciliation(
           ),
           eq(issueQuestionResponseDeliveries.sourceRunId, context.sourceRunId),
           eq(issueQuestionResponseDeliveries.status, "pending"),
-          isNull(issueQuestionResponseDeliveries.targetRunId),
+          eq(issueQuestionResponseDeliveries.deliveryMode, "wake_fallback"),
+          eq(issueQuestionResponseDeliveries.targetRunId, decision.runId),
+          eq(
+            issueQuestionResponseDeliveries.lastErrorCode,
+            `${PRE_PROVIDER_REVIEWED_CHAT_RETRY_MARKER_PREFIX}${decision.runId}`,
+          ),
           eq(issueThreadInteractions.kind, "ask_user_questions"),
           eq(issueThreadInteractions.status, "answered"),
         ),

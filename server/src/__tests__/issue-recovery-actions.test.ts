@@ -1831,6 +1831,14 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       level: "error",
       message: "reviewed_chat_execution_binding_not_authorized",
     });
+    await db
+      .update(issueQuestionResponseDeliveries)
+      .set({
+        deliveryMode: "wake_fallback",
+        targetRunId: failedRunId,
+        lastErrorCode: `pre-provider-reviewed-chat-retry:${failedRunId}`,
+      })
+      .where(eq(issueQuestionResponseDeliveries.interactionId, interactionId));
     const decision = {
       runId: failedRunId,
       providerStopped: true as const,
@@ -2366,7 +2374,21 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       nextAction: "Retry the answered question response.",
       wakePolicy: { type: "board_escalation" },
     });
-    const prepareRetry = vi.fn().mockResolvedValue(interactionId);
+    const prepareRetry = vi.fn(
+      async (_tx: unknown, input: { failedRunId: string }) => {
+        await db
+          .update(issueQuestionResponseDeliveries)
+          .set({
+            deliveryMode: "wake_fallback",
+            targetRunId: input.failedRunId,
+            lastErrorCode: `pre-provider-reviewed-chat-retry:${input.failedRunId}`,
+          })
+          .where(
+            eq(issueQuestionResponseDeliveries.interactionId, interactionId),
+          );
+        return interactionId;
+      },
+    );
     const deliverRetry = vi.fn().mockResolvedValue({
       status: "fallback_queued",
       targetRunId: randomUUID(),
