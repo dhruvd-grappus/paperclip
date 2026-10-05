@@ -1147,6 +1147,12 @@ members have within their company. Both wake endpoints use this action instead
 of `agents:create`. An exact task retry also checks `issue:comment` on the task
 from the stored failed run and verifies that its assigned agent has not changed.
 External chat retries retain their additional conversation authorization.
+Answered question continuations may use a legacy source run only when its
+server-stored checkout or execution-binding proof names the same issue and agent.
+A Board retry after `reviewed_chat_execution_binding_not_authorized` reuses the
+exact answered interaction only when the current linked identity, answer receipt,
+and no-provider-work evidence still match. The answer delivery outbox owns this
+continuation, so reconciliation does not enqueue a second generic wake.
 Ordinary board wake requests also persist the clicking user's identity, so
 adopting another author's queued message cannot change their execution authority.
 If that wake merges into an older deferred request, the same transaction updates
