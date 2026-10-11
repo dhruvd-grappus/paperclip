@@ -946,6 +946,7 @@ export type {
   AgentInstructionsBundle,
   AgentKeyCreated,
   AgentConfigRevision,
+  AgentInstructionsRevision,
   AdapterEnvironmentCheckLevel,
   AdapterEnvironmentTestStatus,
   AdapterEnvironmentCheck,
@@ -1653,6 +1654,9 @@ export type {
   OAuthRedirectConstraints,
   QuotaWindow,
   ProviderQuotaResult,
+  ReportedProblem,
+  ReportedProblemByVersion,
+  ReportedProblemCreateInput,
 } from "./types/index.js";
 export { WORKSPACE_READINESS_STATES } from "./types/index.js";
 export {
@@ -1940,6 +1944,7 @@ export {
   upsertAgentInstructionsFileSchema,
   updateAgentInstructionsPathSchema,
   agentApiKeyScopeSchema,
+  createReportedProblemSchema,
   normalizeAgentApiKeyScope,
   standardAgentKeyScopeSchema,
   taskBridgeAgentKeyScopeSchema,
