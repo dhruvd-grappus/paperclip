@@ -27,6 +27,7 @@ import { Dashboard } from "./pages/Dashboard";
 import { DashboardLive } from "./pages/DashboardLive";
 import { Timeline } from "./pages/Timeline";
 import { Stats } from "./pages/Stats";
+import { ReportedProblems } from "./pages/ReportedProblems";
 import { WaitingOnYou } from "./pages/WaitingOnYou";
 import { Companies } from "./pages/Companies";
 import { AGENT_FILTER_TABS, Agents } from "./pages/Agents";
@@ -159,6 +160,7 @@ function boardRoutes(streamlinedUiEnabled: boolean) {
       {/* Delivery stats (GRA-249). Registered in both UI modes: the streamlined
           sidebar has no Costs entry to fold this into. */}
       <Route path="stats" element={<Stats />} />
+      <Route path="reported-problems" element={<ReportedProblems />} />
       <Route path="onboarding" element={<OnboardingRoutePage />} />
       <Route path="companies" element={<Companies />} />
       <Route path="company/settings" element={<CompanySettings />} />

@@ -1896,8 +1896,65 @@ export function AgentRevisionsTab({
     },
   });
 
+  const { data: instructionsRevisions } = useQuery({
+    queryKey: ["agents", "instructions-versions", agent.id] as const,
+    queryFn: () => agentsApi.listInstructionsRevisions(agent.id, companyId),
+  });
+
+  const rollbackInstructions = useMutation({
+    mutationFn: (revisionId: string) =>
+      agentsApi.rollbackInstructionsRevision(agent.id, revisionId, companyId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["agents", "instructions-versions", agent.id] as const });
+      queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.id) });
+    },
+  });
+
   return (
-    <div className="max-w-3xl space-y-3">
+    <div className="max-w-3xl space-y-6">
+      <div className="space-y-3">
+        <div className="flex items-baseline justify-between gap-3">
+          <h3 className="text-sm font-medium">AGENTS.md Versions</h3>
+          <span className="text-xs text-muted-foreground">{instructionsRevisions?.length ?? 0} total</span>
+        </div>
+        {(instructionsRevisions ?? []).length === 0 ? (
+          <p className="text-sm text-muted-foreground">
+            No AGENTS.md versions yet. Edit the entry file to create V1.
+          </p>
+        ) : (
+          <div className="space-y-2">
+            {(instructionsRevisions ?? []).map((revision) => (
+              <div key={revision.id} className="space-y-2 rounded-md border border-border p-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="text-xs text-muted-foreground">
+                    <span className="font-mono font-medium text-foreground">V{revision.version}</span>
+                    <span className="mx-1">·</span>
+                    <span>{formatDate(revision.createdAt)}</span>
+                    <span className="mx-1">·</span>
+                    <span>{revision.source}</span>
+                    {(revision.createdByUserId || revision.createdByAgentId) && (
+                      <>
+                        <span className="mx-1">·</span>
+                        <span>by {(revision.createdByUserId ?? revision.createdByAgentId)?.slice(0, 8)}</span>
+                      </>
+                    )}
+                  </div>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => rollbackInstructions.mutate(revision.id)}
+                    disabled={rollbackInstructions.isPending}
+                  >
+                    Restore
+                  </Button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div className="space-y-3">
       <div className="flex items-baseline justify-between gap-3">
         <h3 className="text-sm font-medium">Configuration Revisions</h3>
         <span className="text-xs text-muted-foreground">{configRevisions?.length ?? 0} total</span>
@@ -1932,6 +1989,7 @@ export function AgentRevisionsTab({
           ))}
         </div>
       )}
+      </div>
     </div>
   );
 }

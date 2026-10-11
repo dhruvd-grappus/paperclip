@@ -988,3 +988,8 @@ export * from "./app-definition.js";
 export * from "./chat-channels.js";
 
 export * from "./email.js";
+
+export {
+  createReportedProblemSchema,
+  type CreateReportedProblem,
+} from "./reported-problems.js";

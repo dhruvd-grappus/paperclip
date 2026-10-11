@@ -65,6 +65,7 @@ import { agentInstructionsBundleMode } from "../services/agent-instructions.js";
 import {
   agentService,
   agentInstructionsService,
+  agentInstructionsRevisionsService,
   accessService,
   approvalService,
   builtInAgentService,
@@ -723,6 +724,7 @@ export function agentRoutes(
   const issueApprovalsSvc = issueApprovalService(db);
   const secretsSvc = secretService(db);
   const instructions = agentInstructionsService();
+  const instructionsRevisions = agentInstructionsRevisionsService(db);
   const companySkills = companySkillService(db);
   const workspaceOperations = workspaceOperationService(db);
   const instanceSettings = instanceSettingsService(db);
@@ -4326,6 +4328,84 @@ export function agentRoutes(
     res.json(redactAgentRowForResponse(updated));
   });
 
+  router.get("/agents/:id/instructions-versions", async (req, res) => {
+    const id = req.params.id as string;
+    const agent = await svc.getById(id);
+    if (!agent) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+    await assertCanReadConfigurations(req, agent.companyId);
+    const revisions = await instructionsRevisions.list(id);
+    res.json(
+      revisions.map((revision) => ({
+        id: revision.id,
+        version: revision.version,
+        entryFile: revision.entryFile,
+        createdByAgentId: revision.createdByAgentId,
+        createdByUserId: revision.createdByUserId,
+        source: revision.source,
+        rolledBackFromRevisionId: revision.rolledBackFromRevisionId,
+        createdAt: revision.createdAt,
+      })),
+    );
+  });
+
+  router.get("/agents/:id/instructions-versions/:revisionId", async (req, res) => {
+    const id = req.params.id as string;
+    const revisionId = req.params.revisionId as string;
+    const agent = await svc.getById(id);
+    if (!agent) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+    await assertCanReadConfigurations(req, agent.companyId);
+    const revision = await instructionsRevisions.get(id, revisionId);
+    if (!revision) {
+      res.status(404).json({ error: "Revision not found" });
+      return;
+    }
+    res.json(revision);
+  });
+
+  router.post("/agents/:id/instructions-versions/:revisionId/rollback", async (req, res) => {
+    const id = req.params.id as string;
+    const revisionId = req.params.revisionId as string;
+    const existing = await getAccessibleResource(req, res, svc.getById(id), "Agent not found");
+    if (!existing) return;
+    await assertCanManageInstructionsPath(req, existing);
+    assertExternalInstructionsAdmin(req, existing);
+
+    const actor = getActorInfo(req);
+    const revision = await instructionsRevisions.rollback(
+      existing,
+      revisionId,
+      {
+        agentId: actor.agentId,
+        userId: actor.actorType === "user" ? actor.actorId : null,
+      },
+    );
+    if (!revision) {
+      res.status(404).json({ error: "Revision not found" });
+      return;
+    }
+
+    await logActivity(db, {
+      companyId: existing.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      agentApiKeyId: actor.agentApiKeyId,
+      action: "agent.instructions_rolled_back",
+      entityType: "agent",
+      entityId: existing.id,
+      details: { revisionId, version: revision.version },
+    });
+
+    res.json(revision);
+  });
+
   router.get("/agents/:id/runtime-state", async (req, res) => {
     assertBoard(req);
     const id = req.params.id as string;
@@ -5087,6 +5167,17 @@ export function agentRoutes(
         },
       },
     );
+
+    if (result.file.isEntryFile) {
+      await instructionsRevisions.snapshot(
+        existing,
+        {
+          agentId: actor.agentId,
+          userId: actor.actorType === "user" ? actor.actorId : null,
+        },
+        "edit",
+      );
+    }
 
     await logActivity(db, {
       companyId: existing.companyId,

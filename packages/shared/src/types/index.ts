@@ -287,6 +287,7 @@ export type {
   AgentInstructionsBundle,
   AgentKeyCreated,
   AgentConfigRevision,
+  AgentInstructionsRevision,
   AdapterEnvironmentCheckLevel,
   AdapterEnvironmentTestStatus,
   AdapterEnvironmentCheck,
@@ -1087,3 +1088,9 @@ export * from "./app-definition.js";
 export * from "./chat-channels.js";
 
 export * from "./email.js";
+
+export type {
+  ReportedProblem,
+  ReportedProblemByVersion,
+  ReportedProblemCreateInput,
+} from "./reported-problems.js";

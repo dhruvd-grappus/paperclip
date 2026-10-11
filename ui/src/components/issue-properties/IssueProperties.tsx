@@ -78,6 +78,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { IssuePropertiesPlansTab } from "./IssuePropertiesPlansTab";
 import { IssuePropertiesArtifactsTab } from "./IssuePropertiesArtifactsTab";
+import { ReportProblemDialog } from "./ReportProblemDialog";
 import { User, ArrowUpRight, Plus, X, GitBranch, FolderOpen, HardDrive, Check, Clock, RotateCcw, Loader2, CheckCircle2, ArchiveRestore, ChevronLeft } from "lucide-react";
 import { AgentIcon } from "../AgentIconPicker";
 import { InlineEntitySelector, type InlineEntityOption } from "../InlineEntitySelector";
@@ -2369,6 +2370,11 @@ export function IssueProperties({
 
   const propertiesBody = (
     <div className={cn(streamlinedPropertiesEnabled && "task-detail-properties pl-4")}>
+      {companyId ? (
+        <div className="mb-3 flex items-center justify-end">
+          <ReportProblemDialog issue={issue} companyId={companyId} />
+        </div>
+      ) : null}
       <PropertySection
         title={streamlinedPropertiesEnabled ? "Work" : "Triage"}
         first

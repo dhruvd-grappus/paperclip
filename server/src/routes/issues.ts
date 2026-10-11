@@ -84,6 +84,7 @@ import {
   createDocumentAnnotationThreadSchema,
   createChildIssueSchema,
   createIssueSchema,
+  createReportedProblemSchema,
   resolveCreateIssueStatusDefault,
   resolveIssueRecoveryActionSchema,
   runnerGoalActionRequestSchema,
@@ -181,6 +182,7 @@ import {
   logActivity,
   publishActivity,
   projectService,
+  reportedProblemsService,
   routineService,
   workProductService,
 } from "../services/index.js";
@@ -3522,6 +3524,7 @@ export function issueRoutes(
 ) {
   const router = Router();
   const svc = issueService(db);
+  const reportedProblems = reportedProblemsService(db);
   const runRedactions = createRunSecretRedactionRegistry(db);
   const access = accessService(db);
   const secretProposals = createSecretProposalsService(db);
@@ -11584,6 +11587,57 @@ export function issueRoutes(
 
     res.json({ ok: true });
   });
+
+  router.get("/companies/:companyId/reported-problems/by-version", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    res.json(await reportedProblems.listByVersion(companyId));
+  });
+
+  router.get("/companies/:companyId/reported-problems", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    res.json(await reportedProblems.list(companyId));
+  });
+
+  router.post(
+    "/companies/:companyId/reported-problems",
+    validate(createReportedProblemSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      assertCompanyAccess(req, companyId);
+      const actor = getActorInfo(req);
+      const result = await reportedProblems.create(
+        companyId,
+        {
+          title: req.body.title,
+          description: req.body.description,
+          sourceIssueId: req.body.sourceIssueId,
+          commentIds: req.body.commentIds,
+        },
+        {
+          agentId: actor.agentId,
+          userId: actor.actorType === "user" ? actor.actorId : null,
+        },
+      );
+      await logActivity(db, {
+        companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
+        action: "issue.problem_reported",
+        entityType: "issue",
+        entityId: result.backlogIssue.id,
+        details: {
+          reportedProblemId: result.problem?.id ?? null,
+          sourceIssueId: req.body.sourceIssueId ?? null,
+        },
+      });
+      res.json(result.problem);
+    },
+  );
 
   router.post(
     "/companies/:companyId/issues",

@@ -130,6 +130,20 @@ export interface AgentConfigRevision {
   createdAt: Date;
 }
 
+export interface AgentInstructionsRevision {
+  id: string;
+  companyId: string;
+  agentId: string;
+  version: number;
+  entryFile: string;
+  content: string;
+  createdByAgentId: string | null;
+  createdByUserId: string | null;
+  source: string;
+  rolledBackFromRevisionId: string | null;
+  createdAt: Date;
+}
+
 // The public status union for an adapter login session. The name is neutral: it
 // carries no vendor word and no roadmap word. The union is closed. A public
 // response returns only one of these six values.

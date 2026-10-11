@@ -21,6 +21,8 @@ export {
   type BuiltInAgentStatus,
 } from "./built-in-agents.js";
 export { agentInstructionsService, syncInstructionsBundleConfigFromFilePath } from "./agent-instructions.js";
+export { agentInstructionsRevisionsService } from "./agent-instructions-revisions.js";
+export { reportedProblemsService } from "./reported-problems.js";
 export { assetService } from "./assets.js";
 export { documentService, extractLegacyPlanBody } from "./documents.js";
 export { artifactReviewDocumentService } from "./artifact-review-documents.js";

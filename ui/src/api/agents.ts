@@ -26,6 +26,7 @@ import type {
   HeartbeatRun,
   Approval,
   AgentConfigRevision,
+  AgentInstructionsRevision,
   ClearAgentErrorResponse,
   AgentApiKeyScope,
 } from "@paperclipai/shared";
@@ -141,6 +142,12 @@ export const agentsApi = {
     api.get<AgentConfigRevision>(agentPath(id, companyId, `/config-revisions/${revisionId}`)),
   rollbackConfigRevision: (id: string, revisionId: string, companyId?: string) =>
     api.post<Agent>(agentPath(id, companyId, `/config-revisions/${revisionId}/rollback`), {}),
+  listInstructionsRevisions: (id: string, companyId?: string) =>
+    api.get<AgentInstructionsRevision[]>(agentPath(id, companyId, "/instructions-versions")),
+  getInstructionsRevision: (id: string, revisionId: string, companyId?: string) =>
+    api.get<AgentInstructionsRevision>(agentPath(id, companyId, `/instructions-versions/${revisionId}`)),
+  rollbackInstructionsRevision: (id: string, revisionId: string, companyId?: string) =>
+    api.post<AgentInstructionsRevision>(agentPath(id, companyId, `/instructions-versions/${revisionId}/rollback`), {}),
   create: (companyId: string, data: Record<string, unknown>) =>
     api.post<Agent>(`/companies/${companyId}/agents`, data),
   hire: (companyId: string, data: Record<string, unknown>) =>

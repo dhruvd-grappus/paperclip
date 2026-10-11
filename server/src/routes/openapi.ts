@@ -37,6 +37,7 @@ import {
   testAdapterEnvironmentSchema,
   // Issue
   createIssueSchema,
+  createReportedProblemSchema,
   updateIssueSchema,
   stalledReviewDecisionSchema,
   createIssueLabelSchema,
@@ -3304,6 +3305,33 @@ registry.registerPath({
 
 registry.registerPath({
   method: "get",
+  path: "/api/agents/{id}/instructions-versions",
+  tags: ["agents"],
+  summary: "List agent AGENTS.md content versions",
+  request: { params: z.object({ id: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/agents/{id}/instructions-versions/{revisionId}",
+  tags: ["agents"],
+  summary: "Get an agent AGENTS.md content version",
+  request: { params: z.object({ id: z.string(), revisionId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/agents/{id}/instructions-versions/{revisionId}/rollback",
+  tags: ["agents"],
+  summary: "Roll back the live AGENTS.md to a content version",
+  request: { params: z.object({ id: z.string(), revisionId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "get",
   path: "/api/agents/{id}/runtime-state",
   tags: ["agents"],
   summary: "Get agent runtime state",
@@ -3623,6 +3651,36 @@ registry.registerPath({
     401: r.unauthorized,
     422: r.unprocessable,
   },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/reported-problems",
+  tags: ["issues"],
+  summary: "List reported Paperclip problems",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/reported-problems/by-version",
+  tags: ["issues"],
+  summary: "Reported Paperclip problems grouped by AGENTS.md version",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/reported-problems",
+  tags: ["issues"],
+  summary: "Report a Paperclip problem",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    body: jsonBody(createReportedProblemSchema),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
 });
 
 registry.registerPath({
