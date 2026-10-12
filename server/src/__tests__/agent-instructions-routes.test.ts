@@ -42,6 +42,19 @@ const mockLogActivity = vi.hoisted(() => vi.fn());
 const mockSyncInstructionsBundleConfigFromFilePath = vi.hoisted(() => vi.fn());
 const mockFindServerAdapter = vi.hoisted(() => vi.fn());
 
+const mockAgentInstructionsRevisionsService = vi.hoisted(() => ({
+  snapshot: vi.fn(async () => undefined),
+  list: vi.fn(async () => []),
+  get: vi.fn(async () => null),
+  rollback: vi.fn(async () => undefined),
+}));
+
+const mockReportedProblemsService = vi.hoisted(() => ({
+  list: vi.fn(async () => []),
+  listByVersion: vi.fn(async () => []),
+  create: vi.fn(async () => undefined),
+}));
+
 vi.mock("../services/index.js", () => ({
   agentService: () => mockAgentService,
   agentInstructionsService: () => mockAgentInstructionsService,
@@ -58,8 +71,8 @@ vi.mock("../services/index.js", () => ({
   secretService: () => mockSecretService,
   syncInstructionsBundleConfigFromFilePath: mockSyncInstructionsBundleConfigFromFilePath,
   workspaceOperationService: () => ({}),
-agentInstructionsRevisionsService: () => ({}),
-reportedProblemsService: () => ({}),
+  agentInstructionsRevisionsService: () => mockAgentInstructionsRevisionsService,
+  reportedProblemsService: () => mockReportedProblemsService,
 }));
 
 vi.mock("../services/secrets.js", () => ({
@@ -92,9 +105,9 @@ function registerModuleMocks() {
     secretService: () => mockSecretService,
     syncInstructionsBundleConfigFromFilePath: mockSyncInstructionsBundleConfigFromFilePath,
     workspaceOperationService: () => ({}),
-    agentInstructionsRevisionsService: () => ({}),
-  reportedProblemsService: () => ({}),
-}));
+    agentInstructionsRevisionsService: () => mockAgentInstructionsRevisionsService,
+    reportedProblemsService: () => mockReportedProblemsService,
+  }));
 
   vi.doMock("../services/secrets.js", () => ({
     secretService: () => mockSecretService,

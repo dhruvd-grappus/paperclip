@@ -573,6 +573,8 @@ describe("issue activity event routes", () => {
       select: () => ({
         from: () => ({
           where: () => ({
+            then: (onFulfilled: (rows: unknown[]) => unknown) =>
+              Promise.resolve([handoffActivityRow]).then(onFulfilled),
             orderBy: async () => [handoffActivityRow],
           }),
         }),
