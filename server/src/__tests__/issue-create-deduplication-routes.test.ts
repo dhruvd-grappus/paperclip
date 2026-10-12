@@ -228,7 +228,7 @@ describeEmbeddedPostgres("issue create deduplication routes", () => {
     expect(duplicate.body.id).not.toBe(first.body.id);
   });
 
-  it("does not apply the route soft guard to internal service creates", async () => {
+  it("deduplicates internal service creates by recent open title (GRA-643 P3.2)", async () => {
     const companyId = await seedCompany();
     const parent = await seedParent(companyId);
     const svc = issueService(db);
@@ -246,7 +246,9 @@ describeEmbeddedPostgres("issue create deduplication routes", () => {
       priority: "medium",
     });
 
-    expect(second.id).not.toBe(first.id);
+    // Title dedup is now the default for both routes and internal service
+    // callers (was: route-only). Pass `allowDuplicate: true` to bypass.
+    expect(second.id).toBe(first.id);
   });
 
   it("does not let closed or older issues block a recreate", async () => {
