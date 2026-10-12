@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Pick the test files that gate a Grappus overlay build, and optionally one
-// shard of them. Prints JSON: { mode, since, shard, server: [...], ui: [...] }.
+// shard of them. Prints JSON: { mode, since, shard, server: [...] }.
 //
 //   node scripts/grappus/select-tests.mjs [--since <sha>] [--shard <i>/<n>]
 //
@@ -8,15 +8,20 @@
 //   full         every test file the fork touched since the upstream base tag
 //                (scripts/grappus/BASE) plus the core suites below. Used when
 //                --since is absent, not an ancestor of HEAD, or the range changes
-//                anything outside server/ and ui/ (shared packages, CI itself).
+//                anything outside server/ (shared packages, CI itself).
 //   incremental  test files changed in <since>..HEAD, the tests next to every
 //                changed source file (foo.ts -> foo.test.ts, foo.*.test.ts,
 //                __tests__/foo*.test.ts), plus the core suites.
 //
-// Sharding splits the server list greedily by measured duration
-// (scripts/general-server-shard-durations.json; unknown files weigh the median)
-// so the one 10-minute integration suite does not sit beside three others. UI
-// tests are cheap and always go to shard 1.
+// The grappus gate is a fast unit-test gate. UI suites, end-to-end / integration
+// suites (*.integration.test.ts), and any test measured above
+// MAX_TEST_DURATION_MS in scripts/general-server-shard-durations.json are
+// excluded; the full upstream suite runs in the regular PR/release gates. This
+// keeps the overlay gate under a few minutes and makes it cheap to re-run when
+// flakes hit.
+//
+// Sharding splits the server list greedily by measured duration so no single
+// shard starves.
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
@@ -26,13 +31,40 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..")
 const BASE = readFileSync(path.join(ROOT, "scripts/grappus/BASE"), "utf8").trim();
 
 // Always run: the fork's own regression suites for the native runner path.
+// Kept small on purpose — heavy / embedded-postgres tests belong in the regular
+// PR/release gate, not here.
 const CORE_SERVER = [
   "src/__tests__/recovery-stale-issue-lock-sweep.test.ts",
-  "src/__tests__/heartbeat-process-recovery.test.ts",
-  "src/__tests__/agent-conversations.test.ts",
   "src/services/runner-goals.test.ts",
 ];
-const CORE_UI = ["src/components/Sidebar.test.tsx"];
+
+// Tests the gate never runs. End-to-end / integration suites and the slow
+// native-runtime / chat suites run in the regular PR/release gates, not here.
+// Add patterns when a new e2e / integration suite ships so it does not
+// silently land back in this gate.
+const EXCLUDE_PATTERNS = [
+  /\.integration\.test\.ts$/,
+  /__tests__\/photon\//,
+  /native-runtime\/.*\.test\.ts$/,
+  /chat-channels\.test\.ts$/,
+  /agent-conversations\.test\.ts$/,
+  // 108-route mega-test that flakes under load and is not a small unit test.
+  /issue-agent-mutation-ownership-routes\.test\.ts$/,
+];
+
+// A test that takes more than this is not a "small unit test" and belongs in
+// the regular PR/release gate, not here. Durations come from
+// scripts/general-server-shard-durations.json. Tests with no recorded
+// duration stay in the gate (they are usually quick mocks).
+const MAX_TEST_DURATION_MS = 5000;
+
+function loadDurations() {
+  try {
+    return JSON.parse(readFileSync(path.join(ROOT, "scripts/general-server-shard-durations.json"), "utf8")).durations ?? {};
+  } catch {
+    return {};
+  }
+}
 
 function git(...args) {
   return execFileSync("git", args, { cwd: ROOT, encoding: "utf8" }).trim();
@@ -42,6 +74,12 @@ function lines(text) {
 }
 function isTest(file) {
   return /\.test\.tsx?$/.test(file);
+}
+function isExcluded(file) {
+  if (EXCLUDE_PATTERNS.some((re) => re.test(file))) return true;
+  const durations = loadDurations();
+  const ms = durations[`server/${file}`];
+  return typeof ms === "number" && ms > MAX_TEST_DURATION_MS;
 }
 
 const args = process.argv.slice(2);
@@ -59,7 +97,8 @@ for (let i = 0; i < args.length; i++) {
   } else throw new Error(`unknown argument ${args[i]}`);
 }
 
-const allTests = lines(git("ls-files", "server/src/**/*.test.ts", "ui/src/**/*.test.ts", "ui/src/**/*.test.tsx"));
+const allTests = lines(git("ls-files", "server/src/**/*.test.ts", "ui/src/**/*.test.ts", "ui/src/**/*.test.tsx"))
+  .filter((f) => !isExcluded(f));
 
 let mode = "full";
 let changed = [];
@@ -81,9 +120,10 @@ if (since) {
 
 let selected;
 if (mode === "full") {
-  selected = new Set(lines(git("diff", "--name-only", `v${BASE}..HEAD`, "--", "*.test.ts", "*.test.tsx")));
+  selected = new Set(lines(git("diff", "--name-only", `v${BASE}..HEAD`, "--", "*.test.ts", "*.test.tsx"))
+    .filter((f) => !isExcluded(f)));
 } else {
-  selected = new Set(changed.filter(isTest));
+  selected = new Set(changed.filter(isTest).filter((f) => !isExcluded(f)));
   for (const file of changed) {
     if (isTest(file)) continue;
     const ext = path.extname(file);
@@ -103,21 +143,18 @@ if (mode === "full") {
 }
 
 const server = new Set(CORE_SERVER);
-const ui = new Set(CORE_UI);
 for (const file of selected) {
   if (!existsSync(path.join(ROOT, file))) continue;
   if (file.startsWith("server/")) server.add(file.slice("server/".length));
-  else if (file.startsWith("ui/")) ui.add(file.slice("ui/".length));
 }
 
-let serverList = [...server].filter((f) => existsSync(path.join(ROOT, "server", f))).sort();
-let uiList = [...ui].filter((f) => existsSync(path.join(ROOT, "ui", f))).sort();
+let serverList = [...server]
+  .filter((f) => existsSync(path.join(ROOT, "server", f)))
+  .filter((f) => !isExcluded(f))
+  .sort();
 
 if (shardCount) {
-  let durations = {};
-  try {
-    durations = JSON.parse(readFileSync(path.join(ROOT, "scripts/general-server-shard-durations.json"), "utf8")).durations ?? {};
-  } catch {}
+  const durations = loadDurations();
   const known = Object.values(durations).sort((a, b) => a - b);
   const median = known.length ? known[known.length >> 1] : 1000;
   const weight = (f) => durations[`server/${f}`] ?? median;
@@ -128,7 +165,6 @@ if (shardCount) {
     bin.load += weight(f);
   }
   serverList = bins[shardIndex - 1].files.sort();
-  if (shardIndex !== 1) uiList = [];
 }
 
-process.stdout.write(JSON.stringify({ mode, since, shard: shardCount ? `${shardIndex}/${shardCount}` : null, server: serverList, ui: uiList }, null, 2) + "\n");
+process.stdout.write(JSON.stringify({ mode, since, shard: shardCount ? `${shardIndex}/${shardCount}` : null, server: serverList }, null, 2) + "\n");
