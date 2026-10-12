@@ -42,6 +42,8 @@ vi.mock("../services/index.js", () => ({
     getExperimental: vi.fn(),
   }),
   logActivity: vi.fn(),
+agentInstructionsRevisionsService: () => ({}),
+reportedProblemsService: () => ({}),
 }));
 
 describe("company routes malformed issue path guard", () => {

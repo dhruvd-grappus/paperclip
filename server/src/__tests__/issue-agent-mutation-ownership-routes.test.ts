@@ -277,7 +277,9 @@ function registerRouteMocks() {
       syncRunStatusForIssue: vi.fn(async () => undefined),
     }),
     workProductService: () => mockWorkProductService,
-  }));
+    agentInstructionsRevisionsService: () => ({}),
+  reportedProblemsService: () => ({}),
+}));
 }
 
 function makeIssue(overrides: Record<string, unknown> = {}) {

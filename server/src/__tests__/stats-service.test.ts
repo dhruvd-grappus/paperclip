@@ -42,7 +42,9 @@ function registerModuleMocks() {
   vi.doMock("../services/index.js", () => ({
     statsService: () => mockStatsService,
     accessService: () => mockAccessService,
-  }));
+    agentInstructionsRevisionsService: () => ({}),
+  reportedProblemsService: () => ({}),
+}));
 }
 
 describe("stats routes", () => {

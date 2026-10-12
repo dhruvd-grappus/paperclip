@@ -40,6 +40,8 @@ vi.mock("../services/index.js", () => ({
   accessService: () => mockAccessService,
   issueService: () => mockIssueService,
   heartbeatService: () => mockHeartbeatService,
+agentInstructionsRevisionsService: () => ({}),
+reportedProblemsService: () => ({}),
 }));
 
 vi.mock("../services/agent-action-audit.js", () => ({

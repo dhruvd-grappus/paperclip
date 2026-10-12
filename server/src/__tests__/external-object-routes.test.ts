@@ -78,7 +78,9 @@ function registerRouteMocks() {
     projectService: () => ({}),
     routineService: () => ({}),
     workProductService: () => ({}),
-  }));
+    agentInstructionsRevisionsService: () => ({}),
+  reportedProblemsService: () => ({}),
+}));
 }
 
 function makeIssue(overrides: Record<string, unknown> = {}) {

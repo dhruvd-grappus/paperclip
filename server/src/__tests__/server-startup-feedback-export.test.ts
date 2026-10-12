@@ -347,6 +347,8 @@ vi.mock("../services/index.js", () => ({
       failed: 0,
     })),
   })),
+agentInstructionsRevisionsService: () => ({}),
+reportedProblemsService: () => ({}),
 }));
 
 vi.mock("../services/connection-intent-delivery.js", () => ({

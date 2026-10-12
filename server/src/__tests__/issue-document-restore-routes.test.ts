@@ -150,7 +150,9 @@ function registerModuleMocks() {
     projectService: () => ({}),
     routineService: () => mockRoutineService,
     workProductService: () => ({}),
-  }));
+    agentInstructionsRevisionsService: () => ({}),
+  reportedProblemsService: () => ({}),
+}));
 }
 
 function createRunContextDb(contextSnapshot: Record<string, unknown>) {

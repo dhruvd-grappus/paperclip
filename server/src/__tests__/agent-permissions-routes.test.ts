@@ -123,6 +123,13 @@ const mockInstanceSettingsService = vi.hoisted(() => ({
   getGeneral: vi.fn(),
 }));
 
+const mockAgentInstructionsRevisionsService = vi.hoisted(() => ({
+  list: vi.fn(),
+  snapshot: vi.fn(),
+  rollback: vi.fn(),
+  getById: vi.fn(),
+}));
+
 function registerModuleMocks() {
   vi.doMock("@paperclipai/adapter-opencode-local/server", async () => {
     const actual = await vi.importActual<typeof import("@paperclipai/adapter-opencode-local/server")>("@paperclipai/adapter-opencode-local/server");
@@ -205,6 +212,7 @@ function registerModuleMocks() {
   vi.doMock("../services/index.js", () => ({
     agentService: () => mockAgentService,
     agentInstructionsService: () => mockAgentInstructionsService,
+    agentInstructionsRevisionsService: () => mockAgentInstructionsRevisionsService,
     accessService: () => mockAccessService,
     approvalService: () => mockApprovalService,
     builtInAgentService: () => mockBuiltInAgentService,
@@ -219,7 +227,8 @@ function registerModuleMocks() {
     syncInstructionsBundleConfigFromFilePath: mockSyncInstructionsBundleConfigFromFilePath,
     workspaceOperationService: () => mockWorkspaceOperationService,
     environmentService: () => mockEnvironmentService,
-  }));
+    reportedProblemsService: () => ({}),
+}));
 }
 
 function createDbStub(options: { requireBoardApprovalForNewAgents?: boolean } = {}) {

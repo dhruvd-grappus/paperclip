@@ -122,7 +122,9 @@ function registerModuleMocks() {
     issueService: () => mockIssueService,
     heartbeatService: () => mockHeartbeatService,
     logActivity: mockLogActivity,
-  }));
+    agentInstructionsRevisionsService: () => ({}),
+  reportedProblemsService: () => ({}),
+}));
 
   vi.doMock("../services/quota-windows.js", () => ({
     fetchAllQuotaWindows: mockFetchAllQuotaWindows,

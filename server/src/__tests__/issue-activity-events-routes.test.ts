@@ -133,7 +133,9 @@ function registerModuleMocks() {
     projectService: () => ({}),
     routineService: () => mockRoutineService,
     workProductService: () => ({}),
-  }));
+    agentInstructionsRevisionsService: () => ({}),
+  reportedProblemsService: () => ({}),
+}));
 }
 
 async function createApp(db: unknown = {}) {

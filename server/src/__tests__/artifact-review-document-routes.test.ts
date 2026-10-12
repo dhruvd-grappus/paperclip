@@ -123,7 +123,9 @@ function registerRouteMocks() {
       syncRunStatusForIssue: vi.fn(async () => undefined),
     }),
     workProductService: () => mockWorkProductService,
-  }));
+    agentInstructionsRevisionsService: () => ({}),
+  reportedProblemsService: () => ({}),
+}));
 }
 
 function createStorageService(): StorageService {

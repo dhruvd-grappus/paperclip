@@ -29,7 +29,9 @@ function registerModuleMocks() {
       getById: getAssetByIdMock,
     })),
     logActivity: logActivityMock,
-  }));
+    agentInstructionsRevisionsService: () => ({}),
+  reportedProblemsService: () => ({}),
+}));
 }
 
 function createAsset() {

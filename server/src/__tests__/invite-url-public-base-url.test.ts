@@ -27,7 +27,9 @@ function registerModuleMocks() {
     deduplicateAgentName: vi.fn(),
     logActivity: (...args: unknown[]) => logActivityMock(...args),
     notifyHireApproved: vi.fn(),
-  }));
+    agentInstructionsRevisionsService: () => ({}),
+  reportedProblemsService: () => ({}),
+}));
 }
 
 function createDbStub() {

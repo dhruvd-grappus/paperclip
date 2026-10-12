@@ -63,6 +63,8 @@ vi.mock("../services/index.js", () => ({
   companyService: () => mockCompanyService,
   feedbackService: () => mockFeedbackService,
   logActivity: mockLogActivity,
+agentInstructionsRevisionsService: () => ({}),
+reportedProblemsService: () => ({}),
 }));
 
 // Passthrough wrapper around the real spool module whose removeImportTransferSpool

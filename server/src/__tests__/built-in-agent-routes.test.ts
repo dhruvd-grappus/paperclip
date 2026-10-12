@@ -77,7 +77,9 @@ function registerModuleMocks() {
     accessService: () => mockAccessService,
     instanceSettingsService: () => mockInstanceSettingsService,
     logActivity: mockLogActivity,
-  }));
+    agentInstructionsRevisionsService: () => ({}),
+  reportedProblemsService: () => ({}),
+}));
   vi.doMock("../services/built-in-agents.js", () => ({
     builtInAgentService: () => mockBuiltInAgentService,
   }));

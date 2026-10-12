@@ -129,6 +129,8 @@ vi.mock("../services/index.js", () => ({
     syncRunStatusForIssue: vi.fn(async () => undefined),
   }),
   workProductService: () => ({}),
+agentInstructionsRevisionsService: () => ({}),
+reportedProblemsService: () => ({}),
 }));
 
 import { errorHandler } from "../middleware/index.js";

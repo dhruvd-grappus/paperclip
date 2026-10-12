@@ -45,6 +45,8 @@ vi.mock("../services/index.js", () => ({
   deduplicateAgentName: vi.fn(),
   logActivity: mockLogActivity,
   notifyHireApproved: vi.fn(),
+agentInstructionsRevisionsService: () => ({}),
+reportedProblemsService: () => ({}),
 }));
 
 vi.mock("../storage/index.js", () => ({

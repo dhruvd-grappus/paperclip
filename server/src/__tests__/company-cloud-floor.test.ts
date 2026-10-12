@@ -27,6 +27,8 @@ vi.mock("../services/index.js", () => ({
   feedbackService: () => ({}),
   logActivity: mockLogActivity,
   workTimelineService: () => ({}),
+agentInstructionsRevisionsService: () => ({}),
+reportedProblemsService: () => ({}),
 }));
 
 const createdCompany = {

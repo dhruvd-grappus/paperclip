@@ -35,6 +35,8 @@ vi.mock("../services/index.js", () => ({
   logActivity: mockLogActivity,
   notifyHireApproved: vi.fn(),
   deduplicateAgentName: vi.fn((name: string) => name),
+agentInstructionsRevisionsService: () => ({}),
+reportedProblemsService: () => ({}),
 }));
 
 function registerModuleMocks() {
@@ -47,7 +49,9 @@ function registerModuleMocks() {
     logActivity: mockLogActivity,
     notifyHireApproved: vi.fn(),
     deduplicateAgentName: vi.fn((name: string) => name),
-  }));
+    agentInstructionsRevisionsService: () => ({}),
+  reportedProblemsService: () => ({}),
+}));
 }
 
 let appImportCounter = 0;

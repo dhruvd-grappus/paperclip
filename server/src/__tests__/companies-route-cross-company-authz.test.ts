@@ -57,7 +57,9 @@ function registerCompanyRouteMocks() {
     companyService: () => mockCompanyService,
     feedbackService: () => mockFeedbackService,
     logActivity: mockLogActivity,
-  }));
+    agentInstructionsRevisionsService: () => ({}),
+  reportedProblemsService: () => ({}),
+}));
 }
 
 let appImportCounter = 0;

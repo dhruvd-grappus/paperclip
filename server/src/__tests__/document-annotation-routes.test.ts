@@ -154,7 +154,9 @@ function registerModuleMocks() {
     projectService: () => ({}),
     routineService: () => ({ syncRunStatusForIssue: vi.fn(async () => undefined) }),
     workProductService: () => ({}),
-  }));
+    agentInstructionsRevisionsService: () => ({}),
+  reportedProblemsService: () => ({}),
+}));
 }
 
 async function createApp(actor: "board" | "agent" = "board", actorCompanyId = companyId) {

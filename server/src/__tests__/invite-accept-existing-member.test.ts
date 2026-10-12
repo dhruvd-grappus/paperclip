@@ -27,6 +27,8 @@ vi.mock("../services/index.js", () => ({
   deduplicateAgentName: vi.fn(),
   logActivity: logActivityMock,
   notifyHireApproved: vi.fn(),
+agentInstructionsRevisionsService: () => ({}),
+reportedProblemsService: () => ({}),
 }));
 
 type QueryHooks = {

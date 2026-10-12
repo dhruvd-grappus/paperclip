@@ -32,7 +32,9 @@ function registerModuleMocks() {
     instanceSettingsService: () => mockInstanceSettingsService,
     logActivity: mockLogActivity,
     publishActivity: mockPublishActivity,
-  }));
+    agentInstructionsRevisionsService: () => ({}),
+  reportedProblemsService: () => ({}),
+}));
   vi.doMock("../services/environments.js", () => ({
     environmentService: () => mockEnvironmentService,
   }));

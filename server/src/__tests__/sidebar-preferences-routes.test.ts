@@ -14,7 +14,9 @@ function registerModuleMocks() {
   vi.doMock("../services/index.js", () => ({
     sidebarPreferenceService: () => mockSidebarPreferenceService,
     logActivity: mockLogActivity,
-  }));
+    agentInstructionsRevisionsService: () => ({}),
+  reportedProblemsService: () => ({}),
+}));
 }
 
 async function createApp(actor: Record<string, unknown>) {

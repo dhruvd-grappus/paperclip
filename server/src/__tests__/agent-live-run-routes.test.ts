@@ -138,7 +138,9 @@ function registerModuleMocks() {
     secretService: () => ({}),
     syncInstructionsBundleConfigFromFilePath: vi.fn((_agent, config) => config),
     workspaceOperationService: () => mockWorkspaceOperationService,
-  }));
+    agentInstructionsRevisionsService: () => ({}),
+  reportedProblemsService: () => ({}),
+}));
 
   vi.doMock("../adapters/index.js", () => ({
     findServerAdapter: vi.fn(),

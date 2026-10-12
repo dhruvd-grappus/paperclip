@@ -55,6 +55,8 @@ vi.mock("../services/index.js", () => ({
     getExperimental: vi.fn(),
   }),
   logActivity: mockLogActivity,
+agentInstructionsRevisionsService: () => ({}),
+reportedProblemsService: () => ({}),
 }));
 
 function createCompany() {

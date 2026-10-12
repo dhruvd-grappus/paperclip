@@ -52,6 +52,8 @@ vi.mock("../services/index.js", () => ({
   projectService: () => mockProjectService,
   secretService: () => mockSecretService,
   workspaceOperationService: () => mockWorkspaceOperationService,
+agentInstructionsRevisionsService: () => ({}),
+reportedProblemsService: () => ({}),
 }));
 
 vi.mock("../services/environments.js", () => ({
@@ -88,7 +90,9 @@ function registerModuleMocks() {
     projectService: () => mockProjectService,
     secretService: () => mockSecretService,
     workspaceOperationService: () => mockWorkspaceOperationService,
-  }));
+    agentInstructionsRevisionsService: () => ({}),
+  reportedProblemsService: () => ({}),
+}));
 
   vi.doMock("../services/environments.js", () => ({
     environmentService: () => mockEnvironmentService,

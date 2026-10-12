@@ -31,6 +31,8 @@ vi.mock("../services/index.js", () => ({
   feedbackService: () => ({}),
   logActivity: mockLogActivity,
   workTimelineService: () => ({}),
+agentInstructionsRevisionsService: () => ({}),
+reportedProblemsService: () => ({}),
 }));
 
 vi.mock("../services/company-transfer-runs.js", () => ({

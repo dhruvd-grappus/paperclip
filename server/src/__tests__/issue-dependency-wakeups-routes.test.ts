@@ -94,6 +94,11 @@ vi.mock("../services/index.js", () => ({
     expireStaleRequestConfirmationsForIssueDocument: vi.fn(async () => []),
   }),
   issueService: () => mockIssueService,
+  reportedProblemsService: () => ({
+    list: vi.fn(async () => []),
+    create: vi.fn(async () => ({})),
+    byVersion: vi.fn(async () => []),
+  }),
   logActivity: vi.fn(async () => undefined),
   projectService: () => ({
     getById: vi.fn(),
@@ -105,6 +110,7 @@ vi.mock("../services/index.js", () => ({
   workProductService: () => ({
     listForIssue: vi.fn(async () => []),
   }),
+agentInstructionsRevisionsService: () => ({}),
 }));
 
 vi.mock("../services/issue-dependency-wakeups.js", async () => {

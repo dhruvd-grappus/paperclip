@@ -155,7 +155,9 @@ function registerModuleMocks() {
     projectService: () => ({}),
     routineService: () => ({ syncRunStatusForIssue: vi.fn(async () => undefined) }),
     workProductService: () => ({}),
-  }));
+    agentInstructionsRevisionsService: () => ({}),
+  reportedProblemsService: () => ({}),
+}));
 }
 
 let lastErrorContext: unknown;

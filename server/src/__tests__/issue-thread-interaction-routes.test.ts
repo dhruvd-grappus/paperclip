@@ -235,7 +235,9 @@ function registerModuleMocks() {
       syncRunStatusForIssue: vi.fn(async () => undefined),
     }),
     workProductService: () => ({}),
-  }));
+    agentInstructionsRevisionsService: () => ({}),
+  reportedProblemsService: () => ({}),
+}));
 }
 
 function createIssue(overrides: Record<string, unknown> = {}) {

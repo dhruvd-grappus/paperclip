@@ -28,7 +28,9 @@ function registerModuleMocks() {
   vi.doMock("../services/index.js", () => ({
     accessService: () => mockAccessService,
     agentService: () => mockAgentService,
-  }));
+    agentInstructionsRevisionsService: () => ({}),
+  reportedProblemsService: () => ({}),
+}));
 
   vi.doMock("../services/teams-catalog.js", () => mockCatalogModule);
 }

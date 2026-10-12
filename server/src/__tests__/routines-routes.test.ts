@@ -162,7 +162,9 @@ function registerModuleMocks() {
     documentAnnotationService: () => mockAnnotationService,
     logActivity: mockLogActivity,
     routineService: () => mockRoutineService,
-  }));
+    agentInstructionsRevisionsService: () => ({}),
+  reportedProblemsService: () => ({}),
+}));
 }
 
 async function createApp(actor: Record<string, unknown>) {

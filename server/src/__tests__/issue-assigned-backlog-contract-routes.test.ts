@@ -112,6 +112,8 @@ vi.mock("../services/index.js", () => ({
   workProductService: () => ({
     listForIssue: vi.fn(async () => []),
   }),
+agentInstructionsRevisionsService: () => ({}),
+reportedProblemsService: () => ({}),
 }));
 
 async function createApp() {

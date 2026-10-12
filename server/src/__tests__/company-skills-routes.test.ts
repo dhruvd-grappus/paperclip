@@ -193,7 +193,9 @@ function registerModuleMocks() {
     issueService: () => mockIssueService,
     heartbeatService: () => mockHeartbeatService,
     logActivity: mockLogActivity,
-  }));
+    agentInstructionsRevisionsService: () => ({}),
+  reportedProblemsService: () => ({}),
+}));
 }
 
 describe("company skill mutation permissions", () => {

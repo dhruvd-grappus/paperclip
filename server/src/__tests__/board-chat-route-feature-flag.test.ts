@@ -15,6 +15,8 @@ const mockSpawn = vi.hoisted(() => vi.fn());
 vi.mock("../services/index.js", () => ({
   instanceSettingsService: () => ({ getExperimental: mockGetExperimental }),
   issueService: () => mockIssueService,
+agentInstructionsRevisionsService: () => ({}),
+reportedProblemsService: () => ({}),
 }));
 
 vi.mock("node:child_process", () => ({ spawn: mockSpawn }));

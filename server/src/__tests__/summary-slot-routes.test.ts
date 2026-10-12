@@ -65,7 +65,9 @@ function registerModuleMocks() {
     heartbeatService: () => ({ wakeup: mockHeartbeatWakeup }),
     instanceSettingsService: () => mockInstanceSettingsService,
     logActivity: mockLogActivity,
-  }));
+    agentInstructionsRevisionsService: () => ({}),
+  reportedProblemsService: () => ({}),
+}));
   vi.doMock("../services/summary-slots.js", () => ({
     summarySlotService: () => mockSummarySlotService,
   }));

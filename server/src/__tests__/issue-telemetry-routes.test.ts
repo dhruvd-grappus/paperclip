@@ -123,7 +123,9 @@ function registerModuleMocks() {
       syncRunStatusForIssue: vi.fn(async () => undefined),
     }),
     workProductService: () => ({}),
-  }));
+    agentInstructionsRevisionsService: () => ({}),
+  reportedProblemsService: () => ({}),
+}));
 }
 
 function makeIssue(status: "todo" | "done") {

@@ -13,7 +13,9 @@ function registerModuleMocks() {
     instanceSettingsService: () => ({}),
     logActivity: vi.fn(),
     publishActivity: vi.fn(),
-  }));
+    agentInstructionsRevisionsService: () => ({}),
+  reportedProblemsService: () => ({}),
+}));
   vi.doMock("../services/environments.js", () => ({ environmentService: () => ({}) }));
   vi.doMock("../services/instance-build.js", () => ({
     instanceBuildInfo: () => ({ commit: "82744b47", shortCommit: "82744b47", build: "22", repositoryUrl: null, commits: [] }),

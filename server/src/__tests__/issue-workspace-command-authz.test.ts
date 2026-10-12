@@ -148,7 +148,9 @@ function registerRouteMocks() {
     projectService: () => ({}),
     routineService: () => mockRoutineService,
     workProductService: () => ({}),
-  }));
+    agentInstructionsRevisionsService: () => ({}),
+  reportedProblemsService: () => ({}),
+}));
 }
 
 async function createApp(actor: Record<string, unknown>) {

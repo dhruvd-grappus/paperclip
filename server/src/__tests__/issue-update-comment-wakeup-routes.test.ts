@@ -127,6 +127,8 @@ vi.mock("../services/index.js", () => ({
     syncRunStatusForIssue: vi.fn(async () => undefined),
   }),
   workProductService: () => ({}),
+agentInstructionsRevisionsService: () => ({}),
+reportedProblemsService: () => ({}),
 }));
 
 function registerModuleMocks() {
@@ -198,7 +200,9 @@ function registerModuleMocks() {
       syncRunStatusForIssue: vi.fn(async () => undefined),
     }),
     workProductService: () => ({}),
-  }));
+    agentInstructionsRevisionsService: () => ({}),
+  reportedProblemsService: () => ({}),
+}));
 }
 
 async function createApp() {

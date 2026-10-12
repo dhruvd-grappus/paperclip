@@ -86,6 +86,8 @@ vi.mock("../services/index.js", () => ({
   feedbackService: () => mockFeedbackService,
   instanceSettingsService: () => mockInstanceSettingsService,
   logActivity: mockLogActivity,
+agentInstructionsRevisionsService: () => ({}),
+reportedProblemsService: () => ({}),
 }));
 
 function registerCompanyRouteMocks() {
@@ -99,7 +101,9 @@ function registerCompanyRouteMocks() {
     feedbackService: () => mockFeedbackService,
     instanceSettingsService: () => mockInstanceSettingsService,
     logActivity: mockLogActivity,
-  }));
+    agentInstructionsRevisionsService: () => ({}),
+  reportedProblemsService: () => ({}),
+}));
 }
 
 let appImportCounter = 0;

@@ -41,7 +41,9 @@ function registerModuleMocks() {
     issueApprovalService: () => mockIssueApprovalService,
     logActivity: mockLogActivity,
     secretService: () => mockSecretService,
-  }));
+    agentInstructionsRevisionsService: () => ({}),
+  reportedProblemsService: () => ({}),
+}));
 }
 
 const routeModules = hoistModuleGraph(registerModuleMocks, async () => {

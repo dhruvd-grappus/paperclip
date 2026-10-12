@@ -49,6 +49,8 @@ vi.mock("../services/index.js", () => ({
   workspaceOperationService: () => mockWorkspaceOperationService,
   workspaceRuntimeLeaseService: () => mockWorkspaceRuntimeLeaseService,
   LEASED_WORKSPACE_RUNTIME_ACTIONS: ["start", "stop", "restart", "repair"],
+agentInstructionsRevisionsService: () => ({}),
+reportedProblemsService: () => ({}),
 }));
 
 vi.mock("../services/environment-runtime.js", () => ({

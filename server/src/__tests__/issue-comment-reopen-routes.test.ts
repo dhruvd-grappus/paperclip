@@ -199,6 +199,8 @@ vi.mock("../services/index.js", () => ({
   projectService: () => ({}),
   routineService: () => mockRoutineService,
   workProductService: () => ({}),
+agentInstructionsRevisionsService: () => ({}),
+reportedProblemsService: () => ({}),
 }));
 
 vi.mock("../services/external-objects.js", () => ({

@@ -58,6 +58,8 @@ vi.mock("../services/index.js", () => ({
     release: mockReleaseRuntimeLease,
   }),
   LEASED_WORKSPACE_RUNTIME_ACTIONS: ["start", "stop", "restart", "repair"],
+agentInstructionsRevisionsService: () => ({}),
+reportedProblemsService: () => ({}),
 }));
 
 vi.mock("../services/workspace-runtime.js", () => ({

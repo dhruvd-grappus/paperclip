@@ -68,6 +68,8 @@ vi.mock("../services/index.js", () => ({
   environmentService: () => mockEnvironmentService,
   environmentCustomImageService: () => mockEnvironmentCustomImageService,
   logActivity: mockLogActivity,
+agentInstructionsRevisionsService: () => ({}),
+reportedProblemsService: () => ({}),
 }));
 
 vi.mock("../services/environments.js", () => ({

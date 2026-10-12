@@ -16,6 +16,8 @@ const mockLogActivity = vi.hoisted(() => vi.fn());
 vi.mock("../services/index.js", () => ({
   folderService: () => mockFolderService,
   logActivity: mockLogActivity,
+agentInstructionsRevisionsService: () => ({}),
+reportedProblemsService: () => ({}),
 }));
 
 async function createApp() {

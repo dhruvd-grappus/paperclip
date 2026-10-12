@@ -36,6 +36,8 @@ vi.mock("../services/index.js", () => ({
   issueService: () => mockIssueService,
   issueTreeControlService: () => mockTreeControlService,
   logActivity: mockLogActivity,
+agentInstructionsRevisionsService: () => ({}),
+reportedProblemsService: () => ({}),
 }));
 
 async function createApp(
