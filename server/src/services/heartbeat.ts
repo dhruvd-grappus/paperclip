@@ -26031,20 +26031,10 @@ export function heartbeatService(
       return priorReceipt.runId ? getRun(priorReceipt.runId) : null;
     }
 
-    const agentDebug = parseObject(parseObject(agent.runtimeConfig).debug);
-    const runDebug = parseObject(enrichedContextSnapshot.debug);
-    if (
-      agentDebug.providerTrace === "raw" &&
-      runDebug.providerTrace !== "raw"
-    ) {
-      enrichedContextSnapshot.debug = {
-        ...runDebug,
-        providerTrace: "raw",
-      };
-      enrichedContextSnapshot.providerTraceRequestedBy = `agent:${agent.id}:debug-setting`;
-      enrichedContextSnapshot.providerTraceRequestSource =
-        "agent_debug_setting";
-    }
+    // GRA-643 P1.4: do not auto-trigger provider-trace capture from the agent
+// debug setting. The captured frames were never read before expiry (463/463
+// expired) and the cost (46 KB/run average, 12 MB outliers) was wasted.
+// Capture only fires when the run itself opts in via run-level `debug`.
 
     // Automatic signals are replaceable; user input and interaction delivery
     // retain distinct durable receipts even when the same gate blocks them.

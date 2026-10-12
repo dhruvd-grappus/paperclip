@@ -1512,6 +1512,13 @@ export function routineService(
     const fingerprintCondition = routineExecutionFingerprintCondition(dispatchFingerprint);
     const originKind = origin?.kind ?? "routine_execution";
     const originId = origin?.id ?? routine.id;
+    // GRA-643 P1.2: routine execution issues are hidden by default to keep
+    // the board clean. Coalescing depends on finding the in-flight issue, so
+    // here we also accept hidden issues that match this routine's origin.
+    const executionVisibility = and(
+      isNull(issues.harnessKind),
+      or(isNull(issues.hiddenAt), eq(issues.originKind, "routine_execution"))!,
+    )!;
     const executionBoundIssue = await executor
       .select()
       .from(issues)
@@ -1528,7 +1535,7 @@ export function routineService(
           eq(issues.originKind, originKind),
           eq(issues.originId, originId),
           inArray(issues.status, OPEN_ISSUE_STATUSES),
-          visibleIssueCondition(),
+          executionVisibility,
           ...(fingerprintCondition ? [fingerprintCondition] : []),
         ),
       )
@@ -1554,7 +1561,7 @@ export function routineService(
           eq(issues.originKind, originKind),
           eq(issues.originId, originId),
           inArray(issues.status, OPEN_ISSUE_STATUSES),
-          visibleIssueCondition(),
+          executionVisibility,
           ...(fingerprintCondition ? [fingerprintCondition] : []),
         ),
       )
@@ -1908,6 +1915,17 @@ export function routineService(
             executionWorkspaceId: input.executionWorkspaceId ?? null,
             executionWorkspacePreference: input.executionWorkspacePreference ?? null,
             executionWorkspaceSettings: input.executionWorkspaceSettings ?? null,
+            // GRA-643 P1.3: title dedup is now the default at the service layer
+            // (P3.2). Routine executions always need a fresh issue to attach
+            // the new heartbeat run id; the `issues_open_routine_execution_uq`
+            // index is what enforces "one live execution per (company,
+            // origin, fingerprint)" and the catch below handles that conflict.
+            allowDuplicate: true,
+            // GRA-643 P1.2: routine tasks (cleanup, stale-blockers, overwatch,
+            // storage cleanup) used to flood the board with self-referential
+            // duplicates. Hide them by default; the agent's comment trail is
+            // still on the run log.
+            hiddenAt: new Date(),
           });
         } catch (error) {
           const isOpenExecutionConflict =

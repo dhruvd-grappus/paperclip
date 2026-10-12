@@ -7877,10 +7877,22 @@ export function issueService(db: Db) {
         });
       }
 
-      const conditions = [
-        eq(issues.companyId, companyId),
-        visibleIssueCondition(),
-      ];
+      const conditions = [eq(issues.companyId, companyId)];
+      // GRA-643 P1.2: routine_execution issues are hidden by default (they
+      // flooded the board with self-referential cleanup duplicates), but
+      // remain visible to list callers that explicitly opt in
+      // (`includeRoutineExecutions: true`). This keeps the board clean while
+      // preserving the existing inbox / dashboard surface for routine runs.
+      if (filters?.includeRoutineExecutions) {
+        conditions.push(
+          and(
+            isNull(issues.harnessKind),
+            or(isNull(issues.hiddenAt), eq(issues.originKind, "routine_execution"))!,
+          )!,
+        );
+      } else {
+        conditions.push(visibleIssueCondition());
+      }
       if (!filters?.q?.trim()) conditions.push(isNull(issues.conversationAgentId));
       if (filters?.afterId) conditions.push(gt(issues.id, filters.afterId));
       const assigneeAgentFilter = parseIssueAssigneeAgentFilter(
@@ -8209,7 +8221,22 @@ export function issueService(db: Db) {
         return countBlockedInboxIssues(db, companyId, filters);
       }
 
-      const conditions = [eq(issues.companyId, companyId), visibleIssueCondition()];
+      const conditions = [eq(issues.companyId, companyId)];
+      // GRA-643 P1.2: routine_execution issues are hidden by default (they
+      // flooded the board with self-referential cleanup duplicates), but
+      // remain visible to list callers that explicitly opt in
+      // (`includeRoutineExecutions: true`). This keeps the board clean while
+      // preserving the existing inbox / dashboard surface for routine runs.
+      if (filters?.includeRoutineExecutions) {
+        conditions.push(
+          and(
+            isNull(issues.harnessKind),
+            or(isNull(issues.hiddenAt), eq(issues.originKind, "routine_execution"))!,
+          )!,
+        );
+      } else {
+        conditions.push(visibleIssueCondition());
+      }
       if (!filters?.q?.trim()) conditions.push(isNull(issues.conversationAgentId));
       const statuses = parseStatusFilter(filters?.status);
       if (statuses.length === 1)
@@ -9808,7 +9835,8 @@ export function issueService(db: Db) {
         }
         const idempotencyKey = rawIdempotencyKey?.trim() || null;
         const normalizedTitle = normalizeCreateIssueTitle(issueData.title);
-        if (allowDuplicate === false) {
+        // Title dedup is the default. Set `allowDuplicate: true` to bypass.
+        if (allowDuplicate !== true) {
           const titleGuardKey = `issue-create:title:${companyId}:${issueData.parentId ?? "root"}:${normalizedTitle}`;
           await tx.execute(
             sql`select pg_advisory_xact_lock(hashtextextended(${titleGuardKey}, 0))`,
@@ -9857,7 +9885,7 @@ export function issueService(db: Db) {
             .then((rows) => rows.map((row) => row.issues));
           if (existingIssue) deduplicationReason = "idempotency_key";
         }
-        if (!existingIssue && allowDuplicate === false) {
+        if (!existingIssue && allowDuplicate !== true) {
           [existingIssue] = await tx
             .select()
             .from(issues)

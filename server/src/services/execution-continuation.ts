@@ -14,6 +14,20 @@ import { sanitizeQuarantinedCommentForHigherTrust } from "./source-trust.js";
 import { hasConversationContinuationPolicy } from "./conversation-continuation.js";
 import { queuedCommentIdsFromWakePayload } from "./issue-queued-comment-queue.js";
 
+// GRA-643 P1.1: cap the messages array in the wake payload. Older messages
+// are still reachable via the resume-delta mechanism (and via the issue
+// comment history); shipping every comment on every wake was producing
+// 60–250 KB payloads and the model never acted on the older entries. The
+// cap is intentionally generous (the last 12 comments), which covers a
+// normal comment cycle on one issue. Set PAPERCLIP_WAKE_CONTINUATION_MESSAGES_CAP
+// to a different number (or 0 for unlimited).
+const DEFAULT_CONTINUATION_MESSAGES_CAP = 12;
+function continuationMessagesCap(): number {
+  const raw = Number(process.env.PAPERCLIP_WAKE_CONTINUATION_MESSAGES_CAP);
+  if (!Number.isFinite(raw) || raw < 0) return DEFAULT_CONTINUATION_MESSAGES_CAP;
+  return Math.floor(raw);
+}
+
 const object = (v: unknown): Record<string, unknown> =>
   v && typeof v === "object" && !Array.isArray(v)
     ? (v as Record<string, unknown>)
@@ -341,6 +355,14 @@ export async function buildExecutionContinuation(input: {
     (hasConversationContinuationPolicy(lastTerminal.result) ||
       lastTerminal.status === "interrupted" || lastTerminal.errorCode === "process_lost")
     ? lastTerminal.id : undefined);
+  // GRA-643 P1.1: cap the messages array. The resume-delta logic above still
+  // needs the full message set to figure out what's new for this run, but the
+  // envelope only ships the recent window to the model. Older messages stay
+  // in the comment DB and surface via the next resume-delta if they matter.
+  const cap = continuationMessagesCap();
+  const trimmedMessages = cap > 0 && messages.length > cap
+    ? messages.slice(-cap)
+    : messages;
   return {
     ...(interruptedRunId ? { interruptedRunId } : {}),
     ...(resumeDelta ? { resumeDelta } : {}),
@@ -360,7 +382,7 @@ export async function buildExecutionContinuation(input: {
     },
     originCommentIds,
     objective: latestRequest?.body ?? issue.description ?? issue.title,
-    messages,
+    messages: trimmedMessages,
     interactionOutcomes: interactions
       .filter((row) => row.status !== "pending")
       .map((row) => ({
