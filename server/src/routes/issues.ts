@@ -8097,6 +8097,9 @@ export function issueRoutes(
       excludeRoutineExecutions:
         req.query.excludeRoutineExecutions === "true" ||
         req.query.excludeRoutineExecutions === "1",
+      includeReportedProblems:
+        req.query.includeReportedProblems === "true" ||
+        req.query.includeReportedProblems === "1",
       includePluginOperations:
         req.query.includePluginOperations === "true" ||
         req.query.includePluginOperations === "1",
@@ -8322,6 +8325,9 @@ export function issueRoutes(
       excludeRoutineExecutions:
         req.query.excludeRoutineExecutions === "true" ||
         req.query.excludeRoutineExecutions === "1",
+      includeReportedProblems:
+        req.query.includeReportedProblems === "true" ||
+        req.query.includeReportedProblems === "1",
       includePluginOperations:
         req.query.includePluginOperations === "true" ||
         req.query.includePluginOperations === "1",

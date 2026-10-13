@@ -1857,6 +1857,16 @@ export interface IssueFilters {
   originId?: string;
   includeRoutineExecutions?: boolean;
   excludeRoutineExecutions?: boolean;
+  /**
+   * Include issues filed via "Report a Paperclip problem". By default these
+   * are hidden from normal board views — they live in the backlog on the
+   * Paperclip project, get surfaced on the /reported-problems page, and are
+   * only meant to surface on the standard issue list when an explicit caller
+   * (e.g. the Paperclip project's own board view) opts in.
+   * GRA-632 — these are actual issues, not notes, but the user only wants
+   * to see them where problems are picked.
+   */
+  includeReportedProblems?: boolean;
   includePluginOperations?: boolean;
   includeBlockedBy?: boolean;
   includeBlockedInboxAttention?: boolean;
@@ -6340,6 +6350,14 @@ async function blockedInboxIssueConditions(
   ) {
     conditions.push(ne(issues.originKind, "routine_execution"));
   }
+  if (
+    !filters?.includeReportedProblems &&
+    !filters?.originKind &&
+    !filters?.originKindPrefix &&
+    !filters?.originId
+  ) {
+    conditions.push(ne(issues.originKind, "reported_problem"));
+  }
 
   return { conditions, contextUserId };
 }
@@ -8041,6 +8059,14 @@ export function issueService(db: Db) {
       ) {
         conditions.push(ne(issues.originKind, "routine_execution"));
       }
+      if (
+        !filters?.includeReportedProblems &&
+        !filters?.originKind &&
+        !filters?.originKindPrefix &&
+        !filters?.originId
+      ) {
+        conditions.push(ne(issues.originKind, "reported_problem"));
+      }
       const priorityOrder = sql`CASE ${issues.priority} WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE 4 END`;
       const searchOrder = sql<number>`-task_search.score`;
       const issueSource = db.select(issueListSelect).from(issues);
@@ -8285,6 +8311,14 @@ export function issueService(db: Db) {
       }
       if (!shouldIncludePluginOperationIssues(filters))
         conditions.push(nonPluginOperationIssueCondition());
+      if (
+        !filters?.includeReportedProblems &&
+        !filters?.originKind &&
+        !filters?.originKindPrefix &&
+        !filters?.originId
+      ) {
+        conditions.push(ne(issues.originKind, "reported_problem"));
+      }
       const [row] = await db
         .select({ count: sql<number>`count(*)` })
         .from(issues)
