@@ -1,7 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import express from "express";
 import request from "supertest";
-import { privateHostnameGuard } from "../middleware/private-hostname-guard.js";
+import {
+  hostnameMatchesAllowed,
+  privateHostnameGuard,
+} from "../middleware/private-hostname-guard.js";
 
 const unknownHostname = "blocked-host.invalid";
 
@@ -95,5 +98,123 @@ describe("privateHostnameGuard", () => {
     expect(res.body?.error).not.toContain("evil");
     expect(res.body?.error).not.toContain("$(");
     expect(res.body?.error).not.toContain("marker");
+  });
+});
+
+describe("hostnameMatchesAllowed (wildcard support)", () => {
+  it("matches an exact hostname even when wildcards are present elsewhere in the list", () => {
+    expect(
+      hostnameMatchesAllowed("board.example.test", [
+        "board.example.test",
+        "*.187-126-114-172.sslip.io",
+      ]),
+    ).toBe(true);
+  });
+
+  it("matches a hostname against a leftmost-label wildcard", () => {
+    expect(
+      hostnameMatchesAllowed("gra-632.187-126-114-172.sslip.io", [
+        "*.187-126-114-172.sslip.io",
+      ]),
+    ).toBe(true);
+    expect(
+      hostnameMatchesAllowed("gra-633.187-126-114-172.sslip.io", [
+        "*.187-126-114-172.sslip.io",
+      ]),
+    ).toBe(true);
+  });
+
+  it("does not match the bare base hostname against a leftmost-label wildcard", () => {
+    // *.187-126-114-172.sslip.io requires at least one character before the
+    // dot, so the bare production hostname stays governed by its explicit
+    // entry and not by the wildcard alone.
+    expect(
+      hostnameMatchesAllowed("187-126-114-172.sslip.io", [
+        "*.187-126-114-172.sslip.io",
+      ]),
+    ).toBe(false);
+  });
+
+  it("does not let a wildcard match across unrelated base domains", () => {
+    expect(
+      hostnameMatchesAllowed("evil.example.attacker.tld", [
+        "*.example.com",
+      ]),
+    ).toBe(false);
+    expect(
+      hostnameMatchesAllowed("example.com.attacker.tld", [
+        "*.example.com",
+      ]),
+    ).toBe(false);
+  });
+
+  it("matches a hostname against a single-character `?` wildcard", () => {
+    expect(
+      hostnameMatchesAllowed("ab.example.test", [
+        "a?.example.test",
+      ]),
+    ).toBe(true);
+    expect(
+      hostnameMatchesAllowed("a.example.test", [
+        "a?.example.test",
+      ]),
+    ).toBe(false);
+    expect(
+      hostnameMatchesAllowed("abc.example.test", [
+        "a?.example.test",
+      ]),
+    ).toBe(false);
+  });
+
+  it("treats each pattern independently", () => {
+    expect(
+      hostnameMatchesAllowed("gra-632.187-126-114-172.sslip.io", [
+        "187.126.114.172.sslip.io",
+        "*.187-126-114-172.sslip.io",
+      ]),
+    ).toBe(true);
+    expect(
+      hostnameMatchesAllowed("unrelated.example.test", [
+        "187.126.114.172.sslip.io",
+        "*.187-126-114-172.sslip.io",
+      ]),
+    ).toBe(false);
+  });
+
+  it("skips empty patterns", () => {
+    expect(
+      hostnameMatchesAllowed("board.example.test", [
+        "",
+        "  ",
+        "board.example.test",
+      ]),
+    ).toBe(true);
+  });
+});
+
+describe("privateHostnameGuard (wildcard end-to-end)", () => {
+  it("allows a preview subdomain against a wildcard pattern in PAPERCLIP_ALLOWED_HOSTNAMES", async () => {
+    // GRA-632 / GRA-633 reproduce: preview hostnames are slug-shaped subdomains
+    // of 187-126-114-172.sslip.io. Operators want one env entry to cover them
+    // all instead of listing every preview slug as it is created.
+    const app = createApp({
+      enabled: true,
+      allowedHostnames: [
+        "187.126.114.172.sslip.io",
+        "*.187-126-114-172.sslip.io",
+      ],
+    });
+    const res = await request(app).get("/api/health").set("Host", "gra-632.187-126-114-172.sslip.io");
+    expect(res.status).toBe(200);
+  });
+
+  it("still blocks hostnames outside the wildcard's base", async () => {
+    const app = createApp({
+      enabled: true,
+      allowedHostnames: ["*.187-126-114-172.sslip.io"],
+    });
+    const res = await request(app).get("/api/health").set("Host", "evil.example.attacker.tld");
+    expect(res.status).toBe(403);
+    expect(res.body?.error).not.toContain("evil.example.attacker.tld");
   });
 });

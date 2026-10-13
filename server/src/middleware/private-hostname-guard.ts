@@ -5,6 +5,43 @@ function isLoopbackHostname(hostname: string): boolean {
   return normalized === "localhost" || normalized === "127.0.0.1" || normalized === "::1";
 }
 
+function containsHostnameWildcard(pattern: string): boolean {
+  return pattern.includes("*") || pattern.includes("?");
+}
+
+function matchesHostnamePattern(hostname: string, pattern: string): boolean {
+  // Translate a hostname pattern with `*` and `?` wildcards into a regex. Matches
+  // the syntax Better Auth uses for `trustedOrigins` (leftmost-label `*` is the
+  // common case, e.g. `*.187-126-114-172.sslip.io`). Hostnames never contain `/`,
+  // so `*` and `**` are equivalent here; both translate to `.*`.
+  let regex = "^";
+  for (const ch of pattern) {
+    if (ch === "*") {
+      regex += ".*";
+    } else if (ch === "?") {
+      regex += "[^.]";
+    } else if ("\\.+^${}()|[]".includes(ch)) {
+      regex += "\\" + ch;
+    } else {
+      regex += ch;
+    }
+  }
+  regex += "$";
+  return new RegExp(regex).test(hostname);
+}
+
+export function hostnameMatchesAllowed(hostname: string, allowedPatterns: string[]): boolean {
+  for (const pattern of allowedPatterns) {
+    if (!pattern) continue;
+    if (!containsHostnameWildcard(pattern)) {
+      if (pattern === hostname) return true;
+      continue;
+    }
+    if (matchesHostnamePattern(hostname, pattern)) return true;
+  }
+  return false;
+}
+
 function extractHostname(req: Request): string | null {
   const forwardedHost = req.header("x-forwarded-host")?.split(",")[0]?.trim();
   const hostHeader = req.header("host")?.trim();
@@ -81,7 +118,14 @@ export function privateHostnameGuard(opts: {
       return;
     }
 
-    if (isLoopbackHostname(hostname) || allowSet.has(hostname)) {
+    if (isLoopbackHostname(hostname)) {
+      next();
+      return;
+    }
+    // Exact match first (cheap Set lookup); fall through to pattern matching so
+    // an operator can express trust as a wildcard (e.g. `*.187-126-114-172.sslip.io`
+    // for the preview base) without listing every preview subdomain.
+    if (allowSet.has(hostname) || hostnameMatchesAllowed(hostname, opts.allowedHostnames)) {
       next();
       return;
     }
