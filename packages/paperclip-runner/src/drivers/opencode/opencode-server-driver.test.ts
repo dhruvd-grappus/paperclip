@@ -68,6 +68,8 @@ function runtimeContext(
       },
     ],
     mcp: { assignmentSetId: "assigned", digest, bindingId: "binding" },
+    // GRA-663 P1-3: continuation-messages cap is part of the aggregate digest.
+    continuationMessagesCap: -1,
   } satisfies Omit<NativeRuntimeContextSnapshot, "aggregateDigest">;
   return {
     ...value,

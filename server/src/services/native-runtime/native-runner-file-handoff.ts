@@ -838,7 +838,13 @@ export async function stageNativeRunnerWakeAttachments(input: {
         eq(heartbeatRuns.companyId, input.binding.companyId),
         eq(heartbeatRuns.agentId, input.binding.agentId),
         eq(heartbeatRuns.nativeIssueId, input.binding.issueId),
-        eq(heartbeatRuns.runtimeMode, "native"),
+        // GRA-663 P0-3: legacy acpx runs (runtimeMode="legacy") used by the
+        // paperclip_runner adapter also flow through this path via
+        // useRunnerd=true. The previous filter (`runtimeMode="native"`) only
+        // admitted runs spawned through the new native bootstrap, so every
+        // legacy run hit `paperclip_runner_attachment_staging_not_authorized`
+        // even when the agent, issue, and run were correctly bound.
+        inArray(heartbeatRuns.runtimeMode, ["native", "legacy"]),
         inArray(heartbeatRuns.status, ["queued", "running"]),
         eq(issues.id, input.binding.issueId),
         eq(issues.companyId, input.binding.companyId),

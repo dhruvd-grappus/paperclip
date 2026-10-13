@@ -1230,4 +1230,90 @@ describe("native runner file handoff", () => {
       await db.update(heartbeatRuns).set({ resultJson: run.resultJson }).where(eq(heartbeatRuns.id, runId));
     }
   });
+
+  // GRA-663 P0-3: legacy acpx runs (runtimeMode="legacy") used by the
+  // paperclip_runner adapter also flow through the staging path via
+  // useRunnerd=true. The earlier filter only admitted "native" mode, so legacy
+  // runs hit "paperclip_runner_attachment_staging_not_authorized" even when
+  // the agent/issue/run binding was valid.
+  it("stages inbound attachments for legacy acpx runs", async () => {
+    const storage = createStorageService(
+      createLocalDiskStorageProvider(storageRoot),
+    );
+    const body = Buffer.from("legacy mode inbound bytes\n", "utf8");
+    const stored = await storage.putFile({
+      companyId,
+      namespace: `issues/${issueId}`,
+      originalFilename: "legacy-inbound.txt",
+      contentType: "text/plain",
+      body,
+    });
+    const comment = await issueService(db).addComment(
+      issueId,
+      "Legacy-mode attachment please.",
+      { userId: "legacy-inbound-user" },
+    );
+    const attachment = await issueService(db).createAttachment({
+      issueId,
+      issueCommentId: comment.id,
+      provider: stored.provider,
+      objectKey: stored.objectKey,
+      contentType: stored.contentType,
+      byteSize: stored.byteSize,
+      sha256: stored.sha256,
+      originalFilename: stored.originalFilename,
+      createdByUserId: "legacy-inbound-user",
+    });
+    await db
+      .update(heartbeatRuns)
+      .set({
+        runtimeMode: "legacy",
+        contextSnapshot: {
+          issueId,
+          paperclipWake: {
+            comments: [
+              {
+                id: comment.id,
+                authorType: "user",
+                authorId: "legacy-inbound-user",
+                body: "Legacy-mode attachment please.",
+                createdAt: comment.createdAt,
+                attachments: [
+                  {
+                    id: attachment.id,
+                    filename: attachment.originalFilename,
+                    contentType: attachment.contentType,
+                    byteSize: attachment.byteSize,
+                    contentPath: `/api/attachments/${attachment.id}/content`,
+                  },
+                ],
+              },
+            ],
+          },
+        },
+      })
+      .where(eq(heartbeatRuns.id, runId));
+
+    const stage = await stageNativeRunnerWakeAttachments({
+      db,
+      binding: {
+        companyId,
+        issueId,
+        runId,
+        agentId,
+        workspaceRoot,
+        executionTargetKind: "local",
+      },
+      storage,
+    });
+    expect(stage.attachments).toEqual([
+      expect.objectContaining({
+        id: attachment.id,
+        filename: "legacy-inbound.txt",
+        contentType: "text/plain",
+        byteSize: body.length,
+      }),
+    ]);
+    await stage.cleanup();
+  });
 });

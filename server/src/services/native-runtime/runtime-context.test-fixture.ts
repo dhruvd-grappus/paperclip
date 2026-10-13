@@ -28,6 +28,11 @@ export function nativeRuntimeContextFixture(): NativeRuntimeContextSnapshot {
     },
     skills: [],
     mcp: { assignmentSetId: "none", digest, bindingId: null },
+    // GRA-663 P1-3: include the continuation-messages cap in the fixture so
+    // canonicalNativeRuntimeContextDigest stays in lockstep with the
+    // production builder. -1 represents the "unknown" sentinel that
+    // parseNativeRuntimeContext assigns to legacy snapshots.
+    continuationMessagesCap: -1,
   } satisfies Omit<NativeRuntimeContextSnapshot, "aggregateDigest">;
   return { ...context, aggregateDigest: canonicalNativeRuntimeContextDigest(context) };
 }

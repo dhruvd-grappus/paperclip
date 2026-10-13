@@ -18,6 +18,9 @@ export interface NativeRuntimeContextSnapshot {
   instructions: { entryPath: string; bundle: NativeRuntimeAssetReference };
   skills: Array<{ key: string; runtimeName: string; versionId: string | null; bundle: NativeRuntimeAssetReference }>;
   mcp: { assignmentSetId: string; digest: string; bindingId: string | null };
+  // GRA-663 P1-3: continuation messages cap participates in the aggregate
+  // digest so the provider prompt cache invalidates when the cap changes.
+  continuationMessagesCap?: number;
   aggregateDigest: string;
 }
 
@@ -82,6 +85,11 @@ function aggregatePayload(value: Omit<NativeRuntimeContextSnapshot, "aggregateDi
     // assigned access set so a fresh capability can be rebound without forcing a
     // provider-session rotation when policy has not changed.
     mcp: { assignmentSetId: value.mcp.assignmentSetId, digest: value.mcp.digest },
+    // GRA-663 P1-3: include the wake-continuation messages cap in the cache key.
+    // The cap controls how many prior comments ride along in the prompt; changing
+    // it without invalidating the digest would leave the provider replaying the
+    // old cap's prompt contents across the new wake.
+    continuationMessagesCap: value.continuationMessagesCap ?? -1,
   };
 }
 
@@ -93,7 +101,10 @@ export function nativeRuntimePromptDigest(): string { return sha256(PAPERCLIP_EX
 
 export function parseNativeRuntimeContext(value: unknown): NativeRuntimeContextSnapshot {
   const context = object(value, "input.runtimeContext");
-  exact(context, ["prompt", "instructions", "skills", "mcp", "aggregateDigest"], "input.runtimeContext");
+  // GRA-663 P1-3: continuationMessagesCap is part of the digest so older
+  // runtimes must still be able to mint a context this code accepts; the
+  // field is optional in the on-wire payload and defaults to -1 below.
+  exact(context, ["prompt", "instructions", "skills", "mcp", "aggregateDigest", "continuationMessagesCap"], "input.runtimeContext");
   const prompt = object(context.prompt, "input.runtimeContext.prompt");
   exact(prompt, ["revision", "text", "digest"], "input.runtimeContext.prompt");
   if (prompt.revision !== PAPERCLIP_EXECUTION_PROMPT_REVISION || prompt.text !== PAPERCLIP_EXECUTION_PROMPT) {
@@ -120,6 +131,15 @@ export function parseNativeRuntimeContext(value: unknown): NativeRuntimeContextS
   }
   const mcp = object(context.mcp, "input.runtimeContext.mcp");
   exact(mcp, ["assignmentSetId", "digest", "bindingId"], "input.runtimeContext.mcp");
+  // GRA-663 P1-3: the continuation messages cap is now part of the aggregate
+  // digest. Older runtime snapshots without this field are tolerated and default
+  // to `-1` (unknown), so legacy snapshots verify against the digest they were
+  // minted with and new snapshots verify against the digest that includes the
+  // cap.
+  const continuationMessagesCap =
+    "continuationMessagesCap" in context && typeof context.continuationMessagesCap === "number" && Number.isInteger(context.continuationMessagesCap)
+      ? context.continuationMessagesCap
+      : -1;
   const parsed = {
     prompt: { revision: PAPERCLIP_EXECUTION_PROMPT_REVISION, text: PAPERCLIP_EXECUTION_PROMPT, digest: nativeRuntimePromptDigest() },
     instructions: { entryPath: safeRelativePath(instructions.entryPath, "input.runtimeContext.instructions.entryPath"), bundle: parseAsset(instructions.bundle, "input.runtimeContext.instructions.bundle") },
@@ -129,6 +149,7 @@ export function parseNativeRuntimeContext(value: unknown): NativeRuntimeContextS
       digest: digest(mcp.digest, "input.runtimeContext.mcp.digest"),
       bindingId: mcp.bindingId === null ? null : text(mcp.bindingId, "input.runtimeContext.mcp.bindingId"),
     },
+    continuationMessagesCap,
   } satisfies Omit<NativeRuntimeContextSnapshot, "aggregateDigest">;
   const aggregateDigest = digest(context.aggregateDigest, "input.runtimeContext.aggregateDigest");
   if (aggregateDigest !== canonicalNativeRuntimeContextDigest(parsed)) {

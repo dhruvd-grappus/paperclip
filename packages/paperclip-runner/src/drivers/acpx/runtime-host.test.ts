@@ -270,6 +270,10 @@ describe("ACPX runtime host", () => {
       instructions: { entryPath: "AGENTS.md", bundle },
       skills: [{ key: "assigned", runtimeName: "assigned", versionId: "v1", bundle }],
       mcp: { assignmentSetId: "none", digest, bindingId: null },
+      // GRA-663 P1-3: continuation-messages cap is part of the aggregate
+      // digest; pin it to the sentinel so the test fixture verifies against
+      // the same digest shape as production.
+      continuationMessagesCap: -1,
     } satisfies Omit<NativeRuntimeContextSnapshot, "aggregateDigest">;
     const context = {
       ...snapshot,
