@@ -183,7 +183,7 @@ async function buildContract() {
   for (const mappedToolName of Object.keys(contract.toolMappings)) {
     if (!discoveredToolNames.has(mappedToolName)) throw new Error(`MCP mapping has no registered source tool: ${mappedToolName}`);
   }
-  if (tools.length !== 42 || Object.keys(contract.toolMappings).length !== 42) throw new Error(`Expected 42 legacy MCP tools, found ${tools.length}`);
+  if (tools.length !== 45 || Object.keys(contract.toolMappings).length !== 45) throw new Error(`Expected 45 legacy MCP tools, found ${tools.length}`);
   if (evals.length !== 106 || new Set(evals.map((row) => row.group)).size !== 16) throw new Error(`Expected 106 eval cases in 16 groups, found ${evals.length}`);
 
   return {

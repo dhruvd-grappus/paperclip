@@ -128,6 +128,16 @@ const upsertDocumentToolSchema = z.object({
   baseRevisionId: z.string().guid().nullable().optional(),
 });
 
+const upsertDocumentToolSchemaForProjects = z.object({
+  projectId: projectIdSchema,
+  key: documentKeySchema,
+  title: z.string().trim().max(200).nullable().optional(),
+  format: z.enum(["markdown"]).default("markdown"),
+  body: z.string().max(524288),
+  changeSummary: z.string().trim().max(500).nullable().optional(),
+  baseRevisionId: z.string().guid().nullable().optional(),
+});
+
 const createIssueToolSchema = z.object({
   companyId: companyIdOptional,
 }).merge(createIssueInputSchema);
@@ -397,6 +407,34 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
         client.requestJson(
           "GET",
           `/issues/${encodeURIComponent(issueId)}/documents/${encodeURIComponent(key)}/revisions`,
+        ),
+    ),
+    makeTool(
+      "paperclipListProjectDocuments",
+      "List documents attached directly to a project (project-owned vault).",
+      z.object({ projectId: projectIdSchema }),
+      async ({ projectId }) =>
+        client.requestJson("GET", `/projects/${encodeURIComponent(projectId)}/documents`),
+    ),
+    makeTool(
+      "paperclipGetProjectDocument",
+      "Get a single project-owned document by key (vault slot).",
+      z.object({ projectId: projectIdSchema, key: documentKeySchema }),
+      async ({ projectId, key }) =>
+        client.requestJson(
+          "GET",
+          `/projects/${encodeURIComponent(projectId)}/documents/${encodeURIComponent(key)}`,
+        ),
+    ),
+    makeTool(
+      "paperclipUpsertProjectDocument",
+      "Create or update a project-owned document (vault slot).",
+      upsertDocumentToolSchemaForProjects,
+      async ({ projectId, key, ...body }) =>
+        client.requestJson(
+          "PUT",
+          `/projects/${encodeURIComponent(projectId)}/documents/${encodeURIComponent(key)}`,
+          { body },
         ),
     ),
     makeTool(

@@ -25,6 +25,7 @@ export { agentInstructionsRevisionsService } from "./agent-instructions-revision
 export { reportedProblemsService } from "./reported-problems.js";
 export { assetService } from "./assets.js";
 export { documentService, extractLegacyPlanBody } from "./documents.js";
+export { projectDocumentService } from "./project-documents.js";
 export { artifactReviewDocumentService } from "./artifact-review-documents.js";
 export { statusCardService } from "./status-cards.js";
 export { finalizeStatusCardsForStalledGeneration } from "./status-card-finalization.js";

@@ -181,6 +181,7 @@ import {
   documentAnnotationService,
   logActivity,
   publishActivity,
+  projectDocumentService,
   projectService,
   reportedProblemsService,
   routineService,
@@ -9788,6 +9789,14 @@ export function issueRoutes(
     );
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
+    // Vault migration alias (GRA-667): when the issue is a legacy
+    // `Vault: <project>` side-car, list the project's documents instead.
+    const isVaultAlias = typeof issue.title === "string" && issue.title.startsWith("Vault:");
+    if (isVaultAlias && issue.projectId) {
+      const docs = await projectDocumentService(db).listProjectDocuments(issue.projectId);
+      res.json(docs.map((doc) => ({ ...doc, migratedFromVaultIssueId: issue.id })));
+      return;
+    }
     const docs = await documentsSvc.listIssueDocuments(issue.id, {
       includeSystem: req.query.includeSystem === "true",
     });
@@ -9815,6 +9824,20 @@ export function issueRoutes(
         details: keyParsed.error.issues,
       });
       return;
+    }
+    // Vault migration alias (GRA-667): when the issue is the legacy
+    // `Vault: <project>` side-car and a project document already exists for
+    // the same key on the issue's project, return the project doc here.
+    const isVaultAlias = typeof issue.title === "string" && issue.title.startsWith("Vault:");
+    if (isVaultAlias && issue.projectId) {
+      const projectDoc = await projectDocumentService(db).getProjectDocumentByKey(
+        issue.projectId,
+        keyParsed.data,
+      );
+      if (projectDoc) {
+        res.json({ ...projectDoc, migratedFromVaultIssueId: issue.id });
+        return;
+      }
     }
     const doc = await documentsSvc.getIssueDocumentByKey(
       issue.id,

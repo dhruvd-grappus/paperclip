@@ -12,16 +12,18 @@ import {
   createProjectSchema,
   createProjectWorkspaceSchema,
   findWorkspaceCommandDefinition,
+  issueDocumentKeySchema,
   isUuidLike,
   matchWorkspaceRuntimeServiceToCommand,
   updateProjectSchema,
   updateProjectWorkspaceSchema,
+  upsertIssueDocumentSchema,
   workspaceRuntimeControlTargetSchema,
 } from "@paperclipai/shared";
 import type { WorkspaceRuntimeDesiredState, WorkspaceRuntimeServiceStateMap } from "@paperclipai/shared";
 import { trackProjectCreated } from "@paperclipai/shared/telemetry";
 import { validate } from "../middleware/validate.js";
-import { accessService, projectService, logActivity, workspaceOperationService } from "../services/index.js";
+import { accessService, projectService, logActivity, projectDocumentService, workspaceOperationService } from "../services/index.js";
 import { conflict, forbidden, unprocessable } from "../errors.js";
 import { externalObjectService } from "../services/external-objects.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
@@ -74,6 +76,7 @@ export function projectRoutes(db: Db) {
   });
   const strictSecretsMode = process.env.PAPERCLIP_SECRETS_STRICT_MODE === "true";
   const environmentsSvc = environmentService(db);
+  const projectDocsSvc = projectDocumentService(db);
 
   /**
    * Managed-sandbox-only policy (`enableManagedSandboxOnly`): a project
@@ -375,6 +378,113 @@ export function projectRoutes(db: Db) {
     });
 
     res.json(project);
+  });
+
+  router.get("/projects/:id/documents", async (req, res) => {
+    const id = req.params.id as string;
+    const project = await getAccessibleResource(req, res, svc.getById(id), "Project not found");
+    if (!project) return;
+    if (!(await assertProjectReadAllowed(req, res, project))) return;
+    const docs = await projectDocsSvc.listProjectDocuments(project.id);
+    res.json(docs);
+  });
+
+  router.get("/projects/:id/documents/:key", async (req, res) => {
+    const id = req.params.id as string;
+    const project = await getAccessibleResource(req, res, svc.getById(id), "Project not found");
+    if (!project) return;
+    if (!(await assertProjectReadAllowed(req, res, project))) return;
+    const keyParsed = issueDocumentKeySchema.safeParse(
+      String(req.params.key ?? "").trim().toLowerCase(),
+    );
+    if (!keyParsed.success) {
+      res.status(400).json({
+        error: "Invalid document key",
+        details: keyParsed.error.issues,
+      });
+      return;
+    }
+    const doc = await projectDocsSvc.getProjectDocumentByKey(project.id, keyParsed.data);
+    if (!doc) {
+      res.status(404).json({ error: "Document not found" });
+      return;
+    }
+    res.json(doc);
+  });
+
+  router.put(
+    "/projects/:id/documents/:key",
+    validate(upsertIssueDocumentSchema),
+    async (req, res) => {
+      const id = req.params.id as string;
+      const project = await getAccessibleResource(req, res, svc.getById(id), "Project not found");
+      if (!project) return;
+      if (!(await assertProjectReadAllowed(req, res, project))) return;
+      const keyParsed = issueDocumentKeySchema.safeParse(
+        String(req.params.key ?? "").trim().toLowerCase(),
+      );
+      if (!keyParsed.success) {
+        res.status(400).json({
+          error: "Invalid document key",
+          details: keyParsed.error.issues,
+        });
+        return;
+      }
+
+      const actor = getActorInfo(req);
+      const result = await projectDocsSvc.upsertProjectDocument({
+        projectId: project.id,
+        key: keyParsed.data,
+        title: req.body.title ?? null,
+        format: req.body.format,
+        body: req.body.body,
+        changeSummary: req.body.changeSummary ?? null,
+        baseRevisionId: req.body.baseRevisionId ?? null,
+        createdByAgentId: actor.agentId ?? null,
+        createdByUserId: actor.actorType === "user" ? actor.actorId : null,
+      });
+
+      await logActivity(db, {
+        companyId: project.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: result.created
+          ? "project.document_created"
+          : "project.document_updated",
+        entityType: "project",
+        entityId: project.id,
+        details: {
+          key: result.document.key,
+          documentId: result.document.id,
+          title: result.document.title,
+          format: result.document.format,
+          revisionNumber: result.document.latestRevisionNumber,
+        },
+      });
+
+      res.status(result.created ? 201 : 200).json(result.document);
+    },
+  );
+
+  router.get("/projects/:id/documents/:key/revisions", async (req, res) => {
+    const id = req.params.id as string;
+    const project = await getAccessibleResource(req, res, svc.getById(id), "Project not found");
+    if (!project) return;
+    if (!(await assertProjectReadAllowed(req, res, project))) return;
+    const keyParsed = issueDocumentKeySchema.safeParse(
+      String(req.params.key ?? "").trim().toLowerCase(),
+    );
+    if (!keyParsed.success) {
+      res.status(400).json({
+        error: "Invalid document key",
+        details: keyParsed.error.issues,
+      });
+      return;
+    }
+    const revisions = await projectDocsSvc.listProjectDocumentRevisions(project.id, keyParsed.data);
+    res.json(revisions);
   });
 
   router.get("/projects/:id/workspaces", async (req, res) => {
