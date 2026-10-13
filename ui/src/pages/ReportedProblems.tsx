@@ -23,6 +23,7 @@ const COPY = {
   problem: "problem",
   problems: "problems",
   sourceIssue: "Source issue",
+  backlogIssue: "Backlog issue",
 };
 
 function versionLabel(version: number | null): string {
@@ -90,14 +91,24 @@ export function ReportedProblems() {
                     {problem.description ? (
                       <p className="mt-1 text-xs text-muted-foreground">{problem.description}</p>
                     ) : null}
-                    {problem.sourceIssueId ? (
-                      <Link
-                        to={`/issues/${problem.sourceIssueId}`}
-                        className="mt-2 inline-block text-xs text-primary hover:underline"
-                      >
-                        {COPY.sourceIssue}
-                      </Link>
-                    ) : null}
+                    <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+                      {problem.sourceIssueId ? (
+                        <Link
+                          to={`/issues/${problem.sourceIssueId}`}
+                          className="text-primary hover:underline"
+                        >
+                          {COPY.sourceIssue}
+                        </Link>
+                      ) : null}
+                      {problem.backlogIssueId ? (
+                        <Link
+                          to={`/issues/${problem.backlogIssueId}`}
+                          className="text-primary hover:underline"
+                        >
+                          {COPY.backlogIssue}
+                        </Link>
+                      ) : null}
+                    </div>
                   </div>
                 ))}
               </CardContent>
