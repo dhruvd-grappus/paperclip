@@ -70,6 +70,8 @@ describe("NativeExecutionInputV1", () => {
         bundle: { schema: NATIVE_RUNTIME_ASSET_SCHEMA, digest, manifestDigest: digest, rootPath: "/runtime/skills/research", fileCount: 2, totalBytes: 42 },
       }],
       mcp: { assignmentSetId: "sha256:test", digest, bindingId: "native-mcp:run-1" },
+      // GRA-663 P1-3: continuation-messages cap is part of the aggregate digest.
+      continuationMessagesCap: -1,
     } as const;
     const parsed = parseNativeExecutionInput({
       ...input,

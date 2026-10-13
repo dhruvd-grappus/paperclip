@@ -226,6 +226,21 @@ export async function buildNativeRuntimeContext(input: { db: Db; agent: RuntimeA
     materializeSelectedSkills(input.runtimeConfig, input.runtimeSkillEntries, input.agent.adapterType === "paperclip_runner"),
     resolveNativeRuntimeMcpSnapshot({ db: input.db, agent: input.agent, runId: input.runId }),
   ]);
-  const snapshot = { prompt: { revision: PAPERCLIP_EXECUTION_PROMPT_REVISION, text: PAPERCLIP_EXECUTION_PROMPT, digest: nativeRuntimePromptDigest() }, instructions, skills, mcp };
+  // GRA-663 P1-3: include the wake-continuation messages cap in the digest so
+  // a change to PAPERCLIP_WAKE_CONTINUATION_MESSAGES_CAP invalidates the
+  // provider prompt cache instead of replaying the old cap's prompt contents.
+  const continuationMessagesCap = continuationMessagesCapFromEnv();
+  const snapshot = { prompt: { revision: PAPERCLIP_EXECUTION_PROMPT_REVISION, text: PAPERCLIP_EXECUTION_PROMPT, digest: nativeRuntimePromptDigest() }, instructions, skills, mcp, continuationMessagesCap };
   return parseNativeRuntimeContext({ ...snapshot, aggregateDigest: canonicalNativeRuntimeContextDigest(snapshot) });
+}
+
+/**
+ * GRA-663 P1-3: read PAPERCLIP_WAKE_CONTINUATION_MESSAGES_CAP from the process
+ * environment at context-build time so the value lands in the aggregate digest.
+ * Defaults to 12 to match the existing pc-lite / execution-continuation default.
+ */
+function continuationMessagesCapFromEnv(): number {
+  const raw = Number(process.env.PAPERCLIP_WAKE_CONTINUATION_MESSAGES_CAP);
+  if (!Number.isFinite(raw) || raw < 0) return 12;
+  return Math.floor(raw);
 }

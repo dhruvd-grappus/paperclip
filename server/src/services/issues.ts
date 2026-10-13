@@ -296,6 +296,123 @@ function assertTransition(from: string, to: string) {
   }
 }
 
+/**
+ * GRA-663 P2-3: optional server-side gate that requires an agent to have
+ * created a `Memory:` child issue before transitioning to `done`. The check is
+ * opt-in via the `PAPERCLIP_REQUIRE_MEMORY_HANDOFF` env var so existing
+ * callers (manual board PATCH, automation, Slack completion) are not blocked.
+ *
+ * When enabled, the gate looks for a child issue whose title starts with
+ * `Memory:` and whose assigneeAgentId matches the issue's current
+ * assigneeAgentId, created within the trailing window (default 30 minutes).
+ * Cancelled memory children do not satisfy the gate.
+ */
+type MemoryHandoffChecker = (input: { issueId: string; companyId: string; assigneeAgentId: string | null }) => Promise<{ satisfied: boolean; recentMemoryChildId: string | null }>;
+let memoryHandoffChecker: MemoryHandoffChecker | null = null;
+export function registerMemoryHandoffChecker(checker: MemoryHandoffChecker): void { memoryHandoffChecker = checker; }
+
+function memoryHandoffRequired(): boolean {
+  const raw = process.env.PAPERCLIP_REQUIRE_MEMORY_HANDOFF;
+  if (!raw) return false;
+  return raw === "1" || raw.toLowerCase() === "true" || raw.toLowerCase() === "yes";
+}
+
+async function assertMemoryHandoffIfRequired(input: {
+  tx: Db;
+  issueId: string;
+  companyId: string;
+  assigneeAgentId: string | null;
+}): Promise<void> {
+  if (!memoryHandoffRequired()) return;
+  if (!memoryHandoffChecker) {
+    throw conflict(
+      "PAPERCLIP_REQUIRE_MEMORY_HANDOFF is enabled but no memory-handoff checker is registered",
+    );
+  }
+  const result = await memoryHandoffChecker({
+    issueId: input.issueId,
+    companyId: input.companyId,
+    assigneeAgentId: input.assigneeAgentId,
+  });
+  if (!result.satisfied) {
+    throw conflict(
+      "Memory handoff required: agent must create a Memory: child issue before transitioning to done",
+    );
+  }
+}
+
+/**
+ * GRA-663 P2-2: cascade parent cancellation to children that have no other
+ * path forward. A child is cascade-cancelled when:
+ *   1. its parentId is the cancelled parent,
+ *   2. it is in a non-terminal status, and
+ *   3. every "blocks" relation pointing at it is from an already-terminal
+ *      issue (this cancelled parent or another terminal one).
+ * Children that still point at a live blocker are left for their owner.
+ */
+async function cascadeCancelOrphanChildren(
+  tx: Db,
+  cancelled: typeof issues.$inferSelect,
+  actor: { actorAgentId: string | null; actorUserId: string | null },
+): Promise<void> {
+  const children = await tx
+    .select({ id: issues.id })
+    .from(issues)
+    .where(and(
+      eq(issues.companyId, cancelled.companyId),
+      eq(issues.parentId, cancelled.id),
+      ne(issues.status, "done"),
+      ne(issues.status, "cancelled"),
+    ));
+  if (children.length === 0) return;
+  const childIds = children.map((c) => c.id);
+  // Every "blocks" relation whose target (relatedIssueId) is one of the
+  // children. The source issue (issueId) is the blocker; if every blocker
+  // for a child is terminal, the child has no live path forward.
+  const blockers = await tx
+    .select({
+      childId: issueRelations.relatedIssueId,
+      blockerId: issueRelations.issueId,
+      blockerStatus: issues.status,
+    })
+    .from(issueRelations)
+    .innerJoin(issues, eq(issues.id, issueRelations.issueId))
+    .where(and(
+      eq(issueRelations.companyId, cancelled.companyId),
+      eq(issueRelations.type, "blocks"),
+      inArray(issueRelations.relatedIssueId, childIds),
+    ));
+  const blockersByChild = new Map<string, Array<{ blockerId: string; status: string }>>();
+  for (const row of blockers) {
+    const list = blockersByChild.get(row.childId) ?? [];
+    list.push({ blockerId: row.blockerId, status: row.blockerStatus });
+    blockersByChild.set(row.childId, list);
+  }
+  for (const childId of childIds) {
+    const childBlockers = blockersByChild.get(childId) ?? [];
+    const hasLiveBlocker = childBlockers.some((b) => b.status !== "cancelled" && b.status !== "done");
+    if (hasLiveBlocker) continue;
+    await tx
+      .update(issues)
+      .set({ status: "cancelled", cancelledAt: new Date(), updatedAt: new Date() })
+      .where(eq(issues.id, childId));
+    await logActivity(tx as unknown as Db, {
+      companyId: cancelled.companyId,
+      actorType: actor.actorAgentId ? "agent" : actor.actorUserId ? "user" : "system",
+      actorId: actor.actorAgentId ?? actor.actorUserId ?? "issue_service",
+      agentId: actor.actorAgentId,
+      action: "issue.parent_cascade_cancelled",
+      entityType: "issue",
+      entityId: childId,
+      details: {
+        parentIssueId: cancelled.id,
+        parentStatus: cancelled.status,
+        reason: "parent_cancelled_no_live_blockers",
+      },
+    });
+  }
+}
+
 function applyStatusSideEffects(
   status: string | undefined,
   patch: Partial<typeof issues.$inferInsert>,
@@ -6583,6 +6700,30 @@ export function issueService(db: Db) {
   const instanceSettings = instanceSettingsService(db);
   const treeControlSvc = issueTreeControlService(db);
 
+  // GRA-663 P2-3: register the memory-handoff checker that backs the
+  // PAPERCLIP_REQUIRE_MEMORY_HANDOFF gate. The checker looks for a child
+  // issue whose title starts with `Memory:`, whose assigneeAgentId matches
+  // the parent's current assignee, and whose createdAt falls inside the
+  // trailing window. Cancelled memory children do not satisfy the gate.
+  registerMemoryHandoffChecker(async ({ issueId, companyId, assigneeAgentId }) => {
+    const windowMs = Number(process.env.PAPERCLIP_MEMORY_HANDOFF_WINDOW_MS ?? 30 * 60 * 1000);
+    const windowStart = new Date(Date.now() - (Number.isFinite(windowMs) && windowMs > 0 ? windowMs : 30 * 60 * 1000));
+    const candidates = await db
+      .select({ id: issues.id, assigneeAgentId: issues.assigneeAgentId, createdAt: issues.createdAt, status: issues.status, parentId: issues.parentId })
+      .from(issues)
+      .where(and(
+        eq(issues.companyId, companyId),
+        eq(issues.parentId, issueId),
+        like(issues.title, "Memory:%"),
+        gte(issues.createdAt, windowStart),
+      ));
+    const recent = candidates.find((row) =>
+      row.status !== "cancelled"
+      && (assigneeAgentId === null || row.assigneeAgentId === assigneeAgentId)
+    );
+    return { satisfied: Boolean(recent), recentMemoryChildId: recent?.id ?? null };
+  });
+
   function normalizeCreateIssueTitle(title: string) {
     return title.trim().replace(/\s+/g, " ").toLowerCase();
   }
@@ -10718,6 +10859,20 @@ export function issueService(db: Db) {
 
       if (issueData.status) {
         assertTransition(existing.status, issueData.status);
+        // GRA-663 P2-3: server-side gate that an agent must have created a
+        // Memory: child issue before transitioning to done. Disabled by
+        // default; set PAPERCLIP_REQUIRE_MEMORY_HANDOFF=1 to enforce.
+        if (issueData.status === "done" && existing.status !== "done") {
+          await assertMemoryHandoffIfRequired({
+            tx: dbOrTx,
+            issueId: existing.id,
+            companyId: existing.companyId,
+            assigneeAgentId:
+              issueData.assigneeAgentId !== undefined
+                ? issueData.assigneeAgentId
+                : existing.assigneeAgentId,
+          });
+        }
       }
 
       const patch: Partial<typeof issues.$inferInsert> = {
@@ -11023,6 +11178,16 @@ export function issueService(db: Db) {
           }
           if (updated.status === "done" || updated.status === "cancelled") {
             await finalizeSummarySlotsForTerminalIssue(tx, updated);
+            // GRA-663 P2-2: cascade parent cancellation to children whose only
+            // blocker was the parent. Children whose blockers point at other
+            // live issues are left alone; the cleanup routine is a band-aid
+            // and this is the structural fix.
+            if (updated.status === "cancelled") {
+              await cascadeCancelOrphanChildren(tx, updated, {
+                actorAgentId: actorAgentId ?? null,
+                actorUserId: actorUserId ?? null,
+              });
+            }
             // Every terminal transition funnels through here, including direct
             // service callers (tree control, recovery, pipelines, status cards)
             // that never touch the HTTP routes, so pending interaction cards
