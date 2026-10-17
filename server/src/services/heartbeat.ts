@@ -343,7 +343,6 @@ import {
 import {
   ISSUE_NEW_INPUT_ACTIVITY_ACTIONS,
   ISSUE_PROGRESS_ACTIVITY_ACTIONS,
-  ISSUE_REWAKE_LOOKBACK_MS,
   ISSUE_REWAKE_RUN_SAMPLE_LIMIT,
   evaluateIssueRewakeThrottle,
   isThrottleCandidateIssueRewake,
@@ -8519,6 +8518,8 @@ export function buildPaperclipTaskMarkdown(input: {
   } | null;
   externalChatProvider?: string | null;
   nativeRunner?: boolean;
+  // Native wake rendering owns comment prose; retain attachments here.
+  wakeCommentBodiesDelivered?: boolean;
   // false builds the compact variant used for resume deltas, where the session
   // already received the description with the assignment.
   includeDescription?: boolean;
@@ -8725,7 +8726,9 @@ export function buildPaperclipTaskMarkdown(input: {
       );
     }
   }
-  if (effectiveWakeComments.length === 1) {
+  if (input.wakeCommentBodiesDelivered) {
+    for (const comment of effectiveWakeComments) appendWakeAttachments(comment);
+  } else if (effectiveWakeComments.length === 1) {
     lines.push(
       "",
       "Follow-up directive:",
@@ -20642,6 +20645,7 @@ export function heartbeatService(
         attachmentOmissions: paperclipWakePayload?.attachmentOmissions,
         externalChatProvider: paperclipWakePayload?.externalChatProvider,
         nativeRunner: agent.adapterType === "paperclip_runner",
+        wakeCommentBodiesDelivered: agent.adapterType === "paperclip_runner",
         interaction: {
           kind: readNonEmptyString(context.interactionKind),
           status: readNonEmptyString(context.interactionStatus),
@@ -27438,8 +27442,8 @@ export function heartbeatService(
           // PAP-13775: no live run holds the lock, so this wake would start a
           // fresh adapter session. If this agent's recent runs on this issue
           // keep succeeding without any issue-visible progress and the wake
-          // carries no new information, hold it back for an escalating cooldown
-          // so external pollers/reconcilers can't storm full-price sessions.
+          // carries no new information, hold it until an event arrives
+          // so external pollers/reconcilers cannot start redundant sessions.
           // Server-side recovery retries insert runs directly and never reach
           // this gate.
           if (
@@ -27465,10 +27469,6 @@ export function heartbeatService(
                   eq(heartbeatRuns.companyId, agent.companyId),
                   eq(heartbeatRuns.agentId, agentId),
                   sql`${heartbeatRuns.finishedAt} is not null`,
-                  gte(
-                    heartbeatRuns.finishedAt,
-                    new Date(throttleNow.getTime() - ISSUE_REWAKE_LOOKBACK_MS),
-                  ),
                   sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issue.id}`,
                 ),
               )
@@ -27492,6 +27492,8 @@ export function heartbeatService(
                       activityLog.action,
                       ISSUE_PROGRESS_ACTIVITY_ACTIONS,
                     ),
+                    ne(activityLog.action, "issue.comment_added"),
+                    or(ne(activityLog.action, "issue.updated"), sql`coalesce(${activityLog.details} -> 'changes', ${activityLog.details} -> '_previous', '{}'::jsonb) <> '{}'::jsonb`),
                   ),
                 );
               const lastRunFinishedAt =
@@ -27510,9 +27512,8 @@ export function heartbeatService(
                           activityLog.action,
                           ISSUE_NEW_INPUT_ACTIVITY_ACTIONS,
                         ),
-                        wakeCommentId && opts.requestedByActorType === "agent"
-                          ? ne(activityLog.actorType, "agent")
-                          : undefined,
+                        or(ne(activityLog.action, "issue.comment_added"), ne(activityLog.actorType, "agent")),
+                        or(ne(activityLog.action, "issue.updated"), sql`coalesce(${activityLog.details} -> 'changes', ${activityLog.details} -> '_previous', '{}'::jsonb) <> '{}'::jsonb`),
                       ),
                     )
                     .limit(1)
@@ -27526,14 +27527,43 @@ export function heartbeatService(
                     .map((row) => row.runId)
                     .filter((runId): runId is string => Boolean(runId)),
                 ),
-                // For an agent comment wake, the query excludes agent-authored
-                // activity while preserving genuinely new user/system input.
+                // Polling prose and no-op status writes are not new input.
+                // Preserve user/system comments and material state changes.
                 // Presentation/author metadata therefore cannot smuggle human
                 // wake privilege, nor can it mask an actual human response.
                 hasNewIssueInputSinceLastRun: newInputRows.length > 0,
               });
 
               if (throttleDecision.blocked) {
+                // The issue row is locked for this admission transaction. Count
+                // durable skipped waits, not prose, and escalate once per run.
+                const lastRunId = recentTerminalRuns[0]!.id;
+                const priorWaits = await tx.select({ id: agentWakeupRequests.id })
+                  .from(agentWakeupRequests).where(and(
+                    eq(agentWakeupRequests.companyId, agent.companyId),
+                    eq(agentWakeupRequests.agentId, agentId),
+                    eq(agentWakeupRequests.reason, "issue_rewake_throttled"),
+                    sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issue.id}`,
+                    sql`${agentWakeupRequests.payload} #>> '{heartbeatSkip,lastRunId}' = ${lastRunId}`,
+                  )).limit(2);
+                if (priorWaits.length >= 2 && issue.status === "in_progress") {
+                  const action = "Inspect the unchanged wait, identify the missing input or dependency, then resume explicitly with new evidence. Do not repeat the polling wake.";
+                  await tx.update(issues).set({
+                    status: "blocked",
+                    blockedTransitionAt: throttleNow,
+                    unblockDescriptor: { owner: { agentId }, action },
+                    updatedAt: throttleNow,
+                  }).where(eq(issues.id, issue.id));
+                  await tx.insert(issueComments).values({
+                    companyId: agent.companyId, issueId: issue.id,
+                    body: `Three unchanged waits were suppressed without model execution. Unblock owner: agent ${agentId}. Action: ${action}`,
+                  });
+                  await tx.insert(activityLog).values({
+                    companyId: agent.companyId, actorType: "system", actorId: "heartbeat",
+                    action: "issue.rewake_escalated", entityType: "issue", entityId: issue.id,
+                    details: { lastRunId, waitCount: 3, unblockOwnerAgentId: agentId },
+                  });
+                }
                 await tx.insert(agentWakeupRequests).values({
                   ...durableReceiptFields,
                   companyId: agent.companyId,
@@ -27548,6 +27578,7 @@ export function heartbeatService(
                       reason: "issue_rewake_throttled",
                       requestedReason: reason,
                       noProgressStreak: throttleDecision.noProgressStreak,
+                      lastRunId,
                       cooldownMs: throttleDecision.cooldownMs,
                       lastRunFinishedAt:
                         throttleDecision.lastRunFinishedAt.toISOString(),

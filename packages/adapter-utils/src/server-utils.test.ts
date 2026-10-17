@@ -1288,6 +1288,20 @@ describe("renderPaperclipWakePrompt", () => {
     });
   });
 
+  it.each([false, true])("renders native continuation comments once without mutating legacy metadata (resumed %s)", (resumedSession) => {
+    const message = { id: "comment-unique", body: "UNIQUE_WAKE_BODY", authorType: "user", authorId: "user-1" };
+    const payload = { reason: "issue_commented", commentIds: [message.id], latestCommentId: message.id,
+      comments: [message], commentWindow: { requestedCount: 1, includedCount: 1, missingCount: 0 },
+      executionContinuation: { version: 1, messages: [message], resumeDelta: { baseRunId: "run-1", messages: [message] } } };
+    const original = JSON.stringify(payload);
+    const native = renderPaperclipWakePrompt(payload, { resumedSession, nativeWakeReaderAvailable: true });
+    expect(native.split(message.body)).toHaveLength(2);
+    expect(JSON.stringify(payload)).toBe(original);
+    const legacy = renderPaperclipWakePrompt(payload, { resumedSession });
+    expect(legacy).toContain("New comments in order:");
+    expect(legacy).toContain(message.body);
+  });
+
   it("suppresses the issue description when the prompt already carries the task-context markdown", () => {
     const payload = {
       reason: "issue_assigned",

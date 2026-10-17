@@ -207,7 +207,23 @@ describeEmbeddedPostgres("heartbeat issue rewake throttle", () => {
       .then((rows) => rows[0] ?? null);
   }
 
-  it("skips event-free re-wakes after consecutive no-progress runs and admits them again on new input", async () => {
+  it("serializes concurrent unchanged waits and escalates once, including retries", async () => {
+    const { companyId, agentId, issueId } = await seedCompanyAgentIssue();
+    await seedTerminalRun({ companyId, agentId, issueId, finishedSecondsAgo: 7 * 3600 });
+    const callsBefore = mockAdapterExecute.mock.calls.length;
+    const results = await Promise.all(Array.from({ length: 4 }, () => assignmentWake(agentId, issueId)));
+    expect(results).toEqual([null, null, null, null]);
+    expect(await assignmentWake(agentId, issueId)).toBeNull();
+    expect(mockAdapterExecute.mock.calls.length).toBe(callsBefore);
+    const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(issue).toMatchObject({ status: "blocked", unblockDescriptor: { owner: { agentId } } });
+    const escalations = await db.select().from(activityLog).where(and(
+      eq(activityLog.entityId, issueId), eq(activityLog.action, "issue.rewake_escalated"),
+    ));
+    expect(escalations).toHaveLength(1);
+  });
+
+  it.each(["issue.comment_added", "issue.thread_interaction_answered", "issue.blockers_updated"])("admits new input %s after suppressing unchanged wakes", async (action) => {
     const { companyId, agentId, issueId } = await seedCompanyAgentIssue();
 
     await seedTerminalRun({ companyId, agentId, issueId, finishedSecondsAgo: 40 });
@@ -238,7 +254,7 @@ describeEmbeddedPostgres("heartbeat issue rewake throttle", () => {
       companyId,
       actorType: "user",
       actorId: "board-user",
-      action: "issue.comment_added",
+      action,
       entityType: "issue",
       entityId: issueId,
     });
@@ -364,7 +380,7 @@ describeEmbeddedPostgres("heartbeat issue rewake throttle", () => {
     expect(recoveryWake).not.toBeNull();
   });
 
-  it("does not throttle when a recent run produced issue-visible progress", async () => {
+  it("does not count a polling comment as progress", async () => {
     const { companyId, agentId, issueId } = await seedCompanyAgentIssue();
 
     await seedTerminalRun({ companyId, agentId, issueId, finishedSecondsAgo: 40 });
@@ -382,7 +398,7 @@ describeEmbeddedPostgres("heartbeat issue rewake throttle", () => {
     });
 
     const wake = await assignmentWake(agentId, issueId);
-    expect(wake).not.toBeNull();
+    expect(wake).toBeNull();
   });
 
   it("does not count progress on another issue toward the current issue", async () => {

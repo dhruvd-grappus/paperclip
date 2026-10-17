@@ -105,14 +105,14 @@ describe("evaluateIssueRewakeThrottle", () => {
     ).toEqual({ blocked: false, noProgressStreak: 0 });
   });
 
-  it("allows below the no-progress threshold", () => {
+  it("blocks the first unchanged wake", () => {
     const decision = evaluateIssueRewakeThrottle({
       now: NOW,
       recentTerminalRuns: [runSample({ id: "r1", finishedSecondsAgo: 10 })],
       runIdsWithIssueProgress: new Set(),
       hasNewIssueInputSinceLastRun: false,
     });
-    expect(decision).toEqual({ blocked: false, noProgressStreak: 1 });
+    expect(decision).toMatchObject({ blocked: true, noProgressStreak: 1 });
   });
 
   it("blocks inside the cooldown once the streak reaches the threshold", () => {
@@ -128,14 +128,14 @@ describe("evaluateIssueRewakeThrottle", () => {
     expect(decision.blocked).toBe(true);
     if (decision.blocked) {
       expect(decision.noProgressStreak).toBe(2);
-      expect(decision.cooldownMs).toBe(ISSUE_REWAKE_BASE_COOLDOWN_MS);
+      expect(decision.cooldownMs).toBe(ISSUE_REWAKE_BASE_COOLDOWN_MS * 2);
       expect(decision.nextAllowedAt.getTime()).toBe(
-        NOW.getTime() - 10_000 + ISSUE_REWAKE_BASE_COOLDOWN_MS,
+        NOW.getTime() - 10_000 + ISSUE_REWAKE_BASE_COOLDOWN_MS * 2,
       );
     }
   });
 
-  it("allows again after the cooldown elapses", () => {
+  it("does not treat elapsed time as new input", () => {
     const decision = evaluateIssueRewakeThrottle({
       now: NOW,
       recentTerminalRuns: [
@@ -145,7 +145,7 @@ describe("evaluateIssueRewakeThrottle", () => {
       runIdsWithIssueProgress: new Set(),
       hasNewIssueInputSinceLastRun: false,
     });
-    expect(decision).toEqual({ blocked: false, noProgressStreak: 2 });
+    expect(decision).toMatchObject({ blocked: true, noProgressStreak: 2 });
   });
 
   it("escalates the cooldown as the streak grows", () => {
@@ -163,7 +163,7 @@ describe("evaluateIssueRewakeThrottle", () => {
     expect(decision.blocked).toBe(true);
     if (decision.blocked) {
       expect(decision.noProgressStreak).toBe(4);
-      expect(decision.cooldownMs).toBe(ISSUE_REWAKE_BASE_COOLDOWN_MS * 4);
+      expect(decision.cooldownMs).toBe(ISSUE_REWAKE_BASE_COOLDOWN_MS * 8);
     }
   });
 
@@ -178,7 +178,7 @@ describe("evaluateIssueRewakeThrottle", () => {
       runIdsWithIssueProgress: new Set(["r2"]),
       hasNewIssueInputSinceLastRun: false,
     });
-    expect(decision).toEqual({ blocked: false, noProgressStreak: 1 });
+    expect(decision).toMatchObject({ blocked: true, noProgressStreak: 1 });
   });
 
   it("does not delay recovery after a failed run", () => {

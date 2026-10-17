@@ -1,31 +1,13 @@
 /**
- * PAP-13775: throttle no-information issue re-wakes.
- *
- * After a process death (or any stall), external drivers — assignment pollers,
- * stranded-issue reconcilers, on-demand invokes — can re-wake the same agent
- * for the same issue every few seconds for as long as the issue stays
- * `in_progress`. When each of those runs ends without changing any
- * issue-visible state, every wake pays a full adapter session for zero new
- * information (the Phase 4 interruption-recovery smoke paid 25 sessions and
- * 2.4x cost for one recovery this way).
- *
- * This module decides when such a wake should be skipped: once an issue has
- * accumulated a streak of consecutive succeeded-but-no-issue-progress runs by
- * the same agent, further event-free wakes are held back for an escalating
- * cooldown anchored to the last run's finish time. Fresh issue activity, an
- * explicit resume, forceFreshSession, and event-carrying wake reasons bypass
- * the throttle. Human comment wakes also bypass it. Agent-authored comment
- * wakes deliberately stay in the normal throttle class so a cross-issue write
- * cannot smuggle human wake privileges.
- *
- * Server-side recovery retries (process-loss retries, missing-comment
- * follow-ups) insert their runs directly and never pass through this gate, so
- * crash recovery stays immediate; only repeated no-op re-invocations slow
- * down.
+ * Suppress event-free issue wakes after a successful run with no durable issue
+ * progress. Time alone cannot release a wait. Human input, dependency events,
+ * interaction outcomes, explicit operator resumes and recovery remain eligible.
+ * Admission and the three-wait escalation serialize under the issue row lock in
+ * heartbeat.ts. Receipt cooldown fields remain for older readers only.
  */
 
 /** Consecutive no-progress runs required before the cooldown engages. */
-export const ISSUE_REWAKE_NO_PROGRESS_THRESHOLD = 2;
+export const ISSUE_REWAKE_NO_PROGRESS_THRESHOLD = 1;
 
 /** Cooldown after the threshold streak; doubles per additional no-progress run. */
 export const ISSUE_REWAKE_BASE_COOLDOWN_MS = 120_000;
@@ -33,7 +15,7 @@ export const ISSUE_REWAKE_BASE_COOLDOWN_MS = 120_000;
 /** Upper bound for the escalating cooldown. */
 export const ISSUE_REWAKE_MAX_COOLDOWN_MS = 30 * 60_000;
 
-/** Only runs newer than this feed the streak; older history is ignored. */
+/** Legacy lookback value retained for callers; admission no longer expires evidence. */
 export const ISSUE_REWAKE_LOOKBACK_MS = 6 * 60 * 60_000;
 
 /** How many recent terminal runs to sample when computing the streak. */
@@ -175,8 +157,7 @@ export function evaluateIssueRewakeThrottle(input: IssueRewakeThrottleInput): Is
 
   const cooldownMs = computeIssueRewakeCooldownMs(noProgressStreak);
   const nextAllowedAt = new Date(lastRunFinishedAt.getTime() + cooldownMs);
-  if (input.now.getTime() < nextAllowedAt.getTime()) {
-    return { blocked: true, noProgressStreak, cooldownMs, lastRunFinishedAt, nextAllowedAt };
-  }
-  return { blocked: false, noProgressStreak };
+  // Time passing is not new input. nextAllowedAt is retained for receipt
+  // compatibility only; a new event or explicit recovery must release the wait.
+  return { blocked: true, noProgressStreak, cooldownMs, lastRunFinishedAt, nextAllowedAt };
 }

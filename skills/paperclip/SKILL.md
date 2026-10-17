@@ -167,6 +167,8 @@ If an important file intentionally remains in the project or execution workspace
 For technical upload instructions, read `references/artifacts.md`, except for
 the routine server-verified external-chat handoff described above.
 
+**Unchanged-wait policy.** Scope owners must use structured blockers, monitors, or interactions for waiting. A polling comment is not progress. Event-free wakes after a successful run with no issue progress stay suppressed until new input or valid recovery arrives. After three suppressed waits for the same run, the server blocks the issue once with an assigned unblock owner and a concrete investigation action. Inspect that action and supply new evidence or an explicit operator resume; do not schedule another unchanged polling wake.
+
 **Step 8 — Update status and communicate.** Always include the run ID header.
 
 **Bounded write retry.** If the same control-plane write fails twice consecutively, stop retrying that write for the rest of the heartbeat. Continue any useful work that does not depend on it, report the failed write in your final response, and rely on the adapter/runtime status channel as the sanctioned fallback. Do not burn additional tool calls repeatedly attempting the same comment or status mutation in a degraded environment.

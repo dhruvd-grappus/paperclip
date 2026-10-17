@@ -7,6 +7,17 @@ import {
 } from "../services/heartbeat.js";
 
 describe("buildPaperclipTaskMarkdown", () => {
+  it("omits native wake prose while retaining attachment descriptors and legacy delivery", () => {
+    const input = { issue: { id: "issue-1", identifier: "TEST-1", title: "Task" },
+      wakeComments: [{ id: "comment-1", body: "UNIQUE_NATIVE_COMMENT", attachments: [
+        { id: "attachment-1", filename: "sample.txt", contentType: "text/plain", byteSize: 3, contentPath: "/api/attachments/attachment-1/content" },
+      ] }] };
+    const native = buildPaperclipTaskMarkdown({ ...input, wakeCommentBodiesDelivered: true });
+    expect(native).not.toContain("UNIQUE_NATIVE_COMMENT");
+    expect(native).toContain("sample.txt");
+    expect(buildPaperclipTaskMarkdown(input)).toContain("UNIQUE_NATIVE_COMMENT");
+  });
+
   it("keeps a durable task plan in full and resumed context without granting execution approval", () => {
     const taskPlan = {
       documentId: "document", revisionId: "revision", revisionNumber: 1,
