@@ -93,6 +93,17 @@ if os.path.isfile(bs):
 req("PUT", f"/api/agents/{CL}/instructions-bundle/file?companyId={C}", {"path": "AGENTS.md", "content": agents_md})
 print("AGENTS.md put", len(agents_md), "bytes")
 agent = req("GET", f"/api/agents/{CL}")
+# Keep shared pc-lite installed, but do not advertise it to Clarifier by default.
+config = agent.get("adapterConfig") or {}
+sync = config.get("paperclipSkillSync") or {}
+desired = sync.get("desiredSkills")
+if isinstance(desired, list):
+    filtered = [key for key in desired if key != f"company/{C}/pc-lite"]
+    if filtered != desired:
+        req("PATCH", f"/api/agents/{CL}", {
+            "adapterConfig": {"paperclipSkillSync": {**sync, "desiredSkills": filtered}}
+        })
+
 # The adapter belongs to whoever configured it (currently opencode_local +
 # opencode-go/deepseek-v4.1-flash, REST-only pipeline). Deploy never changes it:
 # an earlier hardcoded PATCH here silently reverted the live runtime.

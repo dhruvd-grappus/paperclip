@@ -8,6 +8,7 @@
 # Cron (paperclip): */5 * * * * /home/paperclip/skills-sync.sh >> /home/paperclip/skills-sync.log 2>&1
 set -u
 HOME_DIR=${HOME_DIR:-/home/paperclip}
+# pc-lite remains shared/deploy-owned; Clarifier selection is filtered in deploy-native.py.
 CORE="build env figma memory pc-lite qa review scope"
 STORE="$HOME_DIR/.paperclip/instances/default/skills/${COMPANY_ID:-d255c3a4-2066-4d81-8c40-862ad8208963}"
 DEST="$HOME_DIR/skills"
